@@ -1,0 +1,65 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+credentials.json
+credentials.*
+secrets.json
+secrets.yaml
+secrets.yml
+.netrc
+.npmrc.local
+
+# Provider / AI tooling local state
+.claude/
+.codex/
+.cursor/
+.gemini/
+
+# Cloud / CLI credential state
+.aws/
+.azure/
+.gcloud/
+.docker/
+
+# Local databases and runtime data
+*.sqlite
+*.sqlite3
+*.db
+*.log
+tmp/
+.temp/
+.cache/
+
+# Node
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+dist/
+build/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
