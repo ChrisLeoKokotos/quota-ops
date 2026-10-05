@@ -1,0 +1,95 @@
+name: Repository Guard
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject credential and local-auth artifacts
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA")
+
+          blocked=0
+          for file in "${files[@]}"; do
+            case "$file" in
+              .env|.env.*)
+                case "$file" in
+                  .env.example|.env.sample|.env.template) ;;
+                  *)
+                    echo "::error file=$file::Environment/secret files must not be committed."
+                    blocked=1
+                    ;;
+                esac
+                ;;
+              *.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*.kdbx|credentials.json|credentials.*|secrets.json|secrets.yaml|secrets.yml|.netrc|id_rsa|id_ed25519)
+                echo "::error file=$file::Credential or key material must not be committed."
+                blocked=1
+                ;;
+              .claude/*|.codex/*|.cursor/*|.gemini/*|.aws/*|.azure/*|.gcloud/*|.docker/*)
+                echo "::error file=$file::Local provider/tool authentication state must not be committed."
+                blocked=1
+                ;;
+            esac
+          done
+
+          exit "$blocked"
+
+      - name: Require immutable action pins
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bad=0
+          while IFS= read -r line; do
+            ref="${line#*@}"
+            ref="${ref%%[[:space:]#]*}"
+            if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::GitHub Actions must be pinned to a full 40-character commit SHA: $line"
+              bad=1
+            fi
+          done < <(
+            grep -RhoE '^[[:space:]]*uses:[[:space:]]+[^[:space:]#]+@[^[:space:]#]+' .github/workflows               | grep -vE 'uses:[[:space:]]+\./' || true
+          )
+
+          exit "$bad"
+
+      - name: Reject high-risk workflow triggers and permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RFn "pull_request_target:" .github/workflows; then
+            echo "::error::pull_request_target is prohibited by default because it can expose privileged context to untrusted PR code."
+            exit 1
+          fi
+
+          if grep -RFn "permissions: write-all" .github/workflows; then
+            echo "::error::write-all permissions are prohibited. Grant only the minimum explicit permissions required."
+            exit 1
+          fi
