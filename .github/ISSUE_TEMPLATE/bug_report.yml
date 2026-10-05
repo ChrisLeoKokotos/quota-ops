@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible problem in QuotaOps
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not report security vulnerabilities here; follow SECURITY.md instead. Remove secrets from all logs and screenshots.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reproducible sequence.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: QuotaOps version or commit
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, runtime, provider/tool, and relevant versions.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove tokens, cookies, API keys, private keys, account identifiers, and personal data.
