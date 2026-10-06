@@ -54,7 +54,7 @@ async function waitForUsagePayload(
           return;
         }
 
-        const contentType = response.headers()["content-type"] ?? "";
+        const contentType = (await response.headerValue("content-type")) ?? "";
         if (!contentType.includes("application/json")) return;
 
         const payload: unknown = await response.json();
@@ -111,7 +111,10 @@ export async function openClaudeLogin(
 
   await new Promise<void>((resolve) => {
     process.stdin.resume();
-    process.stdin.once("data", () => resolve());
+    process.stdin.once("data", () => {
+      process.stdin.pause();
+      resolve();
+    });
   });
 
   await context.close();
