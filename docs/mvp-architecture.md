@@ -14,23 +14,28 @@ The original use case involved five accounts, but the current UI supports adding
 Browser
   |
   +-- Next.js UI
+  |     |
+  |     +-- quota / recommendation logic
+  |     +-- browser localStorage
+  |     +-- optional Notification API
+  |     +-- optional browser speech recognition
   |
-  +-- quota / recommendation logic
-  |
-  +-- browser localStorage
-  |
-  +-- optional Notification API
-  |
-  +-- optional browser speech recognition
+  +-- http://127.0.0.1:4317 (optional)
+        |
+        +-- QuotaOps local collector
+              |
+              +-- isolated Dev 1 browser profile
+              +-- isolated Dev 2 browser profile
+              +-- ...
 ```
 
 There is currently:
 
-- no QuotaOps backend;
+- no hosted QuotaOps backend;
 - no hosted database;
 - no QuotaOps login;
 - no cloud synchronization;
-- no automatic Claude quota collector.
+- an optional experimental same-PC Claude quota collector.
 
 ## Current account model
 
@@ -120,18 +125,23 @@ A server, authentication system, and database would increase attack surface with
 
 The backend boundary should only be introduced when a concrete feature requires it.
 
-## Planned next boundary: local collector
+## Local collector boundary
 
-Automatic collection should live behind a narrow provider adapter.
+The repository now contains an experimental local collector.
 
-Preferred order:
+Each account is assigned a separate persistent Chrome / Edge profile. The user signs in interactively to the intended Claude account inside that profile. Background refreshes later reuse that local browser profile.
 
-1. documented / supported provider quota interface;
-2. otherwise a security-reviewed local collector;
-3. normalized quota metadata output only;
-4. no provider credential relay to SO HOMELY-operated infrastructure.
+The collector:
 
-A future collector may use Python if it remains the safest and most maintainable option.
+- binds only to `127.0.0.1:4317`;
+- returns normalized quota snapshots;
+- does not expose provider cookies or tokens through its API;
+- polls accounts sequentially to reduce local resource use;
+- reports login, availability, or unsupported-format failures explicitly.
+
+The Claude Team web usage response is not treated as a stable public API. The adapter is isolated so provider changes fail closed instead of corrupting the core quota model.
+
+See [local-collector.md](local-collector.md).
 
 ## Normalized future snapshot
 
