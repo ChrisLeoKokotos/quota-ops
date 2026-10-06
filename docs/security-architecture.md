@@ -161,14 +161,21 @@ Security rules:
 - browser profiles remain local to the user's machine;
 - no browser cookies, passwords, tokens, or Authorization headers are included in collector snapshots;
 - the HTTP service binds to `127.0.0.1`, not `0.0.0.0`;
-- CORS is restricted to local QuotaOps development origins;
-- provider responses are parsed into a narrow normalized quota schema;
+- the collector API requires a random 256-bit local token using constant-time comparison;
+- the token remains server-side and is not exposed to browser JavaScript;
+- direct browser access, unexpected Host values, and unexpected Origin values are rejected;
+- the Next.js server proxies collector snapshots through a same-origin route;
+- local request rate limiting reduces accidental or hostile request floods;
+- Windows ACLs or Unix file modes restrict collector state and browser profiles;
+- configured browser profiles must remain inside the protected QuotaOps profile root;
+- the Claude adapter accepts only the exact expected HTTPS Usage endpoint and rejects unrelated responses;
+- provider responses are size-limited and parsed into a narrow normalized quota schema;
 - unrecognized response formats fail as `unsupported`;
 - expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
 - profile directories and collector state must never be committed;
 - background collection must not require exporting provider session material.
 
-Before the collector is promoted from experimental status, its provider integration and local browser-profile behavior require real-account end-to-end validation and a focused security review.
+Before the collector is promoted from experimental status, its provider integration and local browser-profile behavior still require real-account end-to-end validation. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
 
 ## Security changes
 
