@@ -152,3 +152,5 @@ Restart both the collector and QuotaOps server after rotation.
 The provider adapter rejects unrelated Claude API responses, oversized usage responses, unexpected response formats, stale authentication, and profile directories outside the protected QuotaOps root.
 
 QuotaOps does not bypass provider authentication. If Claude requires a new login, the collector reports `login_required` and waits for an interactive login through the isolated browser profile.
+
+See [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries, residual risks, and release gates.
