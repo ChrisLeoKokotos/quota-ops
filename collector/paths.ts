@@ -7,10 +7,7 @@ export function getQuotaOpsHome(): string {
 }
 
 export function getCollectorConfigPath(): string {
-  const override = process.env.QUOTAOPS_COLLECTOR_CONFIG?.trim();
-  return override
-    ? resolve(override)
-    : join(getQuotaOpsHome(), "collector.json");
+  return join(getQuotaOpsHome(), "collector.json");
 }
 
 export function getProfileRoot(): string {
