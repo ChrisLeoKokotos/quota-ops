@@ -18,6 +18,9 @@ async function launchProfile(
   const options = {
     headless,
     viewport: { width: 1280, height: 900 },
+    acceptDownloads: false,
+    chromiumSandbox: true,
+    args: ["--disable-extensions"],
   };
 
   try {
