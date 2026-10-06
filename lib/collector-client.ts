@@ -1,6 +1,6 @@
 import type { QuotaAccount } from "./quota";
 
-const COLLECTOR_URL = "http://127.0.0.1:4317";
+const COLLECTOR_URL = "/api/collector";
 
 export type CollectorConnectionState =
   | "checking"
