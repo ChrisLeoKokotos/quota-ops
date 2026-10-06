@@ -5,6 +5,11 @@ import {
   loadCollectorConfig,
   saveCollectorConfig,
 } from "./config.ts";
+import {
+  ensureCollectorHomeSecurity,
+  getOrCreateCollectorToken,
+  rotateCollectorToken,
+} from "./security.ts";
 
 function usage(): never {
   process.stderr.write(
@@ -16,6 +21,8 @@ function usage(): never {
       "  list",
       "  add <id> <label>",
       "  login <id>",
+      "  security-check",
+      "  rotate-token",
       "",
     ].join("\n"),
   );
@@ -60,6 +67,24 @@ async function main(): Promise<void> {
 
     await saveCollectorConfig({ ...config, accounts });
     process.stdout.write(`Configured ${account.label}.\n`);
+    return;
+  }
+
+  if (command === "security-check") {
+    await ensureCollectorHomeSecurity();
+    await getOrCreateCollectorToken();
+    const config = await loadCollectorConfig();
+    process.stdout.write(
+      `Security check passed for ${config.accounts.length} configured account profile(s).\n`,
+    );
+    return;
+  }
+
+  if (command === "rotate-token") {
+    await rotateCollectorToken();
+    process.stdout.write(
+      "Collector token rotated. Restart the collector and QuotaOps server before continuing.\n",
+    );
     return;
   }
 
