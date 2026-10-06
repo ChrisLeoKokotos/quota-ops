@@ -29,6 +29,7 @@ export type AccountStatus =
   | "five_hour_limited"
   | "weekly_limited"
   | "exhausted"
+  | "needs_setup"
   | "refresh_required";
 
 export function clampPercent(value: number): number {
@@ -60,11 +61,13 @@ export function getAccountStatus(
 
   if (
     fiveHour === "refresh_required" ||
-    weekly === "refresh_required" ||
-    fiveHour === "unknown" ||
-    weekly === "unknown"
+    weekly === "refresh_required"
   ) {
     return "refresh_required";
+  }
+
+  if (fiveHour === "unknown" || weekly === "unknown") {
+    return "needs_setup";
   }
 
   if (fiveHour === "exhausted" && weekly === "exhausted") {
@@ -86,6 +89,7 @@ export function recommendationScore(
 
   if (
     status === "refresh_required" ||
+    status === "needs_setup" ||
     status === "weekly_limited" ||
     status === "five_hour_limited" ||
     status === "exhausted"
@@ -124,7 +128,7 @@ export function formatCountdown(resetAt: string | null, nowMs: number): string {
   if (!Number.isFinite(resetMs)) return "Unknown reset";
 
   const diffMs = resetMs - nowMs;
-  if (diffMs <= 0) return "Reset due — refresh snapshot";
+  if (diffMs <= 0) return "Reset reached";
 
   const totalMinutes = Math.ceil(diffMs / 60_000);
   const days = Math.floor(totalMinutes / 1_440);
