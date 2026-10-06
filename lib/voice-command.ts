@@ -62,6 +62,7 @@ export function parseVoiceUsageCommand(
   // Fail closed when the spoken command contains no percentage or is ambiguous.
   if (percentages.length !== 1) return null;
   const percentage = percentages[0];
+  if (percentage === undefined) return null;
 
   return {
     accountId: account.id,
