@@ -16,7 +16,7 @@ Each QuotaOps account receives a separate persistent Chrome / Edge profile direc
 
 QuotaOps does not copy browser cookies, passwords, or provider tokens into its own snapshot model.
 
-The collector reads only normalized quota metadata:
+The collector observes only the exact Claude organization Usage endpoint accepted by its strict adapter and then keeps only normalized quota metadata:
 
 - account label;
 - 5-hour usage percentage;
@@ -35,14 +35,9 @@ The collector HTTP service binds only to:
 
 It is not exposed to the LAN.
 
-The dashboard requests:
+The collector API requires a random 256-bit local bearer token stored under the protected QuotaOps home directory. The token is never exposed to browser JavaScript. The Next.js server reads it locally and proxies the dashboard snapshot through a same-origin route.
 
-```text
-GET /health
-GET /snapshot
-```
-
-CORS is restricted to the local QuotaOps development origins.
+Direct browser access to the collector is rejected, requests with unexpected Host / Origin values are rejected, and the collector applies a local request-rate limit.
 
 The browser profiles themselves still communicate with Claude / Anthropic because that is how the provider usage page is loaded. No SO HOMELY server is involved.
 
@@ -133,3 +128,27 @@ A failed account refresh does not expose credentials and does not make fabricate
 - Keep the HTTP collector bound to `127.0.0.1`.
 - Treat usage responses as untrusted input.
 - Close the interactive setup browser before starting the background collector for that account.
+
+## Security hardening
+
+Before daily use, run:
+
+```powershell
+npm run collector:setup -- security-check
+```
+
+This verifies the protected QuotaOps home, account profile paths, and local collector token.
+
+On Windows, QuotaOps applies an ACL to its local home directory for the current Windows identity, SYSTEM, and local Administrators. On Unix-like systems, directories are restricted to mode `0700` and token/config files to `0600`.
+
+To invalidate the local collector credential:
+
+```powershell
+npm run collector:setup -- rotate-token
+```
+
+Restart both the collector and QuotaOps server after rotation.
+
+The provider adapter rejects unrelated Claude API responses, oversized usage responses, unexpected response formats, stale authentication, and profile directories outside the protected QuotaOps root.
+
+QuotaOps does not bypass provider authentication. If Claude requires a new login, the collector reports `login_required` and waits for an interactive login through the isolated browser profile.
