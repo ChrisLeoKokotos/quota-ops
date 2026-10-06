@@ -62,6 +62,15 @@ export async function saveCollectorConfig(
   config: CollectorConfig,
 ): Promise<void> {
   await ensureCollectorHomeSecurity();
+
+  if (!isCollectorConfig(config)) {
+    throw new Error("Refusing to write an invalid collector configuration.");
+  }
+
+  for (const account of config.accounts) {
+    await assertSafeProfileDirectory(account.profileDir);
+  }
+
   const path = getCollectorConfigPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, JSON.stringify(config, null, 2) + "\n", {
