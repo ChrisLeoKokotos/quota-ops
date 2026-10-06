@@ -1,51 +1,139 @@
-# MVP architecture
+# MVP Architecture
+
+QuotaOps is a product created by **SO HOMELY**.
 
 ## Goal
 
-The first QuotaOps MVP solves one concrete problem: show the current Claude Team
-capacity of five independent accounts without opening each account to remember its
-5-hour and weekly reset windows.
+The current MVP solves one concrete operational problem: provide a single local view of multiple Claude Team accounts so a user can see 5-hour and weekly usage, know when each quota resets, and decide which account has usable capacity.
 
-## Scope
+The original use case involved five accounts, but the current UI supports adding and removing account entries rather than enforcing a fixed count.
 
-The MVP tracks, per account:
+## Current architecture
 
-- a local label such as `Dev 1`;
-- 5-hour usage percentage and exact reset timestamp;
-- weekly usage percentage and exact reset timestamp;
-- last local update time;
-- a derived availability state;
-- a best-capacity recommendation across the five accounts.
+```text
+Browser
+  |
+  +-- Next.js UI
+  |
+  +-- quota / recommendation logic
+  |
+  +-- browser localStorage
+  |
+  +-- optional Notification API
+  |
+  +-- optional browser speech recognition
+```
 
-If a reset timestamp is missing or already in the past, QuotaOps reports
-`refresh_required`. It does not invent new capacity.
+There is currently:
+
+- no QuotaOps backend;
+- no hosted database;
+- no QuotaOps login;
+- no cloud synchronization;
+- no automatic Claude quota collector.
+
+## Current account model
+
+Each account contains:
+
+- local account id;
+- local display label;
+- provider: currently Claude;
+- plan: currently Team;
+- 5-hour usage percentage;
+- 5-hour reset timestamp;
+- weekly usage percentage;
+- weekly reset timestamp;
+- local update timestamp.
+
+## Derived states
+
+QuotaOps derives states from stored metadata:
+
+- `available` — quota is usable;
+- `low` — at least one known quota window is near the low-capacity threshold;
+- `five_hour_limited` — 5-hour usage is exhausted before its reset;
+- `weekly_limited` — weekly usage is exhausted before its reset;
+- `exhausted` — both windows are exhausted;
+- `needs_setup` — required reset metadata is missing;
+- `refresh_required` — a known reset timestamp has passed and current usage must be refreshed.
+
+QuotaOps does not assume that a passed reset automatically means the account is available. It requires a fresh snapshot.
+
+## Recommendation model
+
+Accounts that are exhausted, incomplete, or stale are excluded from recommendation.
+
+For usable accounts, the current recommendation score weights:
+
+- weekly remaining capacity: 70%;
+- 5-hour remaining capacity: 30%.
+
+This is an MVP heuristic, not a provider guarantee.
+
+## Local persistence
+
+Current browser storage includes:
+
+- account metadata;
+- quota percentages;
+- reset timestamps;
+- update timestamps;
+- theme preference;
+- notification preference;
+- reset-notification deduplication state.
+
+Browser local storage is used only for non-secret operational metadata.
+
+## Notifications
+
+When enabled, QuotaOps checks for recently reached reset timestamps and can surface:
+
+- in-app notifications;
+- browser / OS notifications when permission is granted.
+
+This notification path depends on the app running. A future background collector is the intended place for reliable notifications while the UI is closed.
+
+## Voice input
+
+The current voice command parser supports quick usage-percentage updates against an existing account label and quota window.
+
+Example:
+
+```text
+Dev 1 weekly 82
+```
+
+The browser speech-recognition implementation may be local or remote depending on the browser / platform. The MVP does not provide its own speech backend.
+
+## Keyboard shortcuts
+
+The current UI provides:
+
+- `N` — add account;
+- `T` — toggle theme;
+- `?` — open shortcut help.
 
 ## Why there is no backend yet
 
-The first version is intentionally browser-local. The data model does not require a
-server, authentication, a database, or provider credentials. Adding those pieces
-before an automatic provider integration exists would increase attack surface without
-solving the core problem.
+A server, authentication system, and database would increase attack surface without solving the current manual-tracking problem.
 
-Snapshots are stored in browser `localStorage`. This is appropriate only for
-non-secret quota metadata. Passwords, API keys, session cookies, OAuth tokens,
-provider auth state, prompts, and conversation content must never be stored there.
+The backend boundary should only be introduced when a concrete feature requires it.
 
 ## Planned next boundary: local collector
 
-Automatic collection should be implemented behind a provider adapter boundary.
-The preferred order is:
+Automatic collection should live behind a narrow provider adapter.
 
-1. supported provider API or documented interface;
-2. a local collector that emits only normalized quota metadata;
-3. no credential relay to a QuotaOps-operated service.
+Preferred order:
 
-A future local collector may be a small Python process if Python provides the safest
-and most maintainable integration path. Its output contract should contain only
-account identity aliases, usage percentages, reset timestamps, source health, and
-collection time.
+1. documented / supported provider quota interface;
+2. otherwise a security-reviewed local collector;
+3. normalized quota metadata output only;
+4. no provider credential relay to SO HOMELY-operated infrastructure.
 
-## Normalized snapshot
+A future collector may use Python if it remains the safest and most maintainable option.
+
+## Normalized future snapshot
 
 ```json
 {
@@ -67,8 +155,8 @@ collection time.
 ## Security constraints
 
 - Local-first by default.
-- No Claude credentials in the repository or browser storage.
-- No hidden telemetry.
-- Treat provider-derived data as untrusted input.
-- Fail closed to `unknown` / `refresh_required` instead of fabricating capacity.
-- Keep provider-specific collection isolated from the core capacity model.
+- No provider credentials in repository or browser local storage.
+- No hidden product telemetry.
+- Treat provider-derived and voice-derived data as untrusted input.
+- Fail closed to `needs_setup` or `refresh_required` rather than fabricating capacity.
+- Keep provider-specific collection isolated from the core quota model.
