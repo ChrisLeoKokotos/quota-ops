@@ -49,6 +49,7 @@ const STATUS_COPY: Record<AccountStatus, string> = {
   five_hour_limited: "5h limited",
   weekly_limited: "Weekly max",
   exhausted: "Exhausted",
+  needs_setup: "Needs setup",
   refresh_required: "Refresh required",
 };
 
@@ -317,7 +318,11 @@ function QuotaRow({
 
       <div className="reset-copy">
         <strong>{formatCountdown(quotaWindow.resetAt, nowMs)}</strong>
-        <span>{formatResetTimestamp(quotaWindow.resetAt)}</span>
+        <span>
+          {getWindowState(quotaWindow, nowMs) === "refresh_required"
+            ? "Update current usage"
+            : formatResetTimestamp(quotaWindow.resetAt)}
+        </span>
       </div>
 
       <details className="inline-editor">
@@ -718,7 +723,7 @@ export function QuotaDashboard() {
   );
 
   const summary = useMemo(() => {
-    if (!nowMs) return { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0 };
+    if (!nowMs) return { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0, setup: 0 };
 
     return accounts.reduce(
       (acc, account) => {
@@ -727,9 +732,10 @@ export function QuotaDashboard() {
         if (status === "weekly_limited" || status === "exhausted") acc.weeklyMax += 1;
         if (status === "five_hour_limited" || status === "exhausted") acc.fiveHourMax += 1;
         if (status === "refresh_required") acc.refresh += 1;
+        if (status === "needs_setup") acc.setup += 1;
         return acc;
       },
-      { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0 },
+      { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0, setup: 0 },
     );
   }, [accounts, nowMs]);
 
@@ -946,12 +952,68 @@ export function QuotaDashboard() {
             </div>
           </section>
 
-          {summary.refresh > 0 ? (
+          {summary.refresh > 0 || summary.setup > 0 ? (
             <div className="notice" role="status">
-              <strong>{summary.refresh} account{summary.refresh === 1 ? "" : "s"} need fresh quota data.</strong>
-              <span>Set current usage and reset times before relying on capacity.</span>
+              <strong>
+                {summary.refresh > 0
+                  ? `${summary.refresh} account${summary.refresh === 1 ? "" : "s"} need updated usage.`
+                  : `${summary.setup} account${summary.setup === 1 ? "" : "s"} need setup.`}
+              </strong>
+              <span>
+                {summary.refresh > 0
+                  ? "A known reset time has passed. Enter the current quota snapshot."
+                  : "Add the missing reset times to make recommendations reliable."}
+              </span>
             </div>
           ) : null}
+
+          <section className="tips-panel" aria-label="Quota tips">
+            <div className="tips-heading">
+              <span className="page-kicker">Tips</span>
+              <h2>What needs attention</h2>
+            </div>
+            <div className="tips-list">
+              {accounts.length === 0 ? (
+                <div className="tip-item">Add your first account to start getting capacity tips.</div>
+              ) : (
+                <>
+                  {accounts
+                    .filter((account) => getAccountStatus(account, nowMs) === "weekly_limited")
+                    .slice(0, 2)
+                    .map((account) => (
+                      <div className="tip-item" key={`weekly-${account.id}`}>
+                        <strong>{account.label}</strong>
+                        <span>Weekly quota is maxed. It resets in {formatCountdown(account.weekly.resetAt, nowMs)}.</span>
+                      </div>
+                    ))}
+                  {accounts
+                    .filter((account) => getAccountStatus(account, nowMs) === "refresh_required")
+                    .slice(0, 2)
+                    .map((account) => (
+                      <div className="tip-item" key={`refresh-${account.id}`}>
+                        <strong>{account.label}</strong>
+                        <span>A known reset was reached. Update the current usage before relying on this account.</span>
+                      </div>
+                    ))}
+                  {accounts
+                    .filter((account) => getAccountStatus(account, nowMs) === "needs_setup")
+                    .slice(0, 2)
+                    .map((account) => (
+                      <div className="tip-item" key={`setup-${account.id}`}>
+                        <strong>{account.label}</strong>
+                        <span>Some reset times are missing. Complete setup for accurate status and recommendations.</span>
+                      </div>
+                    ))}
+                  {recommended ? (
+                    <div className="tip-item">
+                      <strong>{recommended.label}</strong>
+                      <span>Currently has the best usable capacity for the next task.</span>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </section>
 
           <section id="accounts" className="accounts-section">
             <div className="section-heading">
