@@ -94,7 +94,7 @@ npm run build
 
 QuotaOps now includes an **experimental same-PC collector** for multiple Claude accounts. Each account uses its own persistent local Chrome / Edge profile and the collector exposes normalized snapshots only on `127.0.0.1:4317`.
 
-The provider adapter observes the authenticated Claude Usage page and deliberately does not export cookies, passwords, or provider tokens into QuotaOps data.
+The local API is authenticated with a random local token that stays server-side, browser-direct access is rejected, profile paths are constrained to the protected QuotaOps home, and the provider adapter accepts only the exact expected Claude Usage response before normalizing quota metadata. It deliberately does not export cookies, passwords, or provider tokens into QuotaOps data.
 
 Setup instructions: [docs/local-collector.md](docs/local-collector.md).
 
