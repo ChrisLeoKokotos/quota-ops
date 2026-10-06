@@ -2,40 +2,84 @@
 
 Open-source quota and capacity management for AI agents.
 
-QuotaOps helps teams track usage limits, reset windows, and available capacity across AI accounts so work can be routed without guessing which account is close to a limit.
+**QuotaOps is a product created by SO HOMELY.**
 
-## MVP
+QuotaOps helps people and teams track AI-account usage limits, exact reset windows, and available capacity from one local workspace instead of checking each account manually.
 
-The first MVP focuses on one concrete workflow: **Claude Team capacity across five independent accounts**.
+## Current product state
 
-It tracks:
+QuotaOps is currently an MVP focused on **Claude Team** accounts.
 
-- 5-hour usage and exact reset time per account;
-- weekly usage and exact reset time per account;
-- available / low / limited / refresh-required states;
-- the best-capacity account for the next workload;
-- all MVP data locally in the browser.
+Today it supports:
 
-If a reset timestamp is missing or in the past, QuotaOps fails closed to **Refresh required** rather than assuming capacity has returned.
+- adding and removing real local account entries;
+- 5-hour usage percentage and exact reset time per account;
+- weekly usage percentage and exact reset time per account;
+- live reset countdowns;
+- account states such as Available, Low capacity, 5h limited, Weekly max, Needs setup, and Refresh required;
+- best-capacity recommendations;
+- contextual capacity tips;
+- browser / OS reset notifications while QuotaOps is running and notification permission is granted;
+- voice commands for quick usage updates when supported by the browser;
+- keyboard shortcuts;
+- light and dark themes;
+- browser-local persistence.
+
+There is **no QuotaOps backend, hosted database, account system, or cloud sync** in the current MVP.
+
+## Local-first data model
+
+Current application data is stored in browser local storage for the local QuotaOps origin. This includes account labels, usage percentages, reset timestamps, notification state, reset-notification history, and theme preference.
+
+QuotaOps does not intentionally store Claude passwords, API keys, OAuth tokens, session cookies, provider authentication state, prompts, source code, or conversations.
+
+Voice input uses the browser speech-recognition capability when available. Depending on the browser and operating system, speech recognition may use a remote service operated by the browser or platform vendor. QuotaOps does not send voice audio to a SO HOMELY backend.
+
+## Notifications
+
+Reset notifications are currently browser-based. They are designed to work while QuotaOps is running. Reliable notifications while the browser/app is fully closed are not part of the current MVP and are expected to become a responsibility of a future local collector/background process.
+
+## Keyboard shortcuts
+
+- `N` — add account
+- `T` — toggle light / dark theme
+- `?` — open shortcut help
+
+## Voice input
+
+When supported by the browser, voice input can update usage quickly. Example commands include:
+
+- `Dev 1 weekly 82`
+- `Dev 2 five hour 40`
+
+Voice input currently updates usage percentages only. Reset timestamps are still entered manually.
 
 ## Stack
 
 - Next.js 16.3.8
 - React 19.3
 - TypeScript 6.0
-- App Router
-- browser-local persistence for the first MVP
-
-There is intentionally **no backend yet**. The core quota model does not require credentials or a server. A future automatic provider collector will live behind a separate adapter boundary and may use Python where that is the safest integration path.
+- Next.js App Router
+- browser local storage
+- browser Notification API
+- browser speech-recognition API when available
 
 ## Run locally
 
+Recommended Node version: **22.21.0**.
+
 ```bash
+git clone https://github.com/ChrisLeoKokotos/quota-ops.git
+cd quota-ops
 npm install
 npm run dev
 ```
 
-Then open `http://localhost:3000`.
+Then open:
+
+```text
+http://localhost:3000
+```
 
 Validation:
 
@@ -45,16 +89,42 @@ npm test
 npm run build
 ```
 
-## Security posture
+## Architecture direction
 
-QuotaOps is local-first and credential-minimizing. Never commit or intentionally collect provider passwords, API keys, OAuth tokens, session cookies, local auth state, prompts, or conversation content.
+The current application deliberately has no backend.
 
-See [SECURITY.md](SECURITY.md) and [docs/security-architecture.md](docs/security-architecture.md).
+The next major architecture milestone is automatic quota collection behind a narrow provider-adapter boundary. The preferred order is:
 
-## Architecture
+1. a documented / supported provider interface where available;
+2. otherwise a security-reviewed local collector;
+3. normalized quota metadata only;
+4. no credential relay to SO HOMELY-operated infrastructure.
 
-See [docs/mvp-architecture.md](docs/mvp-architecture.md) for the MVP boundary and normalized quota snapshot contract.
+A future collector may use Python if that remains the safest and most maintainable implementation path.
+
+See [docs/mvp-architecture.md](docs/mvp-architecture.md) and [docs/security-architecture.md](docs/security-architecture.md).
+
+## Security and privacy
+
+QuotaOps is designed to be local-first and credential-minimizing.
+
+Read:
+
+- [SECURITY.md](SECURITY.md)
+- [PRIVACY.md](PRIVACY.md)
+- [docs/security-architecture.md](docs/security-architecture.md)
+- [docs/repository-security-settings.md](docs/repository-security-settings.md)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+## Project stewardship
+
+QuotaOps was created by **SO HOMELY** and is maintained through this public repository under the governance model described in [GOVERNANCE.md](GOVERNANCE.md).
+
+## License
+
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Claude and Anthropic are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic.
