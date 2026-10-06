@@ -166,17 +166,29 @@ export async function getOrCreateCollectorToken(): Promise<string> {
     if (nodeError.code !== "ENOENT") throw error;
 
     const token = generateToken();
-    await writeFile(path, token + "\n", {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
 
-    if (process.platform !== "win32") {
-      await chmod(path, 0o600);
+    try {
+      await writeFile(path, token + "\n", {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+
+      if (process.platform !== "win32") {
+        await chmod(path, 0o600);
+      }
+
+      return token;
+    } catch (createError) {
+      const createNodeError = createError as NodeJS.ErrnoException;
+      if (createNodeError.code !== "EEXIST") throw createError;
+
+      const existing = (await readFile(path, "utf8")).trim();
+      if (!isValidCollectorToken(existing)) {
+        throw new Error("Collector token file became invalid during startup.");
+      }
+      return existing;
     }
-
-    return token;
   }
 }
 
