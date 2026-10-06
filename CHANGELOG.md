@@ -8,6 +8,8 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 
 ### Added
 
+- Experimental same-PC multi-account collector with isolated local Chrome / Edge profiles, loopback-only snapshot service, and automatic dashboard synchronization.
+
 - Functional Claude Team quota dashboard.
 - Real local account creation, editing, and removal.
 - 5-hour and weekly usage tracking with exact reset timestamps.
