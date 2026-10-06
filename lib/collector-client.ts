@@ -51,6 +51,9 @@ export async function fetchCollectorSnapshot(
   const init: RequestInit = {
     method: "GET",
     cache: "no-store",
+    headers: {
+      "X-QuotaOps-Client": "dashboard",
+    },
   };
   if (signal) init.signal = signal;
 
