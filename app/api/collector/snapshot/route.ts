@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { getOrCreateCollectorToken } from "@/collector/security";
 
@@ -15,7 +15,34 @@ function collectorToken(): Promise<string> {
   return tokenPromise;
 }
 
-export async function GET(): Promise<NextResponse> {
+function isAllowedRequest(request: NextRequest): boolean {
+  const host = request.headers.get("host") ?? "";
+  const hostMatch = /^(localhost|127\.0\.0\.1):(\d{2,5})$/.exec(host);
+  if (!hostMatch) return false;
+
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
+      parsed.port === hostMatch[2] &&
+      parsed.protocol === "http:"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  if (!isAllowedRequest(request)) {
+    return NextResponse.json(
+      { error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   try {
     const token = await collectorToken();
     const response = await fetch(COLLECTOR_URL, {
@@ -33,6 +60,14 @@ export async function GET(): Promise<NextResponse> {
       return NextResponse.json(
         { error: "collector_unavailable" },
         { status: 503, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return NextResponse.json(
+        { error: "collector_invalid_response" },
+        { status: 502, headers: { "Cache-Control": "no-store" } },
       );
     }
 
