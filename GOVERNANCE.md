@@ -1,42 +1,64 @@
 # Governance
 
-QuotaOps currently uses a maintainer-led governance model.
+QuotaOps is a product created by **SO HOMELY** and currently uses a maintainer-led governance model.
 
-## Roles
+## Project stewardship
 
-### Maintainer
+SO HOMELY defines the product direction, security posture, brand identity, and release direction for QuotaOps.
+
+The current repository owner is the initial maintainer and repository administrator.
+
+## Maintainer responsibilities
 
 The maintainer is responsible for:
 
-- project direction and release decisions;
+- product and technical direction;
 - reviewing and merging pull requests;
-- security and dependency policy;
+- security and privacy policy;
+- dependency and supply-chain policy;
 - repository access and automation;
+- release decisions;
 - resolving contribution disputes;
 - appointing additional maintainers when appropriate.
 
-The current repository owner is the initial maintainer.
+## Contributors
 
-### Contributors
-
-Contributors may propose changes through issues and pull requests. Contribution does not automatically grant repository write, triage, maintain, or administrative access.
+Contributors may propose changes through issues and pull requests. Contribution does not automatically grant repository write, triage, maintain, administrative, brand, or trademark rights.
 
 ## Decision making
 
-Routine decisions are made through normal issue and pull-request review.
+Routine decisions are made through issue and pull-request review.
 
-For substantial changes—such as provider authentication behavior, network architecture, telemetry, persistent storage, plugin systems, or compatibility-breaking changes—the maintainer may require an issue or design discussion before implementation.
+Substantial changes require explicit maintainer approval before implementation when they affect:
+
+- provider authentication;
+- automatic quota collection;
+- local collectors or background processes;
+- network architecture;
+- browser permissions;
+- telemetry;
+- remote synchronization;
+- persistent storage format;
+- plugin / adapter systems;
+- compatibility-breaking behavior;
+- release and CI security.
 
 ## Repository access
 
-Repository privileges are granted explicitly and according to project need. Public visibility does not grant direct write access.
+Repository privileges are granted explicitly according to project need. Public visibility does not grant direct write access.
 
-Protected branches should require pull requests and review once repository rules are enabled.
+The default branch is protected through repository rules and pull-request checks.
 
 ## Security authority
 
-The maintainer may immediately revert, disable, or reject changes that create a credible security, privacy, licensing, or supply-chain risk.
+The maintainer may immediately revert, disable, or reject changes that create a credible security, privacy, licensing, supply-chain, or user-safety risk.
+
+## Brand stewardship
+
+The Apache License 2.0 governs licensed source code and project materials. It does not grant rights to falsely represent a fork or modified distribution as an official SO HOMELY / QuotaOps release.
+
+See [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Changes to governance
 
-This governance model may evolve as the contributor community grows. Material changes should be documented in this file.
+This governance model may evolve as the contributor community grows. Material changes should be documented here.
