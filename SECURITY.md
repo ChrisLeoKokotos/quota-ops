@@ -21,9 +21,11 @@ The current MVP:
 - stores quota metadata and preferences in browser local storage;
 - has no QuotaOps backend or hosted database;
 - has no QuotaOps authentication system;
-- does not automatically log in to Claude;
-- does not collect provider passwords, API keys, OAuth tokens, or session cookies;
+- does not automatically obtain or bypass Claude credentials;
+- can optionally reuse user-created local browser profiles for same-PC quota collection;
+- does not export provider passwords, API keys, OAuth tokens, or session cookies into QuotaOps snapshots;
 - does not upload quota data to SO HOMELY infrastructure;
+- exposes the optional collector only on `127.0.0.1:4317`;
 - uses browser notifications only after user permission;
 - can use browser speech recognition only after user action.
 
