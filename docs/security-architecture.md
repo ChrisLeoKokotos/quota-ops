@@ -10,14 +10,14 @@ The current MVP consists of a browser-rendered Next.js application and local quo
 
 It has:
 
-- no QuotaOps backend;
+- no hosted QuotaOps backend;
 - no hosted database;
 - no cloud sync;
 - no QuotaOps user authentication;
-- no automatic provider login;
-- no automatic provider quota collector.
+- no automatic credential collection;
+- an optional experimental same-PC local collector.
 
-Non-secret quota metadata and preferences are stored in browser local storage.
+Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory and exposes normalized snapshots only over a loopback-only HTTP service.
 
 ## Security goals
 
@@ -152,21 +152,23 @@ New dependencies should be evaluated for:
 - license compatibility;
 - whether the same functionality can reasonably be implemented without the dependency.
 
-## Future collector security
+## Local collector security
 
-A local collector must have a separately documented threat model before release.
+The experimental local collector uses separate persistent browser profiles per account.
 
-At minimum it should define:
+Security rules:
 
-- how provider sessions are accessed;
-- what data leaves the provider boundary;
-- local IPC / API binding and authentication;
-- storage locations and file permissions;
-- update mechanism;
-- log redaction;
-- browser automation behavior if used;
-- handling of expired provider sessions;
-- background notification behavior.
+- browser profiles remain local to the user's machine;
+- no browser cookies, passwords, tokens, or Authorization headers are included in collector snapshots;
+- the HTTP service binds to `127.0.0.1`, not `0.0.0.0`;
+- CORS is restricted to local QuotaOps development origins;
+- provider responses are parsed into a narrow normalized quota schema;
+- unrecognized response formats fail as `unsupported`;
+- expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
+- profile directories and collector state must never be committed;
+- background collection must not require exporting provider session material.
+
+Before the collector is promoted from experimental status, its provider integration and local browser-profile behavior require real-account end-to-end validation and a focused security review.
 
 ## Security changes
 
