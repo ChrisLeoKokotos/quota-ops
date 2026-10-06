@@ -80,6 +80,11 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
     if (!isCollectorConfig(parsed)) {
       throw new Error(`Invalid QuotaOps collector config: ${path}`);
     }
+
+    for (const account of parsed.accounts) {
+      await assertSafeProfileDirectory(account.profileDir);
+    }
+
     return parsed;
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
