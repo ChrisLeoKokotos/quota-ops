@@ -2,24 +2,17 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { collectClaudeUsageFromBrowser } from "./browser.ts";
 import { loadCollectorConfig } from "./config.ts";
+import {
+  collectorTokenMatches,
+  getOrCreateCollectorToken,
+} from "./security.ts";
 import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
 } from "./types.ts";
 
 const HOST = "127.0.0.1";
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-]);
-
-function setCors(request: IncomingMessage, response: ServerResponse): void {
-  const origin = request.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    response.setHeader("Access-Control-Allow-Origin", origin);
-    response.setHeader("Vary", "Origin");
-  }
-}
+const MAX_REQUESTS_PER_MINUTE = 120;
 
 function sendJson(
   request: IncomingMessage,
@@ -27,16 +20,24 @@ function sendJson(
   status: number,
   value: unknown,
 ): void {
-  setCors(request, response);
   response.statusCode = status;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  response.setHeader("Referrer-Policy", "no-referrer");
   response.end(JSON.stringify(value));
+}
+
+function suppliedBearerToken(request: IncomingMessage): string {
+  const header = request.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return "";
+  return header.slice("Bearer ".length).trim();
 }
 
 async function main(): Promise<void> {
   const config = await loadCollectorConfig();
+  const collectorToken = await getOrCreateCollectorToken();
   let results: CollectorAccountResult[] = [];
   let collecting = false;
 
@@ -65,12 +66,35 @@ async function main(): Promise<void> {
     }
   };
 
+  let rateWindowStartedAt = Date.now();
+  let requestCount = 0;
+
   const server = createServer((request, response) => {
-    if (request.method === "OPTIONS") {
-      setCors(request, response);
-      response.statusCode = 204;
-      response.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-      response.end();
+    const now = Date.now();
+    if (now - rateWindowStartedAt >= 60_000) {
+      rateWindowStartedAt = now;
+      requestCount = 0;
+    }
+
+    requestCount += 1;
+    if (requestCount > MAX_REQUESTS_PER_MINUTE) {
+      sendJson(request, response, 429, { error: "rate_limited" });
+      return;
+    }
+
+    const expectedHost = `${HOST}:${config.port}`;
+    if (request.headers.host !== expectedHost) {
+      sendJson(request, response, 400, { error: "invalid_host" });
+      return;
+    }
+
+    if (request.headers.origin) {
+      sendJson(request, response, 403, { error: "browser_direct_access_denied" });
+      return;
+    }
+
+    if (!collectorTokenMatches(collectorToken, suppliedBearerToken(request))) {
+      sendJson(request, response, 401, { error: "unauthorized" });
       return;
     }
 
@@ -83,7 +107,6 @@ async function main(): Promise<void> {
       sendJson(request, response, 200, {
         status: "ok",
         collecting,
-        configuredAccounts: config.accounts.length,
       });
       return;
     }
