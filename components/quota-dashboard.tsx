@@ -272,6 +272,12 @@ function formatResetTimestamp(iso: string | null): string {
   }).format(date);
 }
 
+function hasResetReached(resetAt: string | null, nowMs: number): boolean {
+  if (!resetAt) return false;
+  const resetMs = Date.parse(resetAt);
+  return Number.isFinite(resetMs) && resetMs <= nowMs;
+}
+
 function formatUpdatedAt(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "Unknown";
@@ -335,7 +341,7 @@ function QuotaRow({
       <div className="reset-copy">
         <strong>{formatCountdown(quotaWindow.resetAt, nowMs)}</strong>
         <span>
-          {getWindowState(quotaWindow, nowMs) === "refresh_required"
+          {hasResetReached(quotaWindow.resetAt, nowMs)
             ? "Update current usage"
             : formatResetTimestamp(quotaWindow.resetAt)}
         </span>
