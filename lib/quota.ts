@@ -14,6 +14,7 @@ export interface QuotaAccount {
   fiveHour: QuotaWindow;
   weekly: QuotaWindow;
   updatedAt: string;
+  source?: "manual" | "collector";
 }
 
 export type WindowState =
