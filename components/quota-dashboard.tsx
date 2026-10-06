@@ -21,6 +21,10 @@ import {
   fetchCollectorSnapshot,
   type CollectorConnectionState,
 } from "@/lib/collector-client";
+import {
+  parseVoiceUsageCommand,
+  voiceWindowLabel,
+} from "@/lib/voice-command";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
@@ -34,12 +38,18 @@ interface SpeechRecognitionEventLike {
   results: ArrayLike<{ 0: { transcript: string } }>;
 }
 
+interface SpeechRecognitionErrorEventLike {
+  error: string;
+  message?: string;
+}
+
 interface SpeechRecognitionLike {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
+  onstart: (() => void) | null;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -610,30 +620,6 @@ function AddAccountDialog({
   );
 }
 
-function parseVoiceUsageCommand(
-  transcript: string,
-  accounts: QuotaAccount[],
-): { accountId: string; window: "fiveHour" | "weekly"; usedPercent: number } | null {
-  const normalized = transcript.toLowerCase().replace(",", ".");
-  const account = accounts.find((candidate) =>
-    normalized.includes(candidate.label.toLowerCase()),
-  );
-  if (!account) return null;
-
-  const window =
-    normalized.includes("weekly") || normalized.includes("week") || normalized.includes("βδομα")
-      ? "weekly"
-      : normalized.includes("5") || normalized.includes("five") || normalized.includes("πεντ")
-        ? "fiveHour"
-        : null;
-
-  const numbers = normalized.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-  const percentage = numbers.find((value) => value >= 0 && value <= 100);
-
-  if (!window || percentage === undefined) return null;
-  return { accountId: account.id, window, usedPercent: clampPercent(percentage) };
-}
-
 export function QuotaDashboard() {
   const [accounts, setAccounts] = useState<QuotaAccount[]>([]);
   const [nowMs, setNowMs] = useState(0);
@@ -855,7 +841,41 @@ export function QuotaDashboard() {
     }
   };
 
-  const startVoiceCommand = () => {
+  const showToast = (message: string) => {
+    setToasts((current) => [
+      ...current,
+      { id: `${Date.now()}-${Math.random()}`, message },
+    ]);
+  };
+
+  const ensureMicrophonePermission = async (): Promise<boolean> => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return true;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of stream.getTracks()) track.stop();
+      return true;
+    } catch (error) {
+      const name =
+        error instanceof DOMException ? error.name : "MicrophoneError";
+
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        showToast(
+          "Microphone access is blocked. Allow microphone permission for localhost in your browser, then try again.",
+        );
+      } else if (name === "NotFoundError") {
+        showToast("No microphone was detected on this device.");
+      } else {
+        showToast("Could not access the microphone. Check your browser and Windows microphone settings.");
+      }
+
+      return false;
+    }
+  };
+
+  const startVoiceCommand = async () => {
     const speechWindow = window as typeof window & {
       SpeechRecognition?: SpeechRecognitionConstructor;
       webkitSpeechRecognition?: SpeechRecognitionConstructor;
@@ -864,31 +884,43 @@ export function QuotaDashboard() {
       speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 
     if (!Recognition) {
-      setToasts((current) => [
-        ...current,
-        { id: String(Date.now()), message: "Voice input is not supported by this browser." },
-      ]);
+      showToast(
+        "Voice input is not supported by this browser. Try the latest Chrome or Edge.",
+      );
+      return;
+    }
+
+    if (!(await ensureMicrophonePermission())) {
+      setListening(false);
       return;
     }
 
     speechRef.current?.stop();
     const recognition = new Recognition();
     speechRef.current = recognition;
+
     recognition.lang = navigator.language || "en-US";
     recognition.interimResults = false;
     recognition.continuous = false;
+
+    recognition.onstart = () => {
+      setListening(true);
+      showToast('Listening… Try: "Dev 1 weekly 82".');
+    };
+
     recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      const transcript = event.results[0]?.[0]?.transcript?.trim() ?? "";
+      if (!transcript) {
+        showToast("I did not catch any speech. Try again and speak close to the microphone.");
+        return;
+      }
+
       const command = parseVoiceUsageCommand(transcript, accounts);
 
       if (!command) {
-        setToasts((current) => [
-          ...current,
-          {
-            id: String(Date.now()),
-            message: 'Try: "Dev 1 weekly 82" or "Dev 2 five hour 40".',
-          },
-        ]);
+        showToast(
+          `Heard: "${transcript}". Try: "Dev 1 weekly 82" or "Dev 2 five hour 40".`,
+        );
         return;
       }
 
@@ -905,11 +937,45 @@ export function QuotaDashboard() {
           };
         }),
       );
+
+      showToast(
+        `Updated ${command.accountLabel} ${voiceWindowLabel(command.window)} to ${command.usedPercent}%.`,
+      );
     };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    setListening(true);
-    recognition.start();
+
+    recognition.onerror = (event) => {
+      setListening(false);
+
+      const copy: Record<string, string> = {
+        "not-allowed":
+          "Microphone permission was denied. Allow microphone access for localhost and try again.",
+        "service-not-allowed":
+          "The browser speech-recognition service is blocked or unavailable.",
+        "audio-capture":
+          "The browser could not capture microphone audio. Check Windows microphone permissions.",
+        "no-speech":
+          "No speech was detected. Try again and speak after Listening appears.",
+        network:
+          "Speech recognition could not reach the browser speech service. Voice input may require internet access.",
+        aborted: "Voice input was stopped.",
+      };
+
+      showToast(
+        copy[event.error] ??
+          `Voice input failed (${event.error}). Try Chrome/Edge and check microphone permissions.`,
+      );
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      setListening(false);
+      showToast("Voice input could not start. Wait a moment and try again.");
+    }
   };
 
   const removeAccount = (account: QuotaAccount) => {
@@ -1008,7 +1074,7 @@ export function QuotaDashboard() {
               <button
                 className="secondary-button"
                 type="button"
-                onClick={startVoiceCommand}
+                onClick={() => void startVoiceCommand()}
                 aria-pressed={listening}
               >
                 <MicIcon />
