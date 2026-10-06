@@ -119,6 +119,11 @@ async function main(): Promise<void> {
     sendJson(request, response, 404, { error: "not_found" });
   });
 
+  server.requestTimeout = 5_000;
+  server.headersTimeout = 5_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 32;
+
   server.listen(config.port, HOST, () => {
     process.stdout.write(
       `QuotaOps collector listening on http://${HOST}:${config.port}\n`,
