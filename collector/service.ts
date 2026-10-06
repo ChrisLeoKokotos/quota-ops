@@ -70,18 +70,6 @@ async function main(): Promise<void> {
   let requestCount = 0;
 
   const server = createServer((request, response) => {
-    const now = Date.now();
-    if (now - rateWindowStartedAt >= 60_000) {
-      rateWindowStartedAt = now;
-      requestCount = 0;
-    }
-
-    requestCount += 1;
-    if (requestCount > MAX_REQUESTS_PER_MINUTE) {
-      sendJson(request, response, 429, { error: "rate_limited" });
-      return;
-    }
-
     const expectedHost = `${HOST}:${config.port}`;
     if (request.headers.host !== expectedHost) {
       sendJson(request, response, 400, { error: "invalid_host" });
@@ -95,6 +83,18 @@ async function main(): Promise<void> {
 
     if (!collectorTokenMatches(collectorToken, suppliedBearerToken(request))) {
       sendJson(request, response, 401, { error: "unauthorized" });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - rateWindowStartedAt >= 60_000) {
+      rateWindowStartedAt = now;
+      requestCount = 0;
+    }
+
+    requestCount += 1;
+    if (requestCount > MAX_REQUESTS_PER_MINUTE) {
+      sendJson(request, response, 429, { error: "rate_limited" });
       return;
     }
 
