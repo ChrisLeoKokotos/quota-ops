@@ -9,9 +9,9 @@
   --text: #202123;
   --muted: #6f7075;
   --subtle: #9b9ca1;
-  --accent: #10a37f;
-  --accent-hover: #0d8f70;
-  --accent-soft: #e8f6f1;
+  --accent: #202123;
+  --accent-hover: #000000;
+  --accent-soft: #ececee;
   --warn: #b7791f;
   --warn-soft: #fff8e8;
   --danger: #c94b52;
@@ -32,9 +32,9 @@
   --text: #ececec;
   --muted: #b4b4b4;
   --subtle: #8b8b8b;
-  --accent: #19c37d;
-  --accent-hover: #15a96c;
-  --accent-soft: rgba(25, 195, 125, 0.12);
+  --accent: #f4f4f4;
+  --accent-hover: #ffffff;
+  --accent-soft: rgba(255, 255, 255, 0.10);
   --warn: #e2a84b;
   --warn-soft: rgba(226, 168, 75, 0.10);
   --danger: #ef6b73;
@@ -252,7 +252,7 @@ a {
   padding: 0 13px;
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: white;
+  color: var(--bg);
   font-size: 0.82rem;
 }
 
@@ -957,5 +957,89 @@ input:focus {
 
   .modal-actions button {
     width: 100%;
+  }
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.secondary-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.shortcut-card {
+  width: min(420px, 100%);
+}
+
+.shortcut-list {
+  display: grid;
+  gap: 4px;
+}
+
+.shortcut-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.shortcut-list > div:last-child {
+  border-bottom: 0;
+}
+
+kbd {
+  min-width: 30px;
+  padding: 4px 7px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-align: center;
+}
+
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 140;
+  display: grid;
+  width: min(360px, calc(100vw - 40px));
+  gap: 8px;
+}
+
+.toast {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.16);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.toast:hover {
+  background: var(--surface-hover);
+}
+
+@media (max-width: 760px) {
+  .header-actions {
+    flex-wrap: wrap;
+    justify-self: start;
   }
 }
