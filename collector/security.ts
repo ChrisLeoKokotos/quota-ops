@@ -8,6 +8,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  realpath,
   writeFile,
 } from "node:fs/promises";
 import { userInfo } from "node:os";
@@ -73,7 +74,9 @@ async function hardenWindowsDirectory(path: string): Promise<void> {
   ]);
 }
 
-export async function ensureCollectorHomeSecurity(): Promise<void> {
+let hardeningPromise: Promise<void> | null = null;
+
+async function hardenCollectorHome(): Promise<void> {
   const home = getQuotaOpsHome();
   await mkdir(home, { recursive: true, mode: 0o700 });
   await rejectSymlink(home);
@@ -93,6 +96,11 @@ export async function ensureCollectorHomeSecurity(): Promise<void> {
   }
 }
 
+export function ensureCollectorHomeSecurity(): Promise<void> {
+  hardeningPromise ??= hardenCollectorHome();
+  return hardeningPromise;
+}
+
 export async function assertSafeProfileDirectory(
   profileDir: string,
 ): Promise<void> {
@@ -102,6 +110,14 @@ export async function assertSafeProfileDirectory(
 
   await rejectSymlink(profileDir);
   await mkdir(profileDir, { recursive: true, mode: 0o700 });
+
+  const [realRoot, realProfile] = await Promise.all([
+    realpath(getProfileRoot()),
+    realpath(profileDir),
+  ]);
+  if (!isPathWithin(realRoot, realProfile)) {
+    throw new Error("Collector profile resolves outside the protected QuotaOps profile root.");
+  }
 
   if (process.platform !== "win32") {
     await chmod(profileDir, 0o700);
