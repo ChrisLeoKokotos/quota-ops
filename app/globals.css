@@ -1100,3 +1100,21 @@ kbd {
     gap: 4px;
   }
 }
+
+.auto-sync-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 560;
+}
+
+.collector-status[data-state="connected"] .collector-dot {
+  background: var(--accent);
+}
+
+.collector-status[data-state="checking"] .collector-dot {
+  background: var(--warn);
+}
+
+.collector-status[data-state="offline"] .collector-dot {
+  background: var(--subtle);
+}
