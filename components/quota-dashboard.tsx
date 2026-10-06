@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   clampPercent,
@@ -13,10 +13,35 @@ import {
   type QuotaWindow,
 } from "@/lib/quota";
 
+import {
+  getDueResetEvents,
+  resetWindowLabel,
+} from "@/lib/reset-notifications";
+
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
+const NOTIFICATIONS_KEY = "quotaops:notifications";
+const SEEN_RESETS_KEY = "quotaops:seen-resets";
 
 type Theme = "light" | "dark";
+type Toast = { id: string; message: string };
+
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<{ 0: { transcript: string } }>;
+}
+
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 const STATUS_COPY: Record<AccountStatus, string> = {
   available: "Available",
@@ -90,6 +115,33 @@ function MoonIcon() {
   );
 }
 
+function BellIcon() {
+  return (
+    <SvgIcon size={17}>
+      <path d="M6.5 9.5a5.5 5.5 0 0 1 11 0v3.2l1.5 2.4H5l1.5-2.4V9.5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+      <path d="M10 18h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    </SvgIcon>
+  );
+}
+
+function MicIcon() {
+  return (
+    <SvgIcon size={17}>
+      <rect x="9" y="3.5" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v3M9.5 20h5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    </SvgIcon>
+  );
+}
+
+function KeyboardIcon() {
+  return (
+    <SvgIcon size={17}>
+      <rect x="3.5" y="6.5" width="17" height="11" rx="2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 13.5h8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </SvgIcon>
+  );
+}
+
 function TrashIcon() {
   return (
     <SvgIcon size={15}>
@@ -141,6 +193,27 @@ function loadAccounts(): QuotaAccount[] {
     }));
   } catch {
     return [];
+  }
+}
+
+function loadBoolean(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function loadSeenResets(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(SEEN_RESETS_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? new Set(parsed)
+      : new Set();
+  } catch {
+    return new Set();
   }
 }
 
@@ -516,12 +589,42 @@ function AddAccountDialog({
   );
 }
 
+function parseVoiceUsageCommand(
+  transcript: string,
+  accounts: QuotaAccount[],
+): { accountId: string; window: "fiveHour" | "weekly"; usedPercent: number } | null {
+  const normalized = transcript.toLowerCase().replace(",", ".");
+  const account = accounts.find((candidate) =>
+    normalized.includes(candidate.label.toLowerCase()),
+  );
+  if (!account) return null;
+
+  const window =
+    normalized.includes("weekly") || normalized.includes("week") || normalized.includes("βδομα")
+      ? "weekly"
+      : normalized.includes("5") || normalized.includes("five") || normalized.includes("πεντ")
+        ? "fiveHour"
+        : null;
+
+  const numbers = normalized.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const percentage = numbers.find((value) => value >= 0 && value <= 100);
+
+  if (!window || percentage === undefined) return null;
+  return { accountId: account.id, window, usedPercent: clampPercent(percentage) };
+}
+
 export function QuotaDashboard() {
   const [accounts, setAccounts] = useState<QuotaAccount[]>([]);
   const [nowMs, setNowMs] = useState(0);
   const [ready, setReady] = useState(false);
   const [theme, setTheme] = useState<Theme>("light");
   const [addOpen, setAddOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const seenResetsRef = useRef<Set<string>>(new Set());
+  const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
   useEffect(() => {
     setAccounts(loadAccounts());
@@ -529,6 +632,8 @@ export function QuotaDashboard() {
     setTheme(initialTheme);
     document.documentElement.dataset.theme = initialTheme;
     setNowMs(Date.now());
+    setNotificationsEnabled(loadBoolean(NOTIFICATIONS_KEY));
+    seenResetsRef.current = loadSeenResets();
     setReady(true);
 
     const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
@@ -553,6 +658,59 @@ export function QuotaDashboard() {
       // Theme still applies for the current session.
     }
   }, [theme, ready]);
+
+  useEffect(() => {
+    if (!ready || !notificationsEnabled || !nowMs) return;
+
+    const due = getDueResetEvents(accounts, nowMs, seenResetsRef.current);
+    if (due.length === 0) return;
+
+    for (const event of due) {
+      seenResetsRef.current.add(event.key);
+      const message = `${event.accountLabel}: ${resetWindowLabel(event.window)} reset is due.`;
+      setToasts((current) => [...current, { id: event.key, message }]);
+
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("QuotaOps", { body: message });
+      }
+    }
+
+    try {
+      window.localStorage.setItem(
+        SEEN_RESETS_KEY,
+        JSON.stringify([...seenResetsRef.current]),
+      );
+    } catch {
+      // In-app notifications still work.
+    }
+  }, [accounts, notificationsEnabled, nowMs, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+      if (typing) return;
+
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setAddOpen(true);
+      } else if (event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        setTheme((current) => (current === "light" ? "dark" : "light"));
+      } else if (event.key === "?") {
+        event.preventDefault();
+        setShortcutHelpOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [ready]);
 
   const recommended = useMemo(
     () => (nowMs ? getRecommendedAccount(accounts, nowMs) : null),
@@ -579,6 +737,95 @@ export function QuotaDashboard() {
     setAccounts((current) =>
       current.map((account) => (account.id === next.id ? next : account)),
     );
+  };
+
+  const enableNotifications = async () => {
+    if (!("Notification" in window)) {
+      setToasts((current) => [
+        ...current,
+        { id: String(Date.now()), message: "Notifications are not supported by this browser." },
+      ]);
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    const enabled = permission === "granted";
+    setNotificationsEnabled(enabled);
+    try {
+      window.localStorage.setItem(NOTIFICATIONS_KEY, String(enabled));
+    } catch {
+      // Preference still applies for the current session.
+    }
+  };
+
+  const toggleNotifications = () => {
+    if (!notificationsEnabled) {
+      void enableNotifications();
+      return;
+    }
+    setNotificationsEnabled(false);
+    try {
+      window.localStorage.setItem(NOTIFICATIONS_KEY, "false");
+    } catch {
+      // Preference still applies for the current session.
+    }
+  };
+
+  const startVoiceCommand = () => {
+    const speechWindow = window as typeof window & {
+      SpeechRecognition?: SpeechRecognitionConstructor;
+      webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    };
+    const Recognition =
+      speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+
+    if (!Recognition) {
+      setToasts((current) => [
+        ...current,
+        { id: String(Date.now()), message: "Voice input is not supported by this browser." },
+      ]);
+      return;
+    }
+
+    speechRef.current?.stop();
+    const recognition = new Recognition();
+    speechRef.current = recognition;
+    recognition.lang = navigator.language || "en-US";
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      const command = parseVoiceUsageCommand(transcript, accounts);
+
+      if (!command) {
+        setToasts((current) => [
+          ...current,
+          {
+            id: String(Date.now()),
+            message: 'Try: "Dev 1 weekly 82" or "Dev 2 five hour 40".',
+          },
+        ]);
+        return;
+      }
+
+      setAccounts((current) =>
+        current.map((account) => {
+          if (account.id !== command.accountId) return account;
+          return {
+            ...account,
+            [command.window]: {
+              ...account[command.window],
+              usedPercent: command.usedPercent,
+            },
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+      );
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    setListening(true);
+    recognition.start();
   };
 
   const removeAccount = (account: QuotaAccount) => {
@@ -624,6 +871,24 @@ export function QuotaDashboard() {
               <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>
             </button>
 
+            <button
+              className="theme-button"
+              type="button"
+              onClick={toggleNotifications}
+            >
+              <BellIcon />
+              <span>{notificationsEnabled ? "Notifications on" : "Enable notifications"}</span>
+            </button>
+
+            <button
+              className="theme-button"
+              type="button"
+              onClick={() => setShortcutHelpOpen(true)}
+            >
+              <KeyboardIcon />
+              <span>Keyboard shortcuts</span>
+            </button>
+
             <div className="collector-status">
               <span className="collector-dot" aria-hidden="true" />
               <div>
@@ -645,10 +910,21 @@ export function QuotaDashboard() {
               </p>
             </div>
 
-            <button className="primary-button add-account-button" type="button" onClick={() => setAddOpen(true)}>
-              <PlusIcon />
-              Add account
-            </button>
+            <div className="header-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={startVoiceCommand}
+                aria-pressed={listening}
+              >
+                <MicIcon />
+                {listening ? "Listening…" : "Voice input"}
+              </button>
+              <button className="primary-button add-account-button" type="button" onClick={() => setAddOpen(true)}>
+                <PlusIcon />
+                Add account
+              </button>
+            </div>
           </section>
 
           <section className="metrics" aria-label="Capacity summary">
@@ -730,6 +1006,38 @@ export function QuotaDashboard() {
         onClose={() => setAddOpen(false)}
         onAdd={(account) => setAccounts((current) => [...current, account])}
       />
+
+      {shortcutHelpOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShortcutHelpOpen(false)}>
+          <div className="modal-card shortcut-card" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-heading">
+              <div>
+                <span className="page-kicker">Productivity</span>
+                <h2>Keyboard shortcuts</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setShortcutHelpOpen(false)} aria-label="Close">×</button>
+            </div>
+            <div className="shortcut-list">
+              <div><span>Add account</span><kbd>N</kbd></div>
+              <div><span>Toggle theme</span><kbd>T</kbd></div>
+              <div><span>Open shortcuts</span><kbd>?</kbd></div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((toast) => (
+          <button
+            className="toast"
+            key={toast.id}
+            type="button"
+            onClick={() => setToasts((current) => current.filter((item) => item.id !== toast.id))}
+          >
+            {toast.message}
+          </button>
+        ))}
+      </div>
     </>
   );
 }
