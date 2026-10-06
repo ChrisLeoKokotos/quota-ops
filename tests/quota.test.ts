@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   getAccountStatus,
   getRecommendedAccount,
+  getWindowState,
+  recommendationScore,
   type QuotaAccount,
 } from "../lib/quota.ts";
 
