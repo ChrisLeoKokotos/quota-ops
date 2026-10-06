@@ -42,6 +42,13 @@ test("five-hour exhaustion blocks an account", () => {
   );
 });
 
+test("missing reset timestamps require setup instead of stale-refresh messaging", () => {
+  const incomplete = account("dev-setup", 0, 20);
+  incomplete.fiveHour.resetAt = null;
+
+  assert.equal(getAccountStatus(incomplete, NOW), "needs_setup");
+});
+
 test("expired reset timestamps require refresh instead of inventing capacity", () => {
   const stale = account("dev-3", 60, 60);
   stale.fiveHour.resetAt = "2026-10-05T23:00:00.000Z";
