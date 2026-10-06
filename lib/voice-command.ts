@@ -1,4 +1,4 @@
-import { clampPercent, type QuotaAccount } from "./quota";
+import { clampPercent, type QuotaAccount } from "./quota.ts";
 
 export type VoiceQuotaWindow = "fiveHour" | "weekly";
 
