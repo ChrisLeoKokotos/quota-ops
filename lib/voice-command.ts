@@ -37,19 +37,31 @@ export function parseVoiceUsageCommand(
   );
   if (!account) return null;
 
-  const window: VoiceQuotaWindow | null =
-    WEEKLY_WORDS.some((word) => normalized.includes(word))
-      ? "weekly"
-      : FIVE_HOUR_WORDS.some((word) => normalized.includes(word))
-        ? "fiveHour"
-        : null;
+  const weeklyWord = WEEKLY_WORDS.find((word) => normalized.includes(word));
+  const fiveHourWord = FIVE_HOUR_WORDS.find((word) => normalized.includes(word));
+
+  const window: VoiceQuotaWindow | null = weeklyWord
+    ? "weekly"
+    : fiveHourWord
+      ? "fiveHour"
+      : null;
 
   if (!window) return null;
 
-  const numbers = normalized.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-  const percentage = numbers.find((value) => value >= 0 && value <= 100);
+  const matchedWindowWord = weeklyWord ?? fiveHourWord;
+  if (!matchedWindowWord) return null;
 
-  if (percentage === undefined) return null;
+  const commandBody = normalized
+    .replace(account.label.toLowerCase(), " ")
+    .replace(matchedWindowWord, " ");
+
+  const percentages = (commandBody.match(/\d+(?:\.\d+)?/g) ?? [])
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 100);
+
+  // Fail closed when the spoken command contains no percentage or is ambiguous.
+  if (percentages.length !== 1) return null;
+  const percentage = percentages[0];
 
   return {
     accountId: account.id,
