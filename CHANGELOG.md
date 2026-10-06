@@ -39,6 +39,9 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 
 ### Security
 
+- Hardened the local collector with a random 256-bit API token, loopback-only authenticated access, strict Host/Origin checks, rate limiting, HTTP timeouts, protected profile roots, Windows ACL / Unix permission hardening, exact provider Usage endpoint filtering, and response-size limits.
+- Added Content Security Policy and corrected microphone permissions to allow only the QuotaOps origin.
+- Added production dependency audit and pinned CodeQL analysis to CI.
 - Local-first MVP with no QuotaOps backend, hosted database, cloud sync, or provider credential storage.
 - GitHub Actions use read-only permissions where applicable and immutable action SHAs.
 - Secret Protection, Push Protection, dependency review, and repository branch protections are part of the repository security baseline.
