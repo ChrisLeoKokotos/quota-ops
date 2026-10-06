@@ -1,9 +1,8 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 export function getQuotaOpsHome(): string {
-  const override = process.env.QUOTAOPS_HOME?.trim();
-  return override ? resolve(override) : join(homedir(), ".quotaops");
+  return join(homedir(), ".quotaops");
 }
 
 export function getCollectorConfigPath(): string {
