@@ -63,3 +63,6 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local QuotaOps collector state
+.quotaops/
