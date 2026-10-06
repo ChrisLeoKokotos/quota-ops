@@ -1,14 +1,18 @@
 name: Feature request
-description: Suggest an improvement or new capability
+description: Suggest an improvement or new QuotaOps capability
 title: "[Feature]: "
 labels:
   - enhancement
 body:
+  - type: markdown
+    attributes:
+      value: |
+        QuotaOps is a product created by SO HOMELY. Please describe the workflow problem first, then the proposed feature.
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: What problem or workflow would this solve?
+      description: What problem or daily workflow would this solve?
     validations:
       required: true
   - type: textarea
@@ -25,13 +29,22 @@ body:
   - type: dropdown
     id: security
     attributes:
-      label: Does this touch credentials, authentication, networking, telemetry, or persisted usage data?
+      label: Does this touch credentials, provider sessions, networking, browser permissions, telemetry, background execution, or persisted data?
       options:
         - "No"
         - "Yes"
         - "Unsure"
     validations:
       required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider scope
+      options:
+        - Claude / Anthropic
+        - Provider-agnostic
+        - Another provider
+        - Not provider-related
   - type: textarea
     id: additional
     attributes:
