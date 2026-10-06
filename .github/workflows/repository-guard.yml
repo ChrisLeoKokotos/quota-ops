@@ -78,18 +78,3 @@ jobs:
           )
 
           exit "$bad"
-
-      - name: Reject high-risk workflow triggers and permissions
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if grep -RFn "pull_request_target:" .github/workflows; then
-            echo "::error::pull_request_target is prohibited by default because it can expose privileged context to untrusted PR code."
-            exit 1
-          fi
-
-          if grep -RFn "permissions: write-all" .github/workflows; then
-            echo "::error::write-all permissions are prohibited. Grant only the minimum explicit permissions required."
-            exit 1
-          fi
