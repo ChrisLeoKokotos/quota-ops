@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  looksLikeClaudeUsageUrl,
   parseClaudeUsagePayload,
 } from "../collector/usage-parser.ts";
 
@@ -51,4 +52,23 @@ test("accepts a structured limits response", () => {
 
 test("rejects unrelated JSON", () => {
   assert.equal(parseClaudeUsagePayload({ hello: "world" }), null);
+});
+
+test("accepts only the exact Claude organization usage endpoint", () => {
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage"),
+    true,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/members"),
+    false,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://evil.example/api/organizations/org_123/usage"),
+    false,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage?redirect=https://evil.example"),
+    false,
+  );
 });
