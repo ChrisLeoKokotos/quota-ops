@@ -53,9 +53,13 @@ async function main(): Promise<void> {
     try {
       const current = await loadCollectorConfig();
       const enabled = current.accounts.filter((account) => account.enabled);
-      results = await Promise.all(
-        enabled.map((account) => collectClaudeUsageFromBrowser(account)),
-      );
+      const nextResults: CollectorAccountResult[] = [];
+
+      for (const account of enabled) {
+        nextResults.push(await collectClaudeUsageFromBrowser(account));
+      }
+
+      results = nextResults;
     } finally {
       collecting = false;
     }
