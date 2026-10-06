@@ -12,8 +12,7 @@ async function launchProfile(
   const options = {
     headless,
     viewport: { width: 1280, height: 900 },
-    args: ["--disable-background-networking"],
-  } as const;
+  };
 
   try {
     return await chromium.launchPersistentContext(account.profileDir, {
