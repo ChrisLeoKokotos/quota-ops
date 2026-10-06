@@ -38,3 +38,22 @@ test("accepts a Greek weekly keyword", () => {
 test("rejects a command without a known account", () => {
   assert.equal(parseVoiceUsageCommand("Dev 2 weekly 50", accounts), null);
 });
+
+test("does not mistake the account number or numeric 5-hour marker for usage", () => {
+  const command = parseVoiceUsageCommand("Dev 1 5 hour 40", accounts);
+  assert.equal(command?.window, "fiveHour");
+  assert.equal(command?.usedPercent, 40);
+});
+
+test("accepts the percentage before the account and quota window", () => {
+  const command = parseVoiceUsageCommand("Set 82 for Dev 1 weekly", accounts);
+  assert.equal(command?.window, "weekly");
+  assert.equal(command?.usedPercent, 82);
+});
+
+test("rejects ambiguous commands with multiple possible percentages", () => {
+  assert.equal(
+    parseVoiceUsageCommand("Dev 1 weekly 50 then 60", accounts),
+    null,
+  );
+});
