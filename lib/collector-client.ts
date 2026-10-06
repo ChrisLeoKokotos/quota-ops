@@ -48,11 +48,13 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
 export async function fetchCollectorSnapshot(
   signal?: AbortSignal,
 ): Promise<CollectorSnapshot> {
-  const response = await fetch(`${COLLECTOR_URL}/snapshot`, {
+  const init: RequestInit = {
     method: "GET",
     cache: "no-store",
-    signal,
-  });
+  };
+  if (signal) init.signal = signal;
+
+  const response = await fetch(`${COLLECTOR_URL}/snapshot`, init);
 
   if (!response.ok) {
     throw new Error(`Collector returned HTTP ${response.status}`);
