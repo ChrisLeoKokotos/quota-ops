@@ -16,6 +16,8 @@ function collectorToken(): Promise<string> {
 }
 
 function isAllowedRequest(request: NextRequest): boolean {
+  if (request.headers.get("x-quotaops-client") !== "dashboard") return false;
+
   const host = request.headers.get("host") ?? "";
   const hostMatch = /^(localhost|127\.0\.0\.1):(\d{2,5})$/.exec(host);
   if (!hostMatch) return false;
