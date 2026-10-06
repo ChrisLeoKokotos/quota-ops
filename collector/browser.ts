@@ -1,7 +1,11 @@
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
+import { assertSafeProfileDirectory } from "./security.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
-import { parseClaudeUsagePayload } from "./usage-parser.ts";
+import {
+  looksLikeClaudeUsageUrl,
+  parseClaudeUsagePayload,
+} from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
 
@@ -9,6 +13,8 @@ async function launchProfile(
   account: CollectorAccountConfig,
   headless: boolean,
 ): Promise<BrowserContext> {
+  await assertSafeProfileDirectory(account.profileDir);
+
   const options = {
     headless,
     viewport: { width: 1280, height: 900 },
@@ -49,15 +55,24 @@ async function waitForUsagePayload(
 
     const onResponse = async (response: import("playwright-core").Response) => {
       try {
-        const url = new URL(response.url());
-        if (url.hostname !== "claude.ai" || !url.pathname.startsWith("/api/")) {
+        if (!looksLikeClaudeUsageUrl(response.url())) return;
+
+        const contentType = (await response.headerValue("content-type")) ?? "";
+        if (!contentType.toLowerCase().includes("application/json")) return;
+
+        const contentLength = await response.headerValue("content-length");
+        if (
+          contentLength &&
+          Number.isFinite(Number(contentLength)) &&
+          Number(contentLength) > 65_536
+        ) {
           return;
         }
 
-        const contentType = (await response.headerValue("content-type")) ?? "";
-        if (!contentType.includes("application/json")) return;
+        const body = await response.body();
+        if (body.byteLength > 65_536) return;
 
-        const payload: unknown = await response.json();
+        const payload: unknown = JSON.parse(body.toString("utf8"));
         if (!parseClaudeUsagePayload(payload)) return;
 
         clearTimeout(timer);
@@ -169,13 +184,11 @@ export async function collectClaudeUsageFromBrowser(
       weekly: parsed.weekly,
       updatedAt: checkedAt,
     });
-  } catch (error) {
+  } catch {
     return result(
       account,
       "unavailable",
-      error instanceof Error
-        ? `Local collector error: ${error.message}`
-        : "Local collector error.",
+      "Local browser collector is unavailable for this account.",
     );
   } finally {
     await context?.close().catch(() => undefined);
