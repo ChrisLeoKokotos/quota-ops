@@ -1,66 +1,105 @@
 # Repository Security Settings
 
-Some protections cannot be enforced by files committed to the repository and must be enabled in GitHub repository settings.
+QuotaOps is a product created by **SO HOMELY**.
 
-This document is the source-of-truth checklist for those controls.
+Some protections cannot be enforced by committed files and must be configured in GitHub repository settings.
+
+This file documents the current repository security baseline and the controls that should remain in place.
 
 ## Default branch ruleset
 
 Target: `main`
 
-Recommended rules:
+Configured protections include:
 
 - restrict deletions;
 - block force pushes;
 - require a pull request before merging;
 - require at least one approval;
 - dismiss stale approvals when new commits are pushed;
-- require review from Code Owners;
-- require all review conversations to be resolved;
-- require status checks once the security/CI workflows have run successfully at least once.
+- require Code Owner review;
+- require review conversations to be resolved;
+- require branches to be up to date before merging;
+- require status checks;
+- require linear history;
+- allow squash as the merge method in the ruleset.
 
-Maintainer bypass should be limited to the repository owner and used only for emergency recovery.
+Repository-admin bypass is limited to pull-request use and should be reserved for recovery or exceptional maintenance rather than routine direct pushes.
+
+## Required status checks
+
+The branch ruleset currently requires:
+
+- **Repository hygiene**
+- **Dependency review**
+
+The repository also has an **App validation** CI workflow that runs on pull requests and performs:
+
+- dependency installation;
+- TypeScript typecheck;
+- unit tests;
+- production build.
+
+App validation should be added to the required-status-check list when the repository ruleset is next updated so the branch rule reflects the application CI that already runs on pull requests.
 
 ## Security features
 
-Enable, where available:
+Configured repository security features include:
 
-- Secret scanning;
-- Push protection;
+- Secret Protection;
+- Push Protection;
 - Private vulnerability reporting;
 - Dependency graph;
 - Dependabot alerts;
-- Dependabot security updates.
+- Dependabot security updates;
+- grouped security updates;
+- malware alerts.
 
-## Actions
+CodeQL is intentionally deferred until the scanning configuration is introduced and reviewed for the application stack.
 
-Recommended repository Actions policy:
+## GitHub Actions
 
-- default `GITHUB_TOKEN` permission: read-only;
-- allow GitHub Actions required by the project;
-- do not send secrets to workflows from forked pull requests;
-- require approval for first-time external contributors when that option is available.
+The repository Actions policy is intentionally restrictive:
 
-The committed workflows intentionally use explicit least-privilege permissions and immutable action SHAs.
+- default `GITHUB_TOKEN` permissions are read-only;
+- GitHub-created actions needed by the project are allowed;
+- Actions are required to be pinned to full commit SHAs;
+- workflows from external contributors require approval;
+- GitHub Actions cannot create or approve pull requests under the current policy.
 
-## Required checks
-
-After the workflows have completed successfully at least once, add these as required checks on `main`:
-
-- Repository hygiene;
-- Dependency review.
-
-Additional build, lint, test, typecheck, and CodeQL checks should become required after the application stack exists.
+Committed workflows use least-privilege permissions and immutable Action SHAs.
 
 ## Merge strategy
 
-Recommended:
+Project history is intended to remain linear and PR-based.
 
-- allow squash merge;
-- disable merge commits;
-- disable rebase merge unless the project later adopts a different history policy;
-- automatically delete merged head branches.
+Preferred behavior:
+
+- squash merge;
+- no routine direct pushes to `main`;
+- no force pushes;
+- no branch deletion of protected refs;
+- delete merged feature branches when practical.
+
+## Dependency maintenance
+
+GitHub Actions dependencies are managed through Dependabot.
+
+When npm dependency automation is expanded, it should preserve the same review, CI, and dependency-review requirements.
 
 ## Review cadence
 
-Review repository access, Actions permissions, installed GitHub Apps, deploy keys, webhooks, environments, and secrets periodically and whenever a maintainer or automation integration changes.
+Periodically review:
+
+- repository collaborators and roles;
+- GitHub Apps;
+- Actions policy;
+- deploy keys;
+- webhooks;
+- environments;
+- repository secrets and variables;
+- rulesets;
+- required status checks;
+- security alerts.
+
+Review again whenever a maintainer, automation integration, release process, or provider integration changes.
