@@ -93,8 +93,14 @@ export function looksLikeClaudeUsageUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     return (
+      parsed.protocol === "https:" &&
       parsed.hostname === "claude.ai" &&
-      /\/api\/organizations\/[^/]+\/usage\/?$/.test(parsed.pathname)
+      parsed.port === "" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      /^\/api\/organizations\/[A-Za-z0-9_-]+\/usage\/?$/.test(parsed.pathname)
     );
   } catch {
     return false;
