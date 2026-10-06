@@ -40,8 +40,9 @@ tmp/
 .temp/
 .cache/
 
-# Node
+# Node / Next.js
 node_modules/
+.next/
 .npm/
 .pnpm-store/
 .yarn/cache/
