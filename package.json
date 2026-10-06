@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types tests/*.test.ts"
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "collector:setup": "node --experimental-strip-types collector/cli.ts",
+    "collector:start": "node --experimental-strip-types collector/service.ts"
   },
   "engines": {
     "node": ">=22.14.0"
@@ -16,7 +18,8 @@
   "dependencies": {
     "next": "16.3.8",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "playwright-core": "1.63.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
