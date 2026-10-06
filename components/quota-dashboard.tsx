@@ -17,6 +17,10 @@ import {
   getDueResetEvents,
   resetWindowLabel,
 } from "@/lib/reset-notifications";
+import {
+  fetchCollectorSnapshot,
+  type CollectorConnectionState,
+} from "@/lib/collector-client";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
@@ -297,11 +301,13 @@ function QuotaRow({
   quotaWindow,
   nowMs,
   onChange,
+  editable = true,
 }: {
   title: string;
   quotaWindow: QuotaWindow;
   nowMs: number;
   onChange: (next: QuotaWindow) => void;
+  editable?: boolean;
 }) {
   const state = getWindowState(quotaWindow, nowMs);
   const value = clampPercent(quotaWindow.usedPercent);
@@ -325,6 +331,7 @@ function QuotaRow({
         </span>
       </div>
 
+      {editable ? (
       <details className="inline-editor">
         <summary>Edit</summary>
         <div className="edit-grid">
@@ -359,6 +366,9 @@ function QuotaRow({
           </label>
         </div>
       </details>
+      ) : (
+        <span className="auto-sync-label">Auto</span>
+      )}
     </section>
   );
 }
@@ -397,7 +407,9 @@ function AccountCard({
             <h2>{account.label}</h2>
             {recommended ? <span className="recommended">Best capacity</span> : null}
           </div>
-          <p>Claude Team · updated {formatUpdatedAt(account.updatedAt)}</p>
+          <p>
+            Claude Team · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
+          </p>
         </div>
 
         <span className="status-badge" data-status={status}>
@@ -412,15 +424,18 @@ function AccountCard({
           quotaWindow={account.fiveHour}
           nowMs={nowMs}
           onChange={(next) => updateWindow("fiveHour", next)}
+          editable={account.source !== "collector"}
         />
         <QuotaRow
           title="Weekly"
           quotaWindow={account.weekly}
           nowMs={nowMs}
           onChange={(next) => updateWindow("weekly", next)}
+          editable={account.source !== "collector"}
         />
       </div>
 
+      {account.source !== "collector" ? (
       <details className="account-editor">
         <summary>Account settings</summary>
         <div className="account-settings-grid">
@@ -444,6 +459,7 @@ function AccountCard({
           </button>
         </div>
       </details>
+      ) : null}
     </article>
   );
 }
@@ -628,6 +644,9 @@ export function QuotaDashboard() {
   const [listening, setListening] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
+  const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
+  const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -653,6 +672,65 @@ export function QuotaDashboard() {
       // The dashboard remains usable in memory if browser storage is unavailable.
     }
   }, [accounts, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    let cancelled = false;
+    let controller: AbortController | null = null;
+
+    const sync = async () => {
+      controller?.abort();
+      controller = new AbortController();
+
+      try {
+        const snapshot = await fetchCollectorSnapshot(controller.signal);
+        if (cancelled) return;
+
+        setCollectorState("connected");
+        setCollectorLastSync(snapshot.generatedAt);
+        setCollectorIssues(
+          snapshot.issues.map((issue) =>
+            issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
+          ),
+        );
+
+        if (snapshot.accounts.length > 0) {
+          setAccounts((current) => {
+            const collectorLabels = new Set(
+              snapshot.accounts.map((account) => account.label.trim().toLowerCase()),
+            );
+            const collectorIds = new Set(snapshot.accounts.map((account) => account.id));
+
+            const preserved = current.filter((account) => {
+              if (collectorIds.has(account.id)) return false;
+              if (
+                account.source !== "collector" &&
+                collectorLabels.has(account.label.trim().toLowerCase())
+              ) {
+                return false;
+              }
+              return true;
+            });
+
+            return [...preserved, ...snapshot.accounts];
+          });
+        }
+      } catch {
+        if (cancelled) return;
+        setCollectorState("offline");
+      }
+    };
+
+    void sync();
+    const timer = window.setInterval(() => void sync(), 30_000);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(timer);
+    };
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -895,11 +973,21 @@ export function QuotaDashboard() {
               <span>Keyboard shortcuts</span>
             </button>
 
-            <div className="collector-status">
+            <div className="collector-status" data-state={collectorState}>
               <span className="collector-dot" aria-hidden="true" />
               <div>
-                <strong>Local mode</strong>
-                <span>Saved in this browser</span>
+                <strong>
+                  {collectorState === "connected"
+                    ? "Collector connected"
+                    : collectorState === "checking"
+                      ? "Checking collector"
+                      : "Manual fallback"}
+                </strong>
+                <span>
+                  {collectorState === "connected" && collectorLastSync
+                    ? `Local sync ${formatUpdatedAt(collectorLastSync)}`
+                    : "127.0.0.1 only"}
+                </span>
               </div>
             </div>
           </div>
@@ -951,6 +1039,13 @@ export function QuotaDashboard() {
               <strong>{recommended?.label ?? "—"}</strong>
             </div>
           </section>
+
+          {collectorIssues.length > 0 ? (
+            <div className="notice" role="status">
+              <strong>Collector needs attention.</strong>
+              <span>{collectorIssues[0]}</span>
+            </div>
+          ) : null}
 
           {summary.refresh > 0 || summary.setup > 0 ? (
             <div className="notice" role="status">
@@ -1056,8 +1151,8 @@ export function QuotaDashboard() {
           <footer className="privacy-note">
             <strong>Local-first.</strong>
             <span>
-              Account labels, quota percentages, reset timestamps, and theme
-              preference are stored only in this browser.
+              Manual data stays in this browser. Auto-sync uses a collector bound
+              only to 127.0.0.1 on this PC; Claude browser profiles remain local.
             </span>
           </footer>
         </main>
