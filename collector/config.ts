@@ -46,10 +46,7 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
 
   return (
     candidate.version === 1 &&
-    typeof candidate.port === "number" &&
-    Number.isInteger(candidate.port) &&
-    candidate.port >= 1024 &&
-    candidate.port <= 65535 &&
+    candidate.port === 4317 &&
     typeof candidate.pollIntervalSeconds === "number" &&
     Number.isFinite(candidate.pollIntervalSeconds) &&
     candidate.pollIntervalSeconds >= 30 &&
