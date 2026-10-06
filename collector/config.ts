@@ -1,29 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
+import {
+  getCollectorConfigPath,
+  getDefaultProfileDir,
+} from "./paths.ts";
+import {
+  assertSafeProfileDirectory,
+  ensureCollectorHomeSecurity,
+} from "./security.ts";
 import type {
   CollectorAccountConfig,
   CollectorConfig,
 } from "./types.ts";
 
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-
-export function getQuotaOpsHome(): string {
-  const override = process.env.QUOTAOPS_HOME?.trim();
-  return override ? resolve(override) : join(homedir(), ".quotaops");
-}
-
-export function getCollectorConfigPath(): string {
-  const override = process.env.QUOTAOPS_COLLECTOR_CONFIG?.trim();
-  return override
-    ? resolve(override)
-    : join(getQuotaOpsHome(), "collector.json");
-}
-
-export function getDefaultProfileDir(id: string): string {
-  return join(getQuotaOpsHome(), "browser-profiles", id);
-}
 
 export function createDefaultCollectorConfig(): CollectorConfig {
   return {
@@ -70,8 +61,9 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
 export async function saveCollectorConfig(
   config: CollectorConfig,
 ): Promise<void> {
+  await ensureCollectorHomeSecurity();
   const path = getCollectorConfigPath();
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, JSON.stringify(config, null, 2) + "\n", {
     encoding: "utf8",
     mode: 0o600,
@@ -79,6 +71,7 @@ export async function saveCollectorConfig(
 }
 
 export async function loadCollectorConfig(): Promise<CollectorConfig> {
+  await ensureCollectorHomeSecurity();
   const path = getCollectorConfigPath();
 
   try {
@@ -131,7 +124,7 @@ export async function bootstrapFiveAccounts(): Promise<CollectorConfig> {
     if (config.accounts.some((account) => account.id === id)) continue;
 
     const account = createAccountConfig(id, `Dev ${index}`);
-    await mkdir(account.profileDir, { recursive: true });
+    await assertSafeProfileDirectory(account.profileDir);
     config = {
       ...config,
       accounts: [...config.accounts, account],
