@@ -46,9 +46,11 @@ export function getWindowState(
 
   const resetMs = Date.parse(window.resetAt);
   if (!Number.isFinite(resetMs)) return "unknown";
+
+  const usedPercent = clampPercent(window.usedPercent);
+  if (usedPercent >= 100) return "exhausted";
   if (resetMs <= nowMs) return "refresh_required";
-  if (clampPercent(window.usedPercent) >= 100) return "exhausted";
-  if (clampPercent(window.usedPercent) >= 85) return "low";
+  if (usedPercent >= 85) return "low";
 
   return "available";
 }
@@ -60,6 +62,13 @@ export function getAccountStatus(
   const fiveHour = getWindowState(account.fiveHour, nowMs);
   const weekly = getWindowState(account.weekly, nowMs);
 
+  if (fiveHour === "exhausted" && weekly === "exhausted") {
+    return "exhausted";
+  }
+
+  if (weekly === "exhausted") return "weekly_limited";
+  if (fiveHour === "exhausted") return "five_hour_limited";
+
   if (
     fiveHour === "refresh_required" ||
     weekly === "refresh_required"
@@ -70,13 +79,6 @@ export function getAccountStatus(
   if (fiveHour === "unknown" || weekly === "unknown") {
     return "needs_setup";
   }
-
-  if (fiveHour === "exhausted" && weekly === "exhausted") {
-    return "exhausted";
-  }
-
-  if (weekly === "exhausted") return "weekly_limited";
-  if (fiveHour === "exhausted") return "five_hour_limited";
   if (weekly === "low" || fiveHour === "low") return "low";
 
   return "available";
