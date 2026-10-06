@@ -7,7 +7,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not report security vulnerabilities here; follow SECURITY.md instead. Remove secrets from all logs and screenshots.
+        Thanks for reporting a QuotaOps bug. QuotaOps is a product created by SO HOMELY.
+        Do not report security vulnerabilities here; follow SECURITY.md instead.
+        Remove secrets and sensitive account data from logs and screenshots.
   - type: textarea
     id: description
     attributes:
@@ -36,9 +38,30 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, runtime, provider/tool, and relevant versions.
+      description: OS, Node.js version if relevant, browser/version, and affected feature.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Quota / reset state
+        - Account management
+        - Notifications
+        - Voice input
+        - Keyboard shortcuts
+        - Theme / UI
+        - Local persistence
+        - Build / CI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: Browser permission state
+      description: For notification or voice issues, note whether the browser permission is allowed, blocked, or unset.
   - type: textarea
     id: logs
     attributes:
       label: Sanitized logs
-      description: Remove tokens, cookies, API keys, private keys, account identifiers, and personal data.
+      description: Remove tokens, cookies, API keys, private keys, sensitive account identifiers, and personal data.
