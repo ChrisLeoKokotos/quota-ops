@@ -22,7 +22,8 @@ The current MVP:
 - has no QuotaOps backend or hosted database;
 - has no QuotaOps authentication system;
 - does not automatically obtain or bypass Claude credentials;
-- can optionally reuse user-created local browser profiles for same-PC quota collection;
+- can reuse isolated local browser profiles for same-PC quota collection;
+- keeps interactive provider login visible and user-controlled while scheduled Windows quota refreshes run hidden/headless;
 - does not export provider passwords, API keys, OAuth tokens, or session cookies into QuotaOps snapshots;
 - does not upload quota data to SO HOMELY infrastructure;
 - exposes the optional collector only on `127.0.0.1:4317`;
@@ -70,6 +71,7 @@ A future provider collector must preserve the same boundary: provider authentica
 The MVP stores non-secret operational metadata locally in the browser, including:
 
 - account labels;
+- optional user-entered account email metadata;
 - usage percentages;
 - reset timestamps;
 - update timestamps;
