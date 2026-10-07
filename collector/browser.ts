@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, readFile, rm } from "node:fs/promises";
+import { access } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join } from "node:path";
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
@@ -12,7 +13,6 @@ import {
 } from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
-const DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort";
 
 async function findWindowsBrowserExecutable(): Promise<string> {
   const roots = [
@@ -66,6 +66,7 @@ async function openInteractiveWindowsLogin(
       `--user-data-dir=${account.profileDir}`,
       "--no-first-run",
       "--no-default-browser-check",
+      "--disable-background-mode",
       CLAUDE_USAGE_URL,
     ],
     {
@@ -126,33 +127,53 @@ async function launchProfile(
   }
 }
 
-async function waitForDevToolsPort(
-  profileDir: string,
+async function reserveLoopbackPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Could not reserve a loopback DevTools port."));
+        return;
+      }
+
+      const port = address.port;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+async function waitForDevToolsEndpoint(
+  port: number,
   timeoutMs = 10_000,
-): Promise<number> {
-  const portFile = join(profileDir, DEVTOOLS_ACTIVE_PORT);
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  const url = `http://127.0.0.1:${port}/json/version`;
 
   while (Date.now() < deadline) {
     try {
-      const raw = await readFile(portFile, "utf8");
-      const [portLine] = raw.split(/\r?\n/);
-      const port = Number(portLine);
-      if (
-        Number.isInteger(port) &&
-        port >= 1 &&
-        port <= 65_535
-      ) {
-        return port;
-      }
+      const response = await fetch(url, {
+        method: "GET",
+        cache: "no-store",
+        signal: AbortSignal.timeout(500),
+      });
+      if (response.ok) return;
     } catch {
-      // Chrome writes the file after its DevTools listener is ready.
+      // The browser may still be starting.
     }
 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  throw new Error("Timed out waiting for the local browser DevTools endpoint.");
+  throw new Error("devtools_not_ready");
 }
 
 async function stopSpawnedBrowser(
@@ -174,18 +195,18 @@ async function launchWindowsCollectionBrowser(
   await assertSafeProfileDirectory(account.profileDir);
 
   const executablePath = await findWindowsBrowserExecutable();
-  const devToolsPortFile = join(account.profileDir, DEVTOOLS_ACTIVE_PORT);
-  await rm(devToolsPortFile, { force: true });
+  const port = await reserveLoopbackPort();
 
   const child = spawn(
     executablePath,
     [
       `--user-data-dir=${account.profileDir}`,
       "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=0",
+      `--remote-debugging-port=${port}`,
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-extensions",
+      "--disable-background-mode",
       "--start-minimized",
       "about:blank",
     ],
@@ -198,11 +219,19 @@ async function launchWindowsCollectionBrowser(
 
   await new Promise<void>((resolve, reject) => {
     child.once("spawn", resolve);
-    child.once("error", reject);
+    child.once("error", () => reject(new Error("browser_spawn_failed")));
   });
 
   try {
-    const port = await waitForDevToolsPort(account.profileDir);
+    await waitForDevToolsEndpoint(port);
+  } catch {
+    if (child.exitCode === null && !child.killed) {
+      child.kill();
+    }
+    throw new Error("devtools_not_ready");
+  }
+
+  try {
     const browser = await chromium.connectOverCDP(
       `http://127.0.0.1:${port}`,
       { timeout: 10_000 },
@@ -210,7 +239,7 @@ async function launchWindowsCollectionBrowser(
     const context = browser.contexts()[0];
     if (!context) {
       await browser.close().catch(() => undefined);
-      throw new Error("Local browser did not expose its isolated profile context.");
+      throw new Error("profile_context_missing");
     }
 
     return { browser, context, child };
@@ -218,7 +247,10 @@ async function launchWindowsCollectionBrowser(
     if (child.exitCode === null && !child.killed) {
       child.kill();
     }
-    throw error;
+    if (error instanceof Error && error.message === "profile_context_missing") {
+      throw error;
+    }
+    throw new Error("devtools_connect_failed");
   }
 }
 
@@ -388,11 +420,22 @@ export async function collectClaudeUsageFromBrowser(
       browser = launched.browser;
       child = launched.child;
       return await collectFromContext(account, launched.context);
-    } catch {
+    } catch (error) {
+      const reason =
+        error instanceof Error &&
+        [
+          "browser_spawn_failed",
+          "devtools_not_ready",
+          "devtools_connect_failed",
+          "profile_context_missing",
+        ].includes(error.message)
+          ? error.message
+          : "collection_failed";
+
       return result(
         account,
         "unavailable",
-        "Local browser collector is unavailable for this account.",
+        `Local browser collector is unavailable (${reason}).`,
       );
     } finally {
       await stopSpawnedBrowser(browser, child);
