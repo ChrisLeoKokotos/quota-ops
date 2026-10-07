@@ -22,6 +22,8 @@ function usage(): never {
       "  add <id> <label>",
       "  login <id>",
       "  collect <id>",
+      "  enable <id> [id...]",
+      "  disable <id> [id...]",
       "  security-check",
       "  rotate-token",
       "",
@@ -45,7 +47,7 @@ async function main(): Promise<void> {
     const config = await loadCollectorConfig();
     for (const account of config.accounts) {
       process.stdout.write(
-        `${account.id}\t${account.label}\t${account.profileDir}\n`,
+        `${account.id}\t${account.label}\t${account.enabled ? "enabled" : "disabled"}\t${account.profileDir}\n`,
       );
     }
     return;
@@ -85,6 +87,30 @@ async function main(): Promise<void> {
     await rotateCollectorToken();
     process.stdout.write(
       "Collector token rotated. Restart the collector and QuotaOps server before continuing.\n",
+    );
+    return;
+  }
+
+  if (command === "enable" || command === "disable") {
+    if (args.length === 0) usage();
+
+    const config = await loadCollectorConfig();
+    const unknown = args.filter(
+      (id) => !config.accounts.some((account) => account.id === id),
+    );
+    if (unknown.length > 0) {
+      throw new Error(`Unknown account id(s): ${unknown.join(", ")}`);
+    }
+
+    const enabled = command === "enable";
+    const ids = new Set(args);
+    const accounts = config.accounts.map((account) =>
+      ids.has(account.id) ? { ...account, enabled } : account,
+    );
+
+    await saveCollectorConfig({ ...config, accounts });
+    process.stdout.write(
+      `${enabled ? "Enabled" : "Disabled"}: ${args.join(", ")}.\n`,
     );
     return;
   }
