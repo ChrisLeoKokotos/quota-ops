@@ -14,12 +14,13 @@ Each account gets its own persistent Chrome / Edge profile under:
 %USERPROFILE%\.quotaops\browser-profiles\
 ```
 
-The collector keeps only normalized capacity metadata in its snapshot model:
+The collector snapshot contains normalized capacity metadata plus locally observed token aggregates:
 
 - account id, display label, provider, and plan label;
 - one or more named quota windows;
 - usage percentage and reset timestamp for each quota window;
-- collection time and health state.
+- collection time and health state;
+- local Token Analytics totals, daily buckets, provider totals, and source health.
 
 Provider login state remains inside the isolated browser profile. QuotaOps does not copy provider passwords, cookies, or provider access credentials into collector snapshots.
 
@@ -98,15 +99,21 @@ A successful result contains:
   "status": "ok",
   "account": {
     "provider": "claude",
-    "plan": "team",
-    "fiveHour": {
-      "usedPercent": 0,
-      "resetAt": null
-    },
-    "weekly": {
-      "usedPercent": 42,
-      "resetAt": "2026-10-10T12:00:00.000Z"
-    }
+    "plan": "Team",
+    "windows": [
+      {
+        "id": "five-hour",
+        "label": "5-hour",
+        "usedPercent": 0,
+        "resetAt": null
+      },
+      {
+        "id": "weekly",
+        "label": "Weekly",
+        "usedPercent": 42,
+        "resetAt": "2026-10-10T12:00:00.000Z"
+      }
+    ]
   }
 }
 ```
@@ -194,6 +201,7 @@ npm run collector:setup -- list
 npm run collector:setup -- add <provider> <id> <label>
 npm run collector:setup -- login <id>
 npm run collector:setup -- collect <id>
+npm run collector:setup -- tokens
 npm run collector:setup -- enable <id> [id...]
 npm run collector:setup -- disable <id> [id...]
 npm run collector:setup -- security-check
@@ -284,6 +292,8 @@ If it returns `unsupported`, open that isolated profile with `login <id>`. For C
 
 If it returns `unavailable`, confirm Chrome or Edge is installed and current, close any stale isolated profile window, then retry.
 
+For Token Analytics verification, run `npm run collector:setup -- tokens`. The result is explicitly locally observed and can differ from provider-wide billing or account totals.
+
 If the dashboard shows `Manual fallback`, confirm `npm run collector:start` is still running.
 
 If port `4317` is already in use, stop the older collector process before starting another instance.
@@ -301,4 +311,4 @@ The Claude collector path has been exercised end to end with five isolated Claud
 
 The collector remains experimental because the Claude web Usage response and ChatGPT/Codex quota surfaces are internal product APIs. Session-expiry handling, token rotation, LAN-isolation verification, and background-refresh behavior remain release-gate checks before calling the collector fully production-ready.
 
-See [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries and residual risks.
+See [token-analytics.md](token-analytics.md) for token counting semantics and [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries and residual risks.
