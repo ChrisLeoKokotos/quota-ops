@@ -38,6 +38,68 @@ function parseWindow(value: unknown): QuotaWindow | null {
   };
 }
 
+
+function organizationId(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const raw =
+    typeof record.uuid === "string"
+      ? record.uuid
+      : typeof record.id === "string"
+        ? record.id
+        : null;
+
+  return raw && /^[A-Za-z0-9_-]+$/.test(raw) ? raw : null;
+}
+
+function hasChatCapability(value: unknown): boolean {
+  const record = asRecord(value);
+  if (!record || !Array.isArray(record.capabilities)) return false;
+  return record.capabilities.some(
+    (capability) => capability === "chat",
+  );
+}
+
+export function resolveClaudeUsageOrganizationId(
+  payload: unknown,
+  preferredOrganizationId?: string | null,
+): string | null {
+  if (!Array.isArray(payload)) return null;
+
+  const organizations = payload
+    .map((value) => ({
+      id: organizationId(value),
+      chat: hasChatCapability(value),
+    }))
+    .filter(
+      (organization): organization is { id: string; chat: boolean } =>
+        organization.id !== null,
+    );
+
+  if (organizations.length === 0) return null;
+
+  const preferredChat = preferredOrganizationId
+    ? organizations.find(
+        (organization) =>
+          organization.id === preferredOrganizationId && organization.chat,
+      )
+    : null;
+  if (preferredChat) return preferredChat.id;
+
+  const chatOrganization = organizations.find((organization) => organization.chat);
+  if (chatOrganization) return chatOrganization.id;
+
+  if (preferredOrganizationId) {
+    const preferred = organizations.find(
+      (organization) => organization.id === preferredOrganizationId,
+    );
+    if (preferred) return preferred.id;
+  }
+
+  return organizations[0]?.id ?? null;
+}
+
 function parseNamedLimit(
   root: Record<string, unknown>,
   names: readonly string[],
