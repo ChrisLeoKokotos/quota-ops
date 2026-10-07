@@ -269,54 +269,56 @@ async function activeClaudeOrganizationId(
   }
 }
 
-async function waitForUsagePayload(
+async function fetchUsagePayload(
   page: Page,
-  timeoutMs: number,
-  expectedOrganizationId: string | null,
-): Promise<unknown | null> {
-  return await new Promise((resolve) => {
-    let settled = false;
+  organizationId: string,
+): Promise<{ payload: unknown | null; reason: string | null }> {
+  const usageUrl =
+    `https://claude.ai/api/organizations/${encodeURIComponent(organizationId)}/usage`;
 
-    const finish = (value: unknown | null) => {
-      if (settled) return;
-      settled = true;
-      page.off("response", onResponse);
-      resolve(value);
-    };
+  try {
+    const response = await page.evaluate(
+      async ({ url, maxBytes }) => {
+        const result = await fetch(url, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
-    const timer = setTimeout(() => finish(null), timeoutMs);
+        const contentType = result.headers.get("content-type") ?? "";
+        const text = await result.text();
 
-    const onResponse = async (response: import("playwright-core").Response) => {
-      try {
-        if (!looksLikeClaudeUsageUrl(response.url(), expectedOrganizationId)) return;
+        return {
+          ok: result.ok,
+          status: result.status,
+          contentType,
+          tooLarge: new TextEncoder().encode(text).byteLength > maxBytes,
+          text,
+        };
+      },
+      { url: usageUrl, maxBytes: 65_536 },
+    );
 
-        const contentType = (await response.headerValue("content-type")) ?? "";
-        if (!contentType.toLowerCase().includes("application/json")) return;
+    if (!response.ok) {
+      return { payload: null, reason: `usage_http_${response.status}` };
+    }
 
-        const contentLength = await response.headerValue("content-length");
-        if (
-          contentLength &&
-          Number.isFinite(Number(contentLength)) &&
-          Number(contentLength) > 65_536
-        ) {
-          return;
-        }
+    if (!response.contentType.toLowerCase().includes("application/json")) {
+      return { payload: null, reason: "usage_not_json" };
+    }
 
-        const body = await response.body();
-        if (body.byteLength > 65_536) return;
+    if (response.tooLarge) {
+      return { payload: null, reason: "usage_response_too_large" };
+    }
 
-        const payload: unknown = JSON.parse(body.toString("utf8"));
-        if (!parseClaudeUsagePayload(payload)) return;
-
-        clearTimeout(timer);
-        finish(payload);
-      } catch {
-        // Ignore unrelated or unreadable responses.
-      }
-    };
-
-    page.on("response", onResponse);
-  });
+    const payload: unknown = JSON.parse(response.text);
+    return { payload, reason: null };
+  } catch {
+    return { payload: null, reason: "usage_fetch_failed" };
+  }
 }
 
 function result(
@@ -355,19 +357,12 @@ async function collectFromContext(
   context: BrowserContext,
 ): Promise<CollectorAccountResult> {
   const page = context.pages()[0] ?? (await context.newPage());
-  const expectedOrganizationId = await activeClaudeOrganizationId(context);
-  const payloadPromise = waitForUsagePayload(
-    page,
-    15_000,
-    expectedOrganizationId,
-  );
 
   await page.goto(CLAUDE_USAGE_URL, {
     waitUntil: "domcontentloaded",
     timeout: 30_000,
   });
 
-  const payload = await payloadPromise;
   const currentUrl = page.url();
 
   if (isLoginLocation(currentUrl)) {
@@ -378,12 +373,27 @@ async function collectFromContext(
     );
   }
 
-  const parsed = payload ? parseClaudeUsagePayload(payload) : null;
+  const organizationId = await activeClaudeOrganizationId(context);
+  if (!organizationId) {
+    return result(
+      account,
+      "unsupported",
+      "Could not determine the active Claude organization for this local profile.",
+    );
+  }
+
+  const fetched = await fetchUsagePayload(page, organizationId);
+  const parsed = fetched.payload
+    ? parseClaudeUsagePayload(fetched.payload)
+    : null;
+
   if (!parsed) {
     return result(
       account,
       "unsupported",
-      "Could not recognize Claude usage data. Open this profile manually and verify Settings > Usage is available.",
+      fetched.reason
+        ? `Could not read Claude usage data (${fetched.reason}). Open this profile manually and verify Settings > Usage is available.`
+        : "Claude returned a usage response in an unrecognized format.",
     );
   }
 
