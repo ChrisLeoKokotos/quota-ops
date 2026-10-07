@@ -384,16 +384,6 @@ async function collectUsageFromRealPageRequests(
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const rankedOrganizationIds = resolveClaudeUsageOrganizationIds(
-        organizationsPayload,
-        preferredOrganizationId,
-      );
-
-      for (const organizationId of rankedOrganizationIds) {
-        const parsed = usageByOrganization.get(organizationId);
-        if (parsed) return { parsed, reason: null };
-      }
-
       if (
         preferredOrganizationId &&
         usageByOrganization.has(preferredOrganizationId)
@@ -404,17 +394,48 @@ async function collectUsageFromRealPageRequests(
         };
       }
 
-      if (
-        !organizationsPayload &&
-        usageByOrganization.size === 1
-      ) {
-        return {
-          parsed: usageByOrganization.values().next().value ?? null,
-          reason: null,
-        };
+      if (!preferredOrganizationId) {
+        const rankedOrganizationIds = resolveClaudeUsageOrganizationIds(
+          organizationsPayload,
+          null,
+        );
+
+        for (const organizationId of rankedOrganizationIds) {
+          const parsed = usageByOrganization.get(organizationId);
+          if (parsed) return { parsed, reason: null };
+        }
+
+        if (
+          !organizationsPayload &&
+          usageByOrganization.size === 1
+        ) {
+          return {
+            parsed: usageByOrganization.values().next().value ?? null,
+            reason: null,
+          };
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    if (preferredOrganizationId) {
+      const rankedOrganizationIds = resolveClaudeUsageOrganizationIds(
+        organizationsPayload,
+        preferredOrganizationId,
+      );
+
+      for (const organizationId of rankedOrganizationIds) {
+        const parsed = usageByOrganization.get(organizationId);
+        if (parsed) return { parsed, reason: "preferred_usage_not_observed" };
+      }
+
+      if (usageByOrganization.size === 1) {
+        return {
+          parsed: usageByOrganization.values().next().value ?? null,
+          reason: "preferred_usage_not_observed",
+        };
+      }
     }
 
     if (usageByOrganization.size > 0) {
