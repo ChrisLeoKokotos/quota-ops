@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { Provider } from "../lib/quota.ts";
