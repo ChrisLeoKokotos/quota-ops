@@ -16,16 +16,18 @@ The collector treats the following as sensitive:
 - provider cookies and local session state inside those profiles;
 - the local collector API token;
 - collector configuration;
-- normalized usage and reset metadata.
+- normalized usage and reset metadata;
+- locally observed token-usage aggregates and their source-health metadata.
 
 ## Trust boundaries
 
 1. **AI providers** — remote Claude / Anthropic and OpenAI / ChatGPT content and usage responses.
 2. **Isolated browser profile** — provider-authenticated local session.
-3. **Collector process** — parses only quota metadata.
-4. **Loopback API** — authenticated local transport on `127.0.0.1:4317`.
-5. **Next.js server** — reads the local collector token and proxies normalized snapshots.
-6. **Browser UI** — receives normalized quota data only.
+3. **Collector process** — parses normalized quota metadata and local token-usage aggregates.
+4. **Local developer-tool history** — Claude Code and Codex session files used only for local Token Analytics.
+5. **Loopback API** — authenticated local transport on `127.0.0.1:4317`.
+6. **Next.js server** — reads the local collector token and proxies normalized snapshots.
+7. **Browser UI** — receives normalized quota and token-analytics data only.
 
 Provider credentials must not cross from boundary 2 into boundaries 4–6.
 
@@ -88,6 +90,19 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 - schema parsing is narrow;
 - unrecognized formats fail as `unsupported`.
 
+### Local Token Analytics overcounting or content leakage
+
+**Threat:** duplicated or replayed local session records inflate totals, or raw session content is exposed beyond the local parser.
+
+**Mitigations:**
+
+- Claude records are deduplicated by stable message identity where available;
+- Codex child/fork replay history is suppressed before live child usage is counted;
+- unchanged Codex usage snapshots are ignored;
+- cached Codex input is shown as a breakdown without being added twice to total tokens;
+- normalized analytics output contains aggregate numeric metadata rather than raw session records;
+- the UI labels the metric as **Locally observed** instead of presenting it as provider billing data.
+
 ### Browser compromise surface
 
 **Threat:** provider content exploits the automation browser or a browser extension changes behavior.
@@ -148,6 +163,7 @@ The collector should not be described as fully production-ready until all of the
 - one real Claude account passes end-to-end collection (completed on Windows);
 - five isolated Claude profiles pass same-PC collection (completed on Windows);
 - one real OpenAI / ChatGPT Codex account passes end-to-end collection;
+- local Token Analytics passes real-machine Claude Code and Codex validation;
 - hidden scheduled refresh behavior is verified over repeated cycles;
 - session-expiry behavior is verified;
 - token rotation is verified;
