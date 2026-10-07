@@ -1,4 +1,4 @@
-import { openClaudeLogin } from "./browser.ts";
+import { collectClaudeUsageFromBrowser, openClaudeLogin } from "./browser.ts";
 import {
   bootstrapFiveAccounts,
   createAccountConfig,
@@ -21,6 +21,7 @@ function usage(): never {
       "  list",
       "  add <id> <label>",
       "  login <id>",
+      "  collect <id>",
       "  security-check",
       "  rotate-token",
       "",
@@ -85,6 +86,21 @@ async function main(): Promise<void> {
     process.stdout.write(
       "Collector token rotated. Restart the collector and QuotaOps server before continuing.\n",
     );
+    return;
+  }
+
+  if (command === "collect") {
+    const [id] = args;
+    if (!id) usage();
+
+    const config = await loadCollectorConfig();
+    const account = config.accounts.find((item) => item.id === id);
+    if (!account) {
+      throw new Error(`Unknown account id: ${id}`);
+    }
+
+    const result = await collectClaudeUsageFromBrowser(account);
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return;
   }
 
