@@ -254,9 +254,25 @@ async function launchWindowsCollectionBrowser(
   }
 }
 
+async function activeClaudeOrganizationId(
+  context: BrowserContext,
+): Promise<string | null> {
+  try {
+    const cookies = await context.cookies("https://claude.ai");
+    const activeOrg = cookies.find((cookie) => cookie.name === "lastActiveOrg");
+    if (!activeOrg?.value) return null;
+
+    const decoded = decodeURIComponent(activeOrg.value);
+    return /^[A-Za-z0-9_-]+$/.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 async function waitForUsagePayload(
   page: Page,
   timeoutMs: number,
+  expectedOrganizationId: string | null,
 ): Promise<unknown | null> {
   return await new Promise((resolve) => {
     let settled = false;
@@ -272,7 +288,7 @@ async function waitForUsagePayload(
 
     const onResponse = async (response: import("playwright-core").Response) => {
       try {
-        if (!looksLikeClaudeUsageUrl(response.url())) return;
+        if (!looksLikeClaudeUsageUrl(response.url(), expectedOrganizationId)) return;
 
         const contentType = (await response.headerValue("content-type")) ?? "";
         if (!contentType.toLowerCase().includes("application/json")) return;
@@ -339,7 +355,12 @@ async function collectFromContext(
   context: BrowserContext,
 ): Promise<CollectorAccountResult> {
   const page = context.pages()[0] ?? (await context.newPage());
-  const payloadPromise = waitForUsagePayload(page, 15_000);
+  const expectedOrganizationId = await activeClaudeOrganizationId(context);
+  const payloadPromise = waitForUsagePayload(
+    page,
+    15_000,
+    expectedOrganizationId,
+  );
 
   await page.goto(CLAUDE_USAGE_URL, {
     waitUntil: "domcontentloaded",
