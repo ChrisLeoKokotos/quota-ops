@@ -30,6 +30,7 @@ const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
 const NOTIFICATIONS_KEY = "quotaops:notifications";
 const SEEN_RESETS_KEY = "quotaops:seen-resets";
+const SIDEBAR_KEY = "quotaops:sidebar-open";
 
 type Theme = "light" | "dark";
 type Toast = { id: string; message: string };
@@ -112,6 +113,16 @@ function PlusIcon() {
     </SvgIcon>
   );
 }
+
+function SidebarIcon() {
+  return (
+    <SvgIcon size={18}>
+      <rect x="3.5" y="4" width="17" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M8.5 4v16" stroke="currentColor" strokeWidth="1.6" />
+    </SvgIcon>
+  );
+}
+
 
 function SunIcon() {
   return (
@@ -219,6 +230,15 @@ function loadBoolean(key: string): boolean {
     return false;
   }
 }
+
+function loadSidebarOpen(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
 
 function loadSeenResets(): Set<string> {
   try {
@@ -656,6 +676,7 @@ export function QuotaDashboard() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [listening, setListening] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
   const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
@@ -670,6 +691,7 @@ export function QuotaDashboard() {
     document.documentElement.dataset.theme = initialTheme;
     setNowMs(Date.now());
     setNotificationsEnabled(loadBoolean(NOTIFICATIONS_KEY));
+    setSidebarOpen(loadSidebarOpen());
     seenResetsRef.current = loadSeenResets();
     setReady(true);
 
@@ -685,6 +707,16 @@ export function QuotaDashboard() {
       // The dashboard remains usable in memory if browser storage is unavailable.
     }
   }, [accounts, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, String(sidebarOpen));
+    } catch {
+      // Sidebar state still applies for the current session.
+    }
+  }, [ready, sidebarOpen]);
+
 
   useEffect(() => {
     if (!ready) return;
@@ -1031,11 +1063,23 @@ export function QuotaDashboard() {
 
   return (
     <>
-      <div className="app-shell">
+      <div className="app-shell" data-sidebar-open={sidebarOpen ? "true" : "false"}>
+        {sidebarOpen ? (
         <aside className="sidebar">
-          <div className="sidebar-brand">
-            <strong>QuotaOps</strong>
-            <span>by SO HOMELY</span>
+          <div className="sidebar-top">
+            <div className="sidebar-brand">
+              <strong>QuotaOps</strong>
+              <span>by SO HOMELY</span>
+            </div>
+            <button
+              aria-label="Close sidebar"
+              className="sidebar-toggle sidebar-toggle-inside"
+              title="Close sidebar"
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <SidebarIcon />
+            </button>
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
@@ -1096,6 +1140,17 @@ export function QuotaDashboard() {
             </div>
           </div>
         </aside>
+        ) : (
+          <button
+            aria-label="Open sidebar"
+            className="sidebar-toggle sidebar-toggle-floating"
+            title="Open sidebar"
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <SidebarIcon />
+          </button>
+        )}
 
         <main className="workspace">
           <section id="overview" className="page-header">
