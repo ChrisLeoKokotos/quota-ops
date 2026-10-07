@@ -208,7 +208,9 @@ async function launchWindowsCollectionBrowser(
       "--no-default-browser-check",
       "--disable-extensions",
       "--disable-background-mode",
-      "--headless=new",
+      "--start-minimized",
+      "--window-position=-32000,-32000",
+      "--window-size=1280,900",
       "about:blank",
     ],
     {
@@ -270,101 +272,171 @@ async function preferredClaudeOrganizationId(
   }
 }
 
-async function fetchClaudeOrganizations(
-  page: Page,
-): Promise<{ payload: unknown | null; reason: string | null }> {
+function claudeUsageOrganizationId(url: string): string | null {
   try {
-    const response = await page.evaluate(async () => {
-      const result = await fetch("/api/organizations", {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          "anthropic-client-platform": "web_claude_ai",
-          "anthropic-client-version": "1.0.0",
-        },
-      });
+    const parsed = new URL(url);
+    const match =
+      /^\/api\/organizations\/([A-Za-z0-9_-]+)\/usage\/?$/.exec(
+        parsed.pathname,
+      );
 
-      const contentType = result.headers.get("content-type") ?? "";
-      const text = await result.text();
-
-      return {
-        ok: result.ok,
-        status: result.status,
-        contentType,
-        text,
-      };
-    });
-
-    if (!response.ok) {
-      return {
-        payload: null,
-        reason: `organizations_http_${response.status}`,
-      };
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== "claude.ai" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      !match
+    ) {
+      return null;
     }
 
-    if (!response.contentType.toLowerCase().includes("application/json")) {
-      return { payload: null, reason: "organizations_not_json" };
-    }
-
-    return { payload: JSON.parse(response.text) as unknown, reason: null };
+    return match[1] ?? null;
   } catch {
-    return { payload: null, reason: "organizations_fetch_failed" };
+    return null;
   }
 }
 
-async function fetchUsagePayload(
+function isClaudeOrganizationsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "claude.ai" &&
+      parsed.pathname === "/api/organizations" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonResponse(
+  response: import("playwright-core").Response,
+  maxBytes: number,
+): Promise<unknown | null> {
+  try {
+    if (!response.ok()) return null;
+
+    const contentType = (await response.headerValue("content-type")) ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) return null;
+
+    const contentLength = await response.headerValue("content-length");
+    if (
+      contentLength &&
+      Number.isFinite(Number(contentLength)) &&
+      Number(contentLength) > maxBytes
+    ) {
+      return null;
+    }
+
+    const body = await response.body();
+    if (body.byteLength > maxBytes) return null;
+
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function collectUsageFromRealPageRequests(
   page: Page,
-  organizationId: string,
-): Promise<{ payload: unknown | null; reason: string | null }> {
-  const usageUrl =
-    `https://claude.ai/api/organizations/${encodeURIComponent(organizationId)}/usage`;
+  preferredOrganizationId: string | null,
+  timeoutMs = 10_000,
+): Promise<{
+  parsed: ReturnType<typeof parseClaudeUsagePayload>;
+  reason: string | null;
+}> {
+  let organizationsPayload: unknown | null = null;
+  const usageByOrganization = new Map<
+    string,
+    NonNullable<ReturnType<typeof parseClaudeUsagePayload>>
+  >();
+
+  const onResponse = async (response: import("playwright-core").Response) => {
+    const url = response.url();
+
+    if (isClaudeOrganizationsUrl(url)) {
+      const payload = await readJsonResponse(response, 262_144);
+      if (payload !== null) organizationsPayload = payload;
+      return;
+    }
+
+    if (!looksLikeClaudeUsageUrl(url)) return;
+
+    const organizationId = claudeUsageOrganizationId(url);
+    if (!organizationId) return;
+
+    const payload = await readJsonResponse(response, 65_536);
+    if (payload === null) return;
+
+    const parsed = parseClaudeUsagePayload(payload);
+    if (parsed) usageByOrganization.set(organizationId, parsed);
+  };
+
+  page.on("response", onResponse);
 
   try {
-    const response = await page.evaluate(
-      async ({ url, maxBytes }) => {
-        const result = await fetch(url, {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-          headers: {
-            Accept: "application/json",
-            "anthropic-client-platform": "web_claude_ai",
-            "anthropic-client-version": "1.0.0",
-          },
-        });
+    await page.goto(CLAUDE_USAGE_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
 
-        const contentType = result.headers.get("content-type") ?? "";
-        const text = await result.text();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rankedOrganizationIds = resolveClaudeUsageOrganizationIds(
+        organizationsPayload,
+        preferredOrganizationId,
+      );
 
+      for (const organizationId of rankedOrganizationIds) {
+        const parsed = usageByOrganization.get(organizationId);
+        if (parsed) return { parsed, reason: null };
+      }
+
+      if (
+        preferredOrganizationId &&
+        usageByOrganization.has(preferredOrganizationId)
+      ) {
         return {
-          ok: result.ok,
-          status: result.status,
-          contentType,
-          tooLarge: new TextEncoder().encode(text).byteLength > maxBytes,
-          text,
+          parsed: usageByOrganization.get(preferredOrganizationId) ?? null,
+          reason: null,
         };
-      },
-      { url: usageUrl, maxBytes: 65_536 },
-    );
+      }
 
-    if (!response.ok) {
-      return { payload: null, reason: `usage_http_${response.status}` };
+      if (
+        !organizationsPayload &&
+        usageByOrganization.size === 1
+      ) {
+        return {
+          parsed: usageByOrganization.values().next().value ?? null,
+          reason: null,
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
-    if (!response.contentType.toLowerCase().includes("application/json")) {
-      return { payload: null, reason: "usage_not_json" };
+    if (usageByOrganization.size > 0) {
+      return {
+        parsed: null,
+        reason: "usage_org_ambiguous",
+      };
     }
 
-    if (response.tooLarge) {
-      return { payload: null, reason: "usage_response_too_large" };
+    if (organizationsPayload !== null) {
+      return {
+        parsed: null,
+        reason: "usage_response_not_observed",
+      };
     }
 
-    const payload: unknown = JSON.parse(response.text);
-    return { payload, reason: null };
-  } catch {
-    return { payload: null, reason: "usage_fetch_failed" };
+    return {
+      parsed: null,
+      reason: "claude_page_api_not_observed",
+    };
+  } finally {
+    page.off("response", onResponse);
   }
 }
 
@@ -404,11 +476,13 @@ async function collectFromContext(
   context: BrowserContext,
 ): Promise<CollectorAccountResult> {
   const page = context.pages()[0] ?? (await context.newPage());
+  const preferredOrganizationId =
+    await preferredClaudeOrganizationId(context);
 
-  await page.goto(CLAUDE_USAGE_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 30_000,
-  });
+  const collected = await collectUsageFromRealPageRequests(
+    page,
+    preferredOrganizationId,
+  );
 
   const currentUrl = page.url();
 
@@ -420,46 +494,11 @@ async function collectFromContext(
     );
   }
 
-  const preferredOrganizationId =
-    await preferredClaudeOrganizationId(context);
-  const organizations = await fetchClaudeOrganizations(page);
-  const organizationIds = resolveClaudeUsageOrganizationIds(
-    organizations.payload,
-    preferredOrganizationId,
-  );
-
-  if (organizationIds.length === 0) {
+  if (!collected.parsed) {
     return result(
       account,
       "unsupported",
-      organizations.reason
-        ? `Could not determine the Claude chat organization (${organizations.reason}).`
-        : "Could not determine the Claude chat organization for this local profile.",
-    );
-  }
-
-  let lastReason: string | null = null;
-  let parsed: ReturnType<typeof parseClaudeUsagePayload> = null;
-
-  for (const organizationId of organizationIds) {
-    const fetched = await fetchUsagePayload(page, organizationId);
-    lastReason = fetched.reason;
-
-    if (!fetched.payload) continue;
-
-    parsed = parseClaudeUsagePayload(fetched.payload);
-    if (parsed) break;
-
-    lastReason = "usage_unrecognized";
-  }
-
-  if (!parsed) {
-    return result(
-      account,
-      "unsupported",
-      lastReason
-        ? `Could not read Claude usage data (${lastReason}). Open this profile manually and verify Settings > Usage is available.`
-        : "Claude returned a usage response in an unrecognized format.",
+      `Could not read the Usage response generated by Claude's own page (${collected.reason ?? "unknown"}). Open this profile manually and verify Settings > Usage is available.`,
     );
   }
 
@@ -469,8 +508,8 @@ async function collectFromContext(
     label: account.label,
     provider: "claude",
     plan: "team",
-    fiveHour: parsed.fiveHour,
-    weekly: parsed.weekly,
+    fiveHour: collected.parsed.fiveHour,
+    weekly: collected.parsed.weekly,
     updatedAt: checkedAt,
   });
 }
