@@ -94,10 +94,10 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 **Mitigations:**
 
 - QuotaOps uses the locally installed Chrome / Edge channel rather than bundling a stale browser;
-- Chromium sandbox is explicitly enabled;
+- Chromium sandbox is enabled for Playwright-launched non-Windows fallback collection;
 - extensions are disabled for collector profiles;
-- downloads are disabled;
-- provider login remains interactive and provider-controlled.
+- provider login remains interactive and provider-controlled;
+- scheduled Windows collection uses the installed Chrome / Edge browser in hidden/headless mode with an ephemeral DevTools endpoint bound only to `127.0.0.1`.
 
 Users should keep Windows and Chrome / Edge fully updated.
 
@@ -144,8 +144,9 @@ The collector should not be described as fully production-ready until all of the
 - CI, Repository Guard, Dependency Review, and CodeQL are green;
 - a committed npm lockfile is present and CI uses `npm ci`;
 - Windows security-check passes on the target machine;
-- one real Claude account passes end-to-end collection;
-- five isolated profiles pass same-PC collection;
+- one real Claude account passes end-to-end collection (completed on Windows);
+- five isolated profiles pass same-PC collection (completed on Windows);
+- hidden scheduled refresh behavior is verified over repeated cycles;
 - session-expiry behavior is verified;
 - token rotation is verified;
 - collector remains inaccessible from the LAN;
