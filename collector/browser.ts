@@ -10,6 +10,7 @@ import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts"
 import {
   looksLikeClaudeUsageUrl,
   parseClaudeUsagePayload,
+  resolveClaudeUsageOrganizationId,
 } from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
@@ -254,7 +255,7 @@ async function launchWindowsCollectionBrowser(
   }
 }
 
-async function activeClaudeOrganizationId(
+async function preferredClaudeOrganizationId(
   context: BrowserContext,
 ): Promise<string | null> {
   try {
@@ -264,6 +265,32 @@ async function activeClaudeOrganizationId(
 
     const decoded = decodeURIComponent(activeOrg.value);
     return /^[A-Za-z0-9_-]+$/.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchClaudeOrganizations(
+  page: Page,
+): Promise<unknown | null> {
+  try {
+    return await page.evaluate(async () => {
+      const response = await fetch("/api/organizations", {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.toLowerCase().includes("application/json")) return null;
+
+      return await response.json();
+    });
   } catch {
     return null;
   }
@@ -373,12 +400,19 @@ async function collectFromContext(
     );
   }
 
-  const organizationId = await activeClaudeOrganizationId(context);
+  const preferredOrganizationId =
+    await preferredClaudeOrganizationId(context);
+  const organizationsPayload = await fetchClaudeOrganizations(page);
+  const organizationId = resolveClaudeUsageOrganizationId(
+    organizationsPayload,
+    preferredOrganizationId,
+  );
+
   if (!organizationId) {
     return result(
       account,
       "unsupported",
-      "Could not determine the active Claude organization for this local profile.",
+      "Could not determine the Claude chat organization for this local profile.",
     );
   }
 
