@@ -6,6 +6,10 @@ import type {
   TokenSourceStatus,
   TokenTotals,
 } from "./token-analytics";
+import type {
+  LocalModelSnapshot,
+  LocalRuntimeSnapshot,
+} from "./local-runtime";
 
 const COLLECTOR_URL = "/api/collector";
 
@@ -28,6 +32,7 @@ interface CollectorSnapshotResponse {
   generatedAt: string;
   accounts: CollectorAccountResult[];
   tokens?: unknown;
+  runtimes?: unknown;
 }
 
 export interface CollectorSnapshot {
@@ -35,6 +40,7 @@ export interface CollectorSnapshot {
   accounts: QuotaAccount[];
   issues: CollectorAccountResult[];
   tokens: TokenAnalyticsSnapshot | null;
+  runtimes: LocalRuntimeSnapshot[];
 }
 
 function isQuotaAccount(value: unknown): value is QuotaAccount {
@@ -139,6 +145,54 @@ function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
   return item as TokenAnalyticsSnapshot;
 }
 
+
+function isLocalModelSnapshot(value: unknown): value is LocalModelSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<LocalModelSnapshot>;
+  return (
+    typeof item.name === "string" &&
+    (item.family === null || typeof item.family === "string") &&
+    (item.parameterSize === null || typeof item.parameterSize === "string") &&
+    (item.quantization === null || typeof item.quantization === "string") &&
+    (item.sizeBytes === null ||
+      (typeof item.sizeBytes === "number" &&
+        Number.isFinite(item.sizeBytes) &&
+        item.sizeBytes >= 0)) &&
+    typeof item.loaded === "boolean" &&
+    (item.vramBytes === null ||
+      (typeof item.vramBytes === "number" &&
+        Number.isFinite(item.vramBytes) &&
+        item.vramBytes >= 0)) &&
+    (item.contextLength === null ||
+      (typeof item.contextLength === "number" &&
+        Number.isFinite(item.contextLength) &&
+        item.contextLength >= 0)) &&
+    (item.expiresAt === null || typeof item.expiresAt === "string")
+  );
+}
+
+function isLocalRuntimeSnapshot(value: unknown): value is LocalRuntimeSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<LocalRuntimeSnapshot>;
+  return (
+    item.runtime === "ollama" &&
+    typeof item.label === "string" &&
+    (item.state === "online" ||
+      item.state === "offline" ||
+      item.state === "partial") &&
+    (item.version === null || typeof item.version === "string") &&
+    typeof item.checkedAt === "string" &&
+    Array.isArray(item.models) &&
+    item.models.every(isLocalModelSnapshot) &&
+    (item.message === null || typeof item.message === "string")
+  );
+}
+
+function parseLocalRuntimes(value: unknown): LocalRuntimeSnapshot[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isLocalRuntimeSnapshot);
+}
+
 export async function fetchCollectorSnapshot(
   signal?: AbortSignal,
 ): Promise<CollectorSnapshot> {
@@ -172,5 +226,6 @@ export async function fetchCollectorSnapshot(
     accounts,
     issues: payload.accounts.filter((result) => result.status !== "ok"),
     tokens: parseTokenAnalytics(payload.tokens),
+    runtimes: parseLocalRuntimes(payload.runtimes),
   };
 }
