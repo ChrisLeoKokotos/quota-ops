@@ -8,7 +8,7 @@ QuotaOps gives people and teams one local workspace for AI-account capacity, res
 
 ## Current product state
 
-QuotaOps is currently a local-first MVP with support for **Claude / Anthropic** and **OpenAI / ChatGPT Codex**.
+QuotaOps is currently a local-first MVP with support for **Claude / Anthropic**, **OpenAI / ChatGPT Codex**, and local runtime visibility for **Ollama**.
 
 Today it supports:
 
@@ -22,6 +22,7 @@ Today it supports:
 - total token activity with Input, Output, Cache read, and Cache write breakdowns;
 - Today, 7 days, 30 days, and All time token views;
 - per-provider token totals for Claude and OpenAI;
+- local Ollama discovery with runtime version, installed models, loaded models, VRAM use, and context capacity;
 - browser / OS reset notifications while QuotaOps is running and permission is granted;
 - optional browser voice input for quick manual usage updates;
 - keyboard shortcuts;
@@ -111,6 +112,29 @@ The scanner includes deduplication and child/fork replay suppression so copied s
 
 See [docs/token-analytics.md](docs/token-analytics.md).
 
+## Local / self-hosted runtimes
+
+QuotaOps does not invent provider-style quota windows for open-source models that do not have them.
+
+The first runtime integration is **Ollama**. When the local collector is running, QuotaOps checks the fixed loopback Ollama API on `127.0.0.1:11434` and can show:
+
+- whether Ollama is reachable;
+- runtime version;
+- installed models;
+- models currently loaded in memory;
+- model family, parameter size, and quantization when reported;
+- loaded VRAM and context length when reported.
+
+Use:
+
+```powershell
+npm run collector:setup -- runtimes
+```
+
+Ollama exposes token metrics on individual generation responses, but it does not provide an account-wide historical quota. QuotaOps therefore keeps runtime capacity separate from provider quota and does not fabricate a percentage or reset window.
+
+See [docs/local-runtimes.md](docs/local-runtimes.md).
+
 ## Notifications
 
 Reset notifications are browser-based and designed to work while QuotaOps is running. Reliable notification delivery while the app is fully closed is not part of the current MVP.
@@ -170,4 +194,4 @@ QuotaOps was created by **SO HOMELY** and is maintained through this public repo
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Claude, Anthropic, OpenAI, ChatGPT, and Codex are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic or OpenAI.
+Claude, Anthropic, OpenAI, ChatGPT, Codex, and Ollama are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic, OpenAI, or Ollama.
