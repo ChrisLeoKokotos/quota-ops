@@ -17,7 +17,7 @@ It has:
 - no credential upload to a QuotaOps service;
 - an optional experimental same-PC local collector for provider-authenticated browser profiles.
 
-Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory and exposes normalized snapshots only over a loopback-only HTTP service.
+Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory, reads supported local developer-tool usage logs for Token Analytics, and exposes normalized snapshots only over a loopback-only HTTP service.
 
 ## Security goals
 
@@ -30,9 +30,10 @@ QuotaOps treats the following as separate trust domains:
 1. **Provider authentication state** — API keys, OAuth tokens, cookies, refresh tokens, private keys, passwords, and local session material.
 2. **Provider adapters / collectors** — future code that obtains usage or quota signals.
 3. **Normalized quota data** — utilization, reset timestamps, remaining capacity, provider identifiers, and source health.
-4. **Capacity logic** — state derivation, recommendations, notification timing, and future routing.
+4. **Local Token Analytics** — numeric token aggregates derived from supported local Claude Code and Codex session history.
+5. **Capacity logic** — state derivation, recommendations, notification timing, and future routing.
 5. **UI / browser capabilities** — display, local persistence, notifications, speech recognition, and user input.
-6. **Repository / CI** — public contributions, dependencies, GitHub Actions, and release tooling.
+7. **Repository / CI** — public contributions, dependencies, GitHub Actions, and release tooling.
 
 Raw authentication material must not cross into downstream layers merely because quota data does.
 
@@ -81,6 +82,12 @@ QuotaOps uses browser speech recognition when available. The browser or operatin
 QuotaOps does not run a SO HOMELY speech backend in the current MVP.
 
 Voice transcripts are untrusted input and should only affect narrow, explicitly supported commands.
+
+### Token Analytics boundary
+
+Local Token Analytics must expose aggregates rather than session content. The normalized snapshot is intended to contain numeric token counts, dates, provider labels, and source health.
+
+Counting logic must defend against duplicated, copied, forked, replayed, archived, or provider-specific cache semantics where applicable. The UI must identify these totals as locally observed rather than provider billing totals.
 
 ### Notification boundary
 
@@ -173,12 +180,13 @@ Security rules:
 - the Claude adapter observes only expected Usage-page responses;
 - the OpenAI adapter obtains the current ChatGPT access token only inside the isolated browser context, uses it to request Codex quota metadata, and does not return it to Node snapshots or browser storage;
 - provider responses are size-limited and parsed into a narrow normalized quota schema;
+- local Token Analytics is reduced to aggregate numeric metadata before it reaches the dashboard;
 - unrecognized response formats fail as `unsupported`;
 - expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
 - profile directories and collector state must never be committed;
 - background collection must not require exporting provider session material.
 
-Five isolated Claude profiles have passed individual real-account collection and simultaneous dashboard synchronization on Windows. The collector remains experimental until session-expiry handling, token rotation, LAN isolation, and long-running hidden scheduled refresh behavior are also verified. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
+Five isolated Claude profiles have passed individual real-account collection and simultaneous dashboard synchronization on Windows. Local Token Analytics has also been exercised against real Claude Code and Codex session history on Windows. The collector remains experimental until session-expiry handling, token rotation, LAN isolation, and long-running hidden scheduled refresh behavior are also verified. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
 
 ## Security changes
 
