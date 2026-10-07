@@ -64,9 +64,9 @@ export function addTokenTotals(
 }
 
 function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
@@ -74,10 +74,10 @@ function rangeStartKey(range: TokenRange, nowMs: number): string | null {
   if (range === "all") return null;
 
   const date = new Date(nowMs);
-  date.setHours(0, 0, 0, 0);
+  date.setUTCHours(0, 0, 0, 0);
 
   const daysBack = range === "today" ? 0 : range === "7d" ? 6 : 29;
-  date.setDate(date.getDate() - daysBack);
+  date.setUTCDate(date.getUTCDate() - daysBack);
   return localDateKey(date);
 }
 
