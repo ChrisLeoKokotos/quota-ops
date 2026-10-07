@@ -72,3 +72,21 @@ test("accepts only the exact Claude organization usage endpoint", () => {
     false,
   );
 });
+
+
+test("filters usage responses to the active organization when provided", () => {
+  assert.equal(
+    looksLikeClaudeUsageUrl(
+      "https://claude.ai/api/organizations/org_active/usage",
+      "org_active",
+    ),
+    true,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl(
+      "https://claude.ai/api/organizations/org_other/usage",
+      "org_active",
+    ),
+    false,
+  );
+});
