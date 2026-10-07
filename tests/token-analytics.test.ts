@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createCodexTokenState,
   parseClaudeTokenRecord,
-  parseCodexCumulative,
+  parseCodexTokenRecord,
 } from "../collector/token-analytics.ts";
 import {
   summarizeTokenRange,
@@ -72,29 +73,122 @@ test("Claude iterations are summed instead of double-counting the mirrored top-l
   });
 });
 
-test("parses Codex cumulative token_count events", () => {
-  const parsed = parseCodexCumulative({
-    timestamp: "2026-10-08T00:20:00.000Z",
-    type: "event_msg",
-    payload: {
-      type: "token_count",
-      info: {
-        total_token_usage: {
-          input_tokens: 2000,
-          cached_input_tokens: 1500,
-          output_tokens: 400,
-          reasoning_output_tokens: 100,
+test("parses Codex last-token usage without double-counting cached input", () => {
+  const state = createCodexTokenState();
+  parseCodexTokenRecord(
+    {
+      timestamp: "2026-10-08T00:19:00.000Z",
+      type: "session_meta",
+      payload: { id: "session-1" },
+    },
+    state,
+  );
+
+  const parsed = parseCodexTokenRecord(
+    {
+      timestamp: "2026-10-08T00:20:00.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 2000,
+            cached_input_tokens: 1500,
+            output_tokens: 400,
+          },
+          last_token_usage: {
+            input_tokens: 500,
+            cached_input_tokens: 300,
+            output_tokens: 100,
+          },
         },
       },
     },
-  });
+    state,
+  );
 
   assert.equal(parsed?.date, "2026-10-08");
-  assert.deepEqual(parsed?.cumulative, {
-    input: 2000,
-    output: 400,
-    cacheRead: 1500,
+  assert.deepEqual(parsed?.totals, {
+    inputTokens: 500,
+    outputTokens: 100,
+    cacheReadTokens: 300,
+    cacheWriteTokens: 0,
+    totalTokens: 600,
   });
+});
+
+test("suppresses replayed Codex parent history in child sessions", () => {
+  const state = createCodexTokenState();
+
+  assert.equal(
+    parseCodexTokenRecord(
+      {
+        timestamp: "2026-10-08T00:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "child", forked_from_id: "parent" },
+      },
+      state,
+    ),
+    null,
+  );
+
+  assert.equal(
+    parseCodexTokenRecord(
+      {
+        timestamp: "2026-10-08T00:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              cached_input_tokens: 600,
+              output_tokens: 100,
+            },
+          },
+        },
+      },
+      state,
+    ),
+    null,
+  );
+
+  assert.equal(
+    parseCodexTokenRecord(
+      {
+        timestamp: "2026-10-08T00:00:05.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", started_at: 1791417605 },
+      },
+      state,
+    ),
+    null,
+  );
+
+  const live = parseCodexTokenRecord(
+    {
+      timestamp: "2026-10-08T00:00:06.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 1100,
+            cached_input_tokens: 650,
+            output_tokens: 130,
+          },
+          last_token_usage: {
+            input_tokens: 100,
+            cached_input_tokens: 50,
+            output_tokens: 30,
+          },
+        },
+      },
+    },
+    state,
+  );
+
+  assert.equal(live?.totals.totalTokens, 130);
 });
 
 test("range summaries aggregate providers without treating cached Codex input as extra total tokens", () => {
