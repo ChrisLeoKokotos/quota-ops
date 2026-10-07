@@ -43,6 +43,8 @@ Each account contains:
 
 - local account id;
 - local display label;
+- optional locally entered email metadata;
+- source: manual or collector;
 - provider: currently Claude;
 - plan: currently Team;
 - 5-hour usage percentage;
@@ -129,7 +131,7 @@ The backend boundary should only be introduced when a concrete feature requires 
 
 The repository now contains an experimental local collector.
 
-Each account is assigned a separate persistent Chrome / Edge profile. The user signs in interactively to the intended Claude account inside that profile. Background refreshes later reuse that local browser profile.
+Each collector account is assigned a separate persistent Chrome / Edge profile. The user signs in interactively to the intended Claude account inside that profile. On Windows, scheduled refreshes later start the installed browser against that same profile in hidden/headless mode and attach over an ephemeral loopback-only DevTools listener.
 
 The collector:
 
@@ -137,7 +139,8 @@ The collector:
 - returns normalized quota snapshots;
 - does not expose provider cookies or tokens through its API;
 - polls accounts sequentially to reduce local resource use;
-- reports login, availability, or unsupported-format failures explicitly.
+- reports login, availability, or unsupported-format failures explicitly;
+- supports per-account `collect`, `enable`, and `disable` operations so accounts can be validated independently before joining the background refresh loop.
 
 The Claude Team web usage response is not treated as a stable public API. The adapter is isolated so provider changes fail closed instead of corrupting the core quota model.
 
