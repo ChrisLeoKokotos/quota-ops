@@ -2,7 +2,7 @@
 
 QuotaOps is a product created by **SO HOMELY**.
 
-This document defines the security model for the same-PC Claude collector.
+This document defines the security model for the same-PC multi-provider collector.
 
 ## Security objective
 
@@ -12,7 +12,7 @@ The collector should automate quota collection without becoming a credential bro
 
 The collector treats the following as sensitive:
 
-- persistent Claude browser profiles;
+- persistent provider browser profiles;
 - provider cookies and local session state inside those profiles;
 - the local collector API token;
 - collector configuration;
@@ -20,7 +20,7 @@ The collector treats the following as sensitive:
 
 ## Trust boundaries
 
-1. **Claude / Anthropic** — remote provider content and usage responses.
+1. **AI providers** — remote Claude / Anthropic and OpenAI / ChatGPT content and usage responses.
 2. **Isolated browser profile** — provider-authenticated local session.
 3. **Collector process** — parses only quota metadata.
 4. **Loopback API** — authenticated local transport on `127.0.0.1:4317`.
@@ -77,13 +77,14 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 
 ### Provider-response confusion
 
-**Threat:** unrelated Claude API responses are mistaken for quota data.
+**Threat:** unrelated provider responses are mistaken for quota data.
 
 **Mitigations:**
 
-- only the exact expected HTTPS organization Usage endpoint is accepted;
-- query strings, fragments, credentials in URLs, alternate hosts, and unrelated paths are rejected;
-- content type and response size are bounded;
+- Claude collection accepts only expected Usage endpoint responses from claude.ai;
+- OpenAI collection requests only known ChatGPT/Codex quota endpoints from the authenticated chatgpt.com browser context;
+- provider access tokens are not included in collector snapshots;
+- content type and response shape are validated;
 - schema parsing is narrow;
 - unrecognized formats fail as `unsupported`.
 
@@ -145,7 +146,8 @@ The collector should not be described as fully production-ready until all of the
 - a committed npm lockfile is present and CI uses `npm ci`;
 - Windows security-check passes on the target machine;
 - one real Claude account passes end-to-end collection (completed on Windows);
-- five isolated profiles pass same-PC collection (completed on Windows);
+- five isolated Claude profiles pass same-PC collection (completed on Windows);
+- one real OpenAI / ChatGPT Codex account passes end-to-end collection;
 - hidden scheduled refresh behavior is verified over repeated cycles;
 - session-expiry behavior is verified;
 - token rotation is verified;
