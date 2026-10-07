@@ -1,21 +1,14 @@
 import { clampPercent, type QuotaAccount } from "./quota.ts";
 
-export type VoiceQuotaWindow = "fiveHour" | "weekly";
-
 export interface VoiceUsageCommand {
   accountId: string;
   accountLabel: string;
-  window: VoiceQuotaWindow;
+  windowId: string;
+  windowLabel: string;
   usedPercent: number;
 }
 
-const WEEKLY_WORDS = [
-  "weekly",
-  "week",
-  "βδομα",
-  "εβδομα",
-];
-
+const WEEKLY_WORDS = ["weekly", "week", "βδομα", "εβδομα"];
 const FIVE_HOUR_WORDS = [
   "five hour",
   "five-hour",
@@ -40,16 +33,12 @@ export function parseVoiceUsageCommand(
   const weeklyWord = WEEKLY_WORDS.find((word) => normalized.includes(word));
   const fiveHourWord = FIVE_HOUR_WORDS.find((word) => normalized.includes(word));
 
-  const window: VoiceQuotaWindow | null = weeklyWord
-    ? "weekly"
-    : fiveHourWord
-      ? "fiveHour"
-      : null;
-
-  if (!window) return null;
-
+  const targetId = weeklyWord ? "weekly" : fiveHourWord ? "five-hour" : null;
   const matchedWindowWord = weeklyWord ?? fiveHourWord;
-  if (!matchedWindowWord) return null;
+  if (!targetId || !matchedWindowWord) return null;
+
+  const quotaWindow = account.windows.find((window) => window.id === targetId);
+  if (!quotaWindow) return null;
 
   const commandBody = normalized
     .replace(account.label.toLowerCase(), " ")
@@ -59,7 +48,6 @@ export function parseVoiceUsageCommand(
     .map(Number)
     .filter((value) => Number.isFinite(value) && value >= 0 && value <= 100);
 
-  // Fail closed when the spoken command contains no percentage or is ambiguous.
   if (percentages.length !== 1) return null;
   const percentage = percentages[0];
   if (percentage === undefined) return null;
@@ -67,11 +55,12 @@ export function parseVoiceUsageCommand(
   return {
     accountId: account.id,
     accountLabel: account.label,
-    window,
+    windowId: quotaWindow.id,
+    windowLabel: quotaWindow.label,
     usedPercent: clampPercent(percentage),
   };
 }
 
-export function voiceWindowLabel(window: VoiceQuotaWindow): string {
-  return window === "weekly" ? "weekly" : "5-hour";
+export function voiceWindowLabel(windowLabel: string): string {
+  return windowLabel;
 }
