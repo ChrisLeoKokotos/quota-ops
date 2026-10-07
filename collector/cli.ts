@@ -1,4 +1,4 @@
-import { collectClaudeUsageFromBrowser, openClaudeLogin } from "./browser.ts";
+import { collectProviderUsage, openProviderLogin } from "./provider.ts";
 import {
   bootstrapFiveAccounts,
   createAccountConfig,
@@ -19,7 +19,7 @@ function usage(): never {
       "Commands:",
       "  bootstrap-five",
       "  list",
-      "  add <id> <label>",
+      "  add <provider> <id> <label>",
       "  login <id>",
       "  collect <id>",
       "  enable <id> [id...]",
@@ -47,19 +47,25 @@ async function main(): Promise<void> {
     const config = await loadCollectorConfig();
     for (const account of config.accounts) {
       process.stdout.write(
-        `${account.id}\t${account.label}\t${account.enabled ? "enabled" : "disabled"}\t${account.profileDir}\n`,
+        `${account.id}\t${account.provider}\t${account.label}\t${account.enabled ? "enabled" : "disabled"}\t${account.profileDir}\n`,
       );
     }
     return;
   }
 
   if (command === "add") {
-    const [id, ...labelParts] = args;
+    const [providerArg, id, ...labelParts] = args;
     const label = labelParts.join(" ");
-    if (!id || !label) usage();
+    if (
+      (providerArg !== "claude" && providerArg !== "openai") ||
+      !id ||
+      !label
+    ) {
+      usage();
+    }
 
     const config = await loadCollectorConfig();
-    const account = createAccountConfig(id, label);
+    const account = createAccountConfig(id, label, providerArg);
     const existing = config.accounts.findIndex((item) => item.id === account.id);
     const accounts =
       existing >= 0
@@ -125,7 +131,7 @@ async function main(): Promise<void> {
       throw new Error(`Unknown account id: ${id}`);
     }
 
-    const result = await collectClaudeUsageFromBrowser(account);
+    const result = await collectProviderUsage(account);
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return;
   }
@@ -140,7 +146,7 @@ async function main(): Promise<void> {
       throw new Error(`Unknown account id: ${id}`);
     }
 
-    await openClaudeLogin(account);
+    await openProviderLogin(account);
     return;
   }
 
