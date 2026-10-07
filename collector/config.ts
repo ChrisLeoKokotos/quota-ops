@@ -9,6 +9,7 @@ import {
   assertSafeProfileDirectory,
   ensureCollectorHomeSecurity,
 } from "./security.ts";
+import type { Provider } from "../lib/quota.ts";
 import type {
   CollectorAccountConfig,
   CollectorConfig,
@@ -34,6 +35,7 @@ function isAccountConfig(value: unknown): value is CollectorAccountConfig {
     ACCOUNT_ID.test(candidate.id) &&
     typeof candidate.label === "string" &&
     candidate.label.trim().length > 0 &&
+    (candidate.provider === "claude" || candidate.provider === "openai") &&
     typeof candidate.profileDir === "string" &&
     candidate.profileDir.trim().length > 0 &&
     typeof candidate.enabled === "boolean"
@@ -82,7 +84,24 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
 
   try {
     const raw = await readFile(path, "utf8");
-    const parsed: unknown = JSON.parse(raw);
+    const parsedRaw: unknown = JSON.parse(raw);
+    const parsedRecord =
+      parsedRaw && typeof parsedRaw === "object"
+        ? (parsedRaw as Record<string, unknown>)
+        : null;
+    const accountsRaw = Array.isArray(parsedRecord?.accounts)
+      ? parsedRecord.accounts.map((account) => {
+          if (!account || typeof account !== "object") return account;
+          const record = account as Record<string, unknown>;
+          return record.provider
+            ? record
+            : { ...record, provider: "claude" };
+        })
+      : parsedRecord?.accounts;
+    const parsed = parsedRecord
+      ? { ...parsedRecord, accounts: accountsRaw }
+      : parsedRaw;
+
     if (!isCollectorConfig(parsed)) {
       throw new Error(`Invalid QuotaOps collector config: ${path}`);
     }
@@ -105,6 +124,7 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
 export function createAccountConfig(
   id: string,
   label: string,
+  provider: Provider = "claude",
   profileDir = getDefaultProfileDir(id),
 ): CollectorAccountConfig {
   const normalizedId = id.trim().toLowerCase();
@@ -122,6 +142,7 @@ export function createAccountConfig(
   return {
     id: normalizedId,
     label: normalizedLabel,
+    provider,
     profileDir: resolve(profileDir),
     enabled: true,
   };
