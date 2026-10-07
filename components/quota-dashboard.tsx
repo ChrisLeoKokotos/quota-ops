@@ -498,12 +498,20 @@ function AccountCard({
               maxLength={254}
               placeholder="dev@example.com"
               onChange={(event) => {
-                const email = event.target.value;
-                onChange({
-                  ...account,
-                  ...(email ? { email } : { email: undefined }),
-                  updatedAt: new Date().toISOString(),
-                });
+                const email = event.target.value.trim();
+                const { email: _currentEmail, ...accountWithoutEmail } = account;
+                onChange(
+                  email
+                    ? {
+                        ...account,
+                        email,
+                        updatedAt: new Date().toISOString(),
+                      }
+                    : {
+                        ...accountWithoutEmail,
+                        updatedAt: new Date().toISOString(),
+                      },
+                );
               }}
             />
           </label>
