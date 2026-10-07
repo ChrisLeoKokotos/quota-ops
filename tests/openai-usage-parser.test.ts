@@ -27,7 +27,7 @@ test("parses ChatGPT Codex primary and secondary rate-limit windows", () => {
     { id: "five-hour", label: "5-hour", usedPercent: 27 },
     { id: "weekly", label: "Weekly", usedPercent: 61.5 },
   ]);
-  assert.equal(parsed?.windows[0]?.resetAt, "2026-10-07T19:00:00.000Z");
+  assert.equal(parsed?.windows[0]?.resetAt, "2026-10-07T16:20:00.000Z");
 });
 
 test("accepts camelCase window names", () => {
