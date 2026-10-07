@@ -10,6 +10,7 @@ Describe what this changes and why.
 - [ ] Notifications / background behavior
 - [ ] Voice / browser permissions
 - [ ] Provider integration / collector
+- [ ] Token Analytics / local parser
 - [ ] CI / dependencies
 - [ ] Documentation
 - [ ] Other
@@ -29,7 +30,7 @@ Describe what this changes and why.
 - [ ] No new provider authentication behavior is introduced, or it is explicitly documented below.
 - [ ] No new external network destination, telemetry, or background behavior is introduced, or it is explicitly documented below.
 - [ ] Browser permissions / speech / notifications are documented if affected.
-- [ ] Local persistence changes are documented if affected.
+- [ ] Local persistence or local Token Analytics parsing changes are documented if affected.
 
 Security / privacy notes:
 
@@ -43,7 +44,7 @@ npm test
 npm run build
 ```
 
-Describe any additional manual testing.
+Describe any additional manual testing, including `npm run collector:setup -- tokens` when Token Analytics is affected.
 
 ## Documentation
 
