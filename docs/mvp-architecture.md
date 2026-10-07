@@ -4,7 +4,7 @@ QuotaOps is a product created by **SO HOMELY**.
 
 ## Goal
 
-The current MVP provides a single local view of AI-provider accounts so a user can see quota usage, know when each quota resets, and decide which account has usable capacity. Claude and OpenAI / ChatGPT Codex are the first supported providers.
+The current MVP provides a single local view of AI-provider accounts so a user can see quota usage, know when each quota resets, decide which account has usable capacity, and inspect locally observed token activity. Claude and OpenAI / ChatGPT Codex are the first supported providers.
 
 The original use case involved five accounts, but the current UI supports adding and removing account entries rather than enforcing a fixed count.
 
@@ -24,9 +24,10 @@ Browser
         |
         +-- QuotaOps local collector
               |
-              +-- isolated Dev 1 browser profile
-              +-- isolated Dev 2 browser profile
-              +-- ...
+              +-- isolated provider browser profiles
+              +-- Claude / OpenAI quota adapters
+              +-- Claude Code local token scanner
+              +-- Codex local token scanner
 ```
 
 There is currently:
@@ -35,7 +36,8 @@ There is currently:
 - no hosted database;
 - no QuotaOps login;
 - no cloud synchronization;
-- an optional experimental same-PC multi-provider quota collector.
+- an optional experimental same-PC multi-provider quota collector;
+- local Token Analytics from Claude Code and Codex session history.
 
 ## Current account model
 
@@ -88,6 +90,16 @@ Current browser storage includes:
 
 Browser local storage is used only for non-secret operational metadata.
 
+## Token Analytics
+
+Token Analytics is separate from provider capacity.
+
+The collector scans supported local Claude Code and Codex session history, normalizes numeric token usage, and exposes aggregate totals to the dashboard. The dashboard supports Today, 7 days, 30 days, and All time views.
+
+The analytics snapshot is explicitly labeled `locally_observed`. It is not treated as a provider billing statement or guaranteed account-wide lifetime total.
+
+See [token-analytics.md](token-analytics.md).
+
 ## Notifications
 
 When enabled, QuotaOps checks for recently reached reset timestamps and can surface:
@@ -132,7 +144,7 @@ Each collector account is assigned a provider and a separate persistent Chrome /
 The collector:
 
 - binds only to `127.0.0.1:4317`;
-- returns normalized quota snapshots;
+- returns normalized quota and local Token Analytics snapshots;
 - does not expose provider cookies or tokens through its API;
 - polls accounts sequentially to reduce local resource use;
 - reports login, availability, or unsupported-format failures explicitly;
@@ -174,3 +186,4 @@ See [local-collector.md](local-collector.md).
 - Treat provider-derived and voice-derived data as untrusted input.
 - Fail closed to `needs_setup` or `refresh_required` rather than fabricating capacity.
 - Keep provider-specific collection isolated from the core quota model.
+- Keep Token Analytics explicitly local and distinguish it from provider billing or account-wide totals.
