@@ -160,7 +160,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.
 
 ## Changelog and releases
 
-Notable unreleased changes are maintained in [CHANGELOG.md](CHANGELOG.md). Release versioning, tagging, and GitHub Release expectations are documented in [RELEASING.md](RELEASING.md).
+Notable unreleased changes are maintained in [CHANGELOG.md](CHANGELOG.md). A merged pull request is not treated as a release by itself; versioned releases should intentionally promote entries from `[Unreleased]` into a dated version section.
 
 ## Project stewardship
 
