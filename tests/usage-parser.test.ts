@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   looksLikeClaudeUsageUrl,
   parseClaudeUsagePayload,
-  resolveClaudeUsageOrganizationId,
+  resolveClaudeUsageOrganizationIds,
 } from "../collector/usage-parser.ts";
 
 test("parses five-hour and weekly Claude usage windows", () => {
@@ -100,7 +100,7 @@ test("prefers a chat-capable Claude organization over a non-chat preferred org",
   ];
 
   assert.equal(
-    resolveClaudeUsageOrganizationId(organizations, "org_console"),
+    resolveClaudeUsageOrganizationIds(organizations, "org_console")[0],
     "org_chat",
   );
 });
@@ -112,7 +112,34 @@ test("keeps the preferred organization when it is chat-capable", () => {
   ];
 
   assert.equal(
-    resolveClaudeUsageOrganizationId(organizations, "org_chat_b"),
+    resolveClaudeUsageOrganizationIds(organizations, "org_chat_b")[0],
     "org_chat_b",
+  );
+});
+
+
+test("accepts wrapped organization responses and ranks paid chat orgs first", () => {
+  const payload = {
+    organizations: [
+      { id: "org_api", capabilities: ["api"] },
+      { uuid: "org_team", capabilities: ["chat", "claude_team"] },
+    ],
+  };
+
+  assert.deepEqual(
+    resolveClaudeUsageOrganizationIds(payload, "org_api").slice(0, 2),
+    ["org_team", "org_api"],
+  );
+});
+
+test("falls back to orgs without capabilities when Claude omits capability metadata", () => {
+  const payload = [
+    { uuid: "org_a" },
+    { uuid: "org_b" },
+  ];
+
+  assert.deepEqual(
+    resolveClaudeUsageOrganizationIds(payload, null),
+    ["org_a", "org_b"],
   );
 });
