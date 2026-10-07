@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
-import { collectClaudeUsageFromBrowser } from "./browser.ts";
+import { collectProviderUsage } from "./provider.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
       const nextResults: CollectorAccountResult[] = [];
 
       for (const account of enabled) {
-        nextResults.push(await collectClaudeUsageFromBrowser(account));
+        nextResults.push(await collectProviderUsage(account));
       }
 
       results = nextResults;

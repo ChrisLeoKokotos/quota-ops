@@ -8,6 +8,7 @@ import {
   getAccountStatus,
   getRecommendedAccount,
   getWindowState,
+  providerLabel,
   type AccountStatus,
   type QuotaAccount,
   type QuotaWindow,
@@ -61,9 +62,8 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 const STATUS_COPY: Record<AccountStatus, string> = {
   available: "Available",
   low: "Low capacity",
-  five_hour_limited: "5h limited",
-  weekly_limited: "Weekly max",
-  exhausted: "Exhausted",
+  limited: "At limit",
+  exhausted: "Max usage",
   needs_setup: "Needs setup",
   refresh_required: "Refresh required",
 };
@@ -180,24 +180,98 @@ function isQuotaWindow(value: unknown): value is QuotaWindow {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<QuotaWindow>;
   return (
+    typeof candidate.id === "string" &&
+    typeof candidate.label === "string" &&
     typeof candidate.usedPercent === "number" &&
     (typeof candidate.resetAt === "string" || candidate.resetAt === null)
   );
 }
 
-function isQuotaAccount(value: unknown): value is QuotaAccount {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<QuotaAccount>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.label === "string" &&
-    (candidate.email === undefined || typeof candidate.email === "string") &&
+function normalizeStoredAccount(value: unknown): QuotaAccount | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.label !== "string" ||
+    (candidate.email !== undefined && typeof candidate.email !== "string") ||
+    (candidate.provider !== "claude" && candidate.provider !== "openai") ||
+    typeof candidate.updatedAt !== "string"
+  ) {
+    return null;
+  }
+
+  const source =
+    candidate.source === "manual" || candidate.source === "collector"
+      ? candidate.source
+      : undefined;
+
+  let windows: QuotaWindow[] | null = null;
+  if (
+    Array.isArray(candidate.windows) &&
+    candidate.windows.length > 0 &&
+    candidate.windows.every(isQuotaWindow)
+  ) {
+    windows = candidate.windows.map((window) => ({
+      ...window,
+      usedPercent: clampPercent(window.usedPercent),
+    }));
+  } else if (
     candidate.provider === "claude" &&
-    candidate.plan === "team" &&
-    isQuotaWindow(candidate.fiveHour) &&
-    isQuotaWindow(candidate.weekly) &&
-    typeof candidate.updatedAt === "string"
-  );
+    candidate.fiveHour &&
+    candidate.weekly &&
+    typeof candidate.fiveHour === "object" &&
+    typeof candidate.weekly === "object"
+  ) {
+    const fiveHour = candidate.fiveHour as {
+      usedPercent?: unknown;
+      resetAt?: unknown;
+    };
+    const weekly = candidate.weekly as {
+      usedPercent?: unknown;
+      resetAt?: unknown;
+    };
+
+    if (
+      typeof fiveHour.usedPercent === "number" &&
+      (typeof fiveHour.resetAt === "string" || fiveHour.resetAt === null) &&
+      typeof weekly.usedPercent === "number" &&
+      (typeof weekly.resetAt === "string" || weekly.resetAt === null)
+    ) {
+      windows = [
+        {
+          id: "five-hour",
+          label: "5-hour",
+          usedPercent: clampPercent(fiveHour.usedPercent),
+          resetAt: fiveHour.resetAt,
+        },
+        {
+          id: "weekly",
+          label: "Weekly",
+          usedPercent: clampPercent(weekly.usedPercent),
+          resetAt: weekly.resetAt,
+        },
+      ];
+    }
+  }
+
+  if (!windows) return null;
+
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    ...(typeof candidate.email === "string" ? { email: candidate.email } : {}),
+    provider: candidate.provider,
+    plan:
+      typeof candidate.plan === "string" && candidate.plan.trim()
+        ? candidate.plan
+        : candidate.provider === "claude"
+          ? "Team"
+          : "ChatGPT",
+    windows,
+    updatedAt: candidate.updatedAt,
+    ...(source ? { source } : {}),
+  };
 }
 
 function loadAccounts(): QuotaAccount[] {
@@ -205,19 +279,11 @@ function loadAccounts(): QuotaAccount[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isQuotaAccount)) return [];
+    if (!Array.isArray(parsed)) return [];
 
-    return parsed.map((account) => ({
-      ...account,
-      fiveHour: {
-        ...account.fiveHour,
-        usedPercent: clampPercent(account.fiveHour.usedPercent),
-      },
-      weekly: {
-        ...account.weekly,
-        usedPercent: clampPercent(account.weekly.usedPercent),
-      },
-    }));
+    return parsed
+      .map(normalizeStoredAccount)
+      .filter((account): account is QuotaAccount => account !== null);
   } catch {
     return [];
   }
@@ -425,13 +491,12 @@ function AccountCard({
 }) {
   const status = getAccountStatus(account, nowMs);
 
-  const updateWindow = (
-    key: "fiveHour" | "weekly",
-    nextWindow: QuotaWindow,
-  ) => {
+  const updateWindow = (windowId: string, nextWindow: QuotaWindow) => {
     onChange({
       ...account,
-      [key]: nextWindow,
+      windows: account.windows.map((window) =>
+        window.id === windowId ? nextWindow : window,
+      ),
       updatedAt: new Date().toISOString(),
     });
   };
@@ -445,7 +510,7 @@ function AccountCard({
             {recommended ? <span className="recommended">Best capacity</span> : null}
           </div>
           <p>
-            Claude Team · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
+            {providerLabel(account.provider)} {account.plan} · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
           </p>
           {account.email ? <p>{account.email}</p> : null}
         </div>
@@ -457,20 +522,16 @@ function AccountCard({
       </header>
 
       <div className="quota-list">
-        <QuotaRow
-          title="5-hour"
-          quotaWindow={account.fiveHour}
-          nowMs={nowMs}
-          onChange={(next) => updateWindow("fiveHour", next)}
-          editable={account.source !== "collector"}
-        />
-        <QuotaRow
-          title="Weekly"
-          quotaWindow={account.weekly}
-          nowMs={nowMs}
-          onChange={(next) => updateWindow("weekly", next)}
-          editable={account.source !== "collector"}
-        />
+        {account.windows.map((window) => (
+          <QuotaRow
+            key={window.id}
+            title={window.label}
+            quotaWindow={window}
+            nowMs={nowMs}
+            onChange={(next) => updateWindow(window.id, next)}
+            editable={account.source !== "collector"}
+          />
+        ))}
       </div>
 
       <details className="account-editor">
@@ -539,6 +600,7 @@ function AddAccountDialog({
   onAdd: (account: QuotaAccount) => void;
 }) {
   const [label, setLabel] = useState("");
+  const [provider, setProvider] = useState<"claude" | "openai">("claude");
   const [fiveHourUsed, setFiveHourUsed] = useState("0");
   const [fiveHourReset, setFiveHourReset] = useState("");
   const [weeklyUsed, setWeeklyUsed] = useState("0");
@@ -547,6 +609,7 @@ function AddAccountDialog({
   useEffect(() => {
     if (!open) return;
     setLabel("");
+    setProvider("claude");
     setFiveHourUsed("0");
     setFiveHourReset("");
     setWeeklyUsed("0");
@@ -564,16 +627,22 @@ function AddAccountDialog({
     onAdd({
       id: globalThis.crypto?.randomUUID?.() ?? `account-${Date.now()}`,
       label: trimmedLabel,
-      provider: "claude",
-      plan: "team",
-      fiveHour: {
-        usedPercent: clampPercent(Number(fiveHourUsed)),
-        resetAt: localInputToIso(fiveHourReset),
-      },
-      weekly: {
-        usedPercent: clampPercent(Number(weeklyUsed)),
-        resetAt: localInputToIso(weeklyReset),
-      },
+      provider,
+      plan: provider === "claude" ? "Team" : "ChatGPT",
+      windows: [
+        {
+          id: "five-hour",
+          label: "5-hour",
+          usedPercent: clampPercent(Number(fiveHourUsed)),
+          resetAt: localInputToIso(fiveHourReset),
+        },
+        {
+          id: "weekly",
+          label: "Weekly",
+          usedPercent: clampPercent(Number(weeklyUsed)),
+          resetAt: localInputToIso(weeklyReset),
+        },
+      ],
       updatedAt: now,
     });
     onClose();
@@ -590,7 +659,7 @@ function AddAccountDialog({
       >
         <div className="modal-heading">
           <div>
-            <span className="page-kicker">Claude Team</span>
+            <span className="page-kicker">AI account</span>
             <h2 id="add-account-title">Add account</h2>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
@@ -600,11 +669,24 @@ function AddAccountDialog({
 
         <form onSubmit={submit}>
           <label>
+            Provider
+            <select
+              value={provider}
+              onChange={(event) =>
+                setProvider(event.target.value === "openai" ? "openai" : "claude")
+              }
+            >
+              <option value="claude">Claude</option>
+              <option value="openai">OpenAI / Codex</option>
+            </select>
+          </label>
+
+          <label>
             Account label
             <input
               autoFocus
               maxLength={40}
-              placeholder="Dev 1"
+              placeholder={provider === "claude" ? "Dev 1" : "OpenAI 1"}
               required
               value={label}
               onChange={(event) => setLabel(event.target.value)}
@@ -751,7 +833,10 @@ export function QuotaDashboard() {
         if (snapshot.accounts.length > 0) {
           setAccounts((current) => {
             const collectorLabels = new Set(
-              snapshot.accounts.map((account) => account.label.trim().toLowerCase()),
+              snapshot.accounts.map(
+                (account) =>
+                  `${account.provider}:${account.label.trim().toLowerCase()}`,
+              ),
             );
             const collectorIds = new Set(snapshot.accounts.map((account) => account.id));
 
@@ -759,7 +844,9 @@ export function QuotaDashboard() {
               if (collectorIds.has(account.id)) return false;
               if (
                 account.source !== "collector" &&
-                collectorLabels.has(account.label.trim().toLowerCase())
+                collectorLabels.has(
+                  `${account.provider}:${account.label.trim().toLowerCase()}`,
+                )
               ) {
                 return false;
               }
@@ -814,7 +901,7 @@ export function QuotaDashboard() {
 
     for (const event of due) {
       seenResetsRef.current.add(event.key);
-      const message = `${event.accountLabel}: ${resetWindowLabel(event.window)} reset is due.`;
+      const message = `${event.accountLabel}: ${resetWindowLabel(event.windowLabel)} reset is due.`;
       setToasts((current) => [...current, { id: event.key, message }]);
 
       if ("Notification" in window && Notification.permission === "granted") {
@@ -865,19 +952,21 @@ export function QuotaDashboard() {
   );
 
   const summary = useMemo(() => {
-    if (!nowMs) return { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0, setup: 0 };
+    if (!nowMs) {
+      return { available: 0, low: 0, limited: 0, refresh: 0, setup: 0 };
+    }
 
     return accounts.reduce(
       (acc, account) => {
         const status = getAccountStatus(account, nowMs);
-        if (status === "available" || status === "low") acc.available += 1;
-        if (status === "weekly_limited" || status === "exhausted") acc.weeklyMax += 1;
-        if (status === "five_hour_limited" || status === "exhausted") acc.fiveHourMax += 1;
+        if (status === "available") acc.available += 1;
+        if (status === "low") acc.low += 1;
+        if (status === "limited" || status === "exhausted") acc.limited += 1;
         if (status === "refresh_required") acc.refresh += 1;
         if (status === "needs_setup") acc.setup += 1;
         return acc;
       },
-      { available: 0, weeklyMax: 0, fiveHourMax: 0, refresh: 0, setup: 0 },
+      { available: 0, low: 0, limited: 0, refresh: 0, setup: 0 },
     );
   }, [accounts, nowMs]);
 
@@ -1007,17 +1096,18 @@ export function QuotaDashboard() {
           if (account.id !== command.accountId) return account;
           return {
             ...account,
-            [command.window]: {
-              ...account[command.window],
-              usedPercent: command.usedPercent,
-            },
+            windows: account.windows.map((window) =>
+              window.id === command.windowId
+                ? { ...window, usedPercent: command.usedPercent }
+                : window,
+            ),
             updatedAt: new Date().toISOString(),
           };
         }),
       );
 
       showToast(
-        `Updated ${command.accountLabel} ${voiceWindowLabel(command.window)} to ${command.usedPercent}%.`,
+        `Updated ${command.accountLabel} ${voiceWindowLabel(command.windowLabel)} to ${command.usedPercent}%.`,
       );
     };
 
@@ -1166,7 +1256,7 @@ export function QuotaDashboard() {
               <span className="page-kicker">Capacity overview</span>
               <h1>Keep every account ready for the next task.</h1>
               <p>
-                Track your real Claude Team accounts, quota windows, and exact
+                Track Claude and OpenAI accounts, quota windows, and exact
                 reset times from one local workspace.
               </p>
             </div>
@@ -1194,12 +1284,12 @@ export function QuotaDashboard() {
               <strong>{summary.available}<small> / {accounts.length}</small></strong>
             </div>
             <div className="metric">
-              <span>Weekly max</span>
-              <strong>{summary.weeklyMax}</strong>
+              <span>Low capacity</span>
+              <strong>{summary.low}</strong>
             </div>
             <div className="metric">
-              <span>5h blocked</span>
-              <strong>{summary.fiveHourMax}</strong>
+              <span>At limit</span>
+              <strong>{summary.limited}</strong>
             </div>
             <div className="metric metric-highlight">
               <span>Recommended</span>
@@ -1240,14 +1330,26 @@ export function QuotaDashboard() {
               ) : (
                 <>
                   {accounts
-                    .filter((account) => getAccountStatus(account, nowMs) === "weekly_limited")
+                    .filter((account) => {
+                      const status = getAccountStatus(account, nowMs);
+                      return status === "limited" || status === "exhausted";
+                    })
                     .slice(0, 2)
-                    .map((account) => (
-                      <div className="tip-item" key={`weekly-${account.id}`}>
-                        <strong>{account.label}</strong>
-                        <span>Weekly quota is maxed. It resets in {formatCountdown(account.weekly.resetAt, nowMs)}.</span>
-                      </div>
-                    ))}
+                    .map((account) => {
+                      const blocked = account.windows.find(
+                        (window) => clampPercent(window.usedPercent) >= 100,
+                      );
+                      return (
+                        <div className="tip-item" key={`limited-${account.id}`}>
+                          <strong>{account.label}</strong>
+                          <span>
+                            {blocked
+                              ? `${blocked.label} quota is maxed. ${formatCountdown(blocked.resetAt, nowMs)} remaining.`
+                              : "One or more quota windows are at their limit."}
+                          </span>
+                        </div>
+                      );
+                    })}
                   {accounts
                     .filter((account) => getAccountStatus(account, nowMs) === "refresh_required")
                     .slice(0, 2)
@@ -1281,7 +1383,7 @@ export function QuotaDashboard() {
             <div className="section-heading">
               <div>
                 <span className="page-kicker">Accounts</span>
-                <h2>Claude Team</h2>
+                <h2>AI accounts</h2>
               </div>
               <span>{accounts.length} account{accounts.length === 1 ? "" : "s"}</span>
             </div>
@@ -1319,7 +1421,7 @@ export function QuotaDashboard() {
             <strong>Local-first.</strong>
             <span>
               Manual data stays in this browser. Auto-sync uses a collector bound
-              only to 127.0.0.1 on this PC; Claude browser profiles remain local.
+              only to 127.0.0.1 on this PC; provider browser profiles remain local.
             </span>
           </footer>
         </main>

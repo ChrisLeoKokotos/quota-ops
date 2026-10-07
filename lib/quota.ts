@@ -1,7 +1,9 @@
-export type Provider = "claude";
-export type Plan = "team";
+export type Provider = "claude" | "openai";
+export type Plan = string;
 
 export interface QuotaWindow {
+  id: string;
+  label: string;
   usedPercent: number;
   resetAt: string | null;
 }
@@ -12,8 +14,7 @@ export interface QuotaAccount {
   email?: string;
   provider: Provider;
   plan: Plan;
-  fiveHour: QuotaWindow;
-  weekly: QuotaWindow;
+  windows: QuotaWindow[];
   updatedAt: string;
   source?: "manual" | "collector";
 }
@@ -28,8 +29,7 @@ export type WindowState =
 export type AccountStatus =
   | "available"
   | "low"
-  | "five_hour_limited"
-  | "weekly_limited"
+  | "limited"
   | "exhausted"
   | "needs_setup"
   | "refresh_required";
@@ -76,29 +76,41 @@ export function getAccountStatus(
   account: QuotaAccount,
   nowMs: number,
 ): AccountStatus {
-  const fiveHour = getAccountWindowState(account, account.fiveHour, nowMs);
-  const weekly = getAccountWindowState(account, account.weekly, nowMs);
+  if (account.windows.length === 0) return "needs_setup";
 
-  if (fiveHour === "exhausted" && weekly === "exhausted") {
-    return "exhausted";
-  }
+  const states = account.windows.map((window) =>
+    getAccountWindowState(account, window, nowMs),
+  );
 
-  if (weekly === "exhausted") return "weekly_limited";
-  if (fiveHour === "exhausted") return "five_hour_limited";
-
-  if (
-    fiveHour === "refresh_required" ||
-    weekly === "refresh_required"
-  ) {
+  if (states.every((state) => state === "exhausted")) return "exhausted";
+  if (states.some((state) => state === "exhausted")) return "limited";
+  if (states.some((state) => state === "refresh_required")) {
     return "refresh_required";
   }
-
-  if (fiveHour === "unknown" || weekly === "unknown") {
-    return "needs_setup";
-  }
-  if (weekly === "low" || fiveHour === "low") return "low";
+  if (states.some((state) => state === "unknown")) return "needs_setup";
+  if (states.some((state) => state === "low")) return "low";
 
   return "available";
+}
+
+function recommendationWeights(account: QuotaAccount): number[] {
+  if (account.windows.length === 2) {
+    const fiveHourIndex = account.windows.findIndex(
+      (window) => window.id === "five-hour",
+    );
+    const weeklyIndex = account.windows.findIndex(
+      (window) => window.id === "weekly",
+    );
+
+    if (fiveHourIndex >= 0 && weeklyIndex >= 0) {
+      return account.windows.map((_, index) =>
+        index === weeklyIndex ? 0.7 : index === fiveHourIndex ? 0.3 : 0,
+      );
+    }
+  }
+
+  const equal = 1 / account.windows.length;
+  return account.windows.map(() => equal);
 }
 
 export function recommendationScore(
@@ -110,17 +122,18 @@ export function recommendationScore(
   if (
     status === "refresh_required" ||
     status === "needs_setup" ||
-    status === "weekly_limited" ||
-    status === "five_hour_limited" ||
+    status === "limited" ||
     status === "exhausted"
   ) {
     return Number.NEGATIVE_INFINITY;
   }
 
-  const weeklyRemaining = 100 - clampPercent(account.weekly.usedPercent);
-  const fiveHourRemaining = 100 - clampPercent(account.fiveHour.usedPercent);
-
-  return weeklyRemaining * 0.7 + fiveHourRemaining * 0.3;
+  const weights = recommendationWeights(account);
+  return account.windows.reduce(
+    (score, window, index) =>
+      score + (100 - clampPercent(window.usedPercent)) * (weights[index] ?? 0),
+    0,
+  );
 }
 
 export function getRecommendedAccount(
@@ -160,3 +173,6 @@ export function formatCountdown(resetAt: string | null, nowMs: number): string {
   return `${minutes}m`;
 }
 
+export function providerLabel(provider: Provider): string {
+  return provider === "claude" ? "Claude" : "OpenAI";
+}

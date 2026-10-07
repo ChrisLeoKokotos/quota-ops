@@ -35,13 +35,19 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
   return (
     typeof account.id === "string" &&
     typeof account.label === "string" &&
-    account.provider === "claude" &&
-    account.plan === "team" &&
+    (account.provider === "claude" || account.provider === "openai") &&
+    typeof account.plan === "string" &&
     typeof account.updatedAt === "string" &&
-    !!account.fiveHour &&
-    typeof account.fiveHour.usedPercent === "number" &&
-    !!account.weekly &&
-    typeof account.weekly.usedPercent === "number"
+    Array.isArray(account.windows) &&
+    account.windows.length > 0 &&
+    account.windows.every(
+      (window) =>
+        !!window &&
+        typeof window.id === "string" &&
+        typeof window.label === "string" &&
+        typeof window.usedPercent === "number" &&
+        (typeof window.resetAt === "string" || window.resetAt === null),
+    )
   );
 }
 

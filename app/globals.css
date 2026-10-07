@@ -67,7 +67,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
   color: inherit;
 }
@@ -521,10 +522,15 @@ a {
   background: var(--warn);
 }
 
-.status-badge[data-status="weekly_limited"] .status-dot,
-.status-badge[data-status="five_hour_limited"] .status-dot,
+.status-badge[data-status="limited"] .status-dot,
 .status-badge[data-status="exhausted"] .status-dot {
   background: var(--danger);
+}
+
+.status-badge[data-status="limited"],
+.status-badge[data-status="exhausted"] {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .quota-list {
@@ -650,7 +656,8 @@ label {
   font-size: 0.7rem;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -665,7 +672,8 @@ input::placeholder {
   color: var(--subtle);
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus);
 }

@@ -1,12 +1,11 @@
 import type { QuotaAccount } from "./quota";
 
-export type ResetWindowKind = "fiveHour" | "weekly";
-
 export interface DueResetEvent {
   key: string;
   accountId: string;
   accountLabel: string;
-  window: ResetWindowKind;
+  windowId: string;
+  windowLabel: string;
   resetAt: string;
 }
 
@@ -21,22 +20,23 @@ export function getDueResetEvents(
   const events: DueResetEvent[] = [];
 
   for (const account of accounts) {
-    for (const window of ["fiveHour", "weekly"] as const) {
-      const resetAt = account[window].resetAt;
+    for (const window of account.windows) {
+      const resetAt = window.resetAt;
       if (!resetAt) continue;
 
       const resetMs = Date.parse(resetAt);
       if (!Number.isFinite(resetMs)) continue;
       if (resetMs > nowMs || resetMs < nowMs - graceMs) continue;
 
-      const key = `${account.id}:${window}:${resetAt}`;
+      const key = `${account.id}:${window.id}:${resetAt}`;
       if (seenKeys.has(key)) continue;
 
       events.push({
         key,
         accountId: account.id,
         accountLabel: account.label,
-        window,
+        windowId: window.id,
+        windowLabel: window.label,
         resetAt,
       });
     }
@@ -45,6 +45,6 @@ export function getDueResetEvents(
   return events;
 }
 
-export function resetWindowLabel(window: ResetWindowKind): string {
-  return window === "fiveHour" ? "5-hour limit" : "weekly limit";
+export function resetWindowLabel(windowLabel: string): string {
+  return `${windowLabel} limit`;
 }

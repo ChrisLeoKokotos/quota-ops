@@ -4,7 +4,7 @@ QuotaOps is a product created by **SO HOMELY**.
 
 ## Goal
 
-The current MVP solves one concrete operational problem: provide a single local view of multiple Claude Team accounts so a user can see 5-hour and weekly usage, know when each quota resets, and decide which account has usable capacity.
+The current MVP provides a single local view of AI-provider accounts so a user can see quota usage, know when each quota resets, and decide which account has usable capacity. Claude and OpenAI / ChatGPT Codex are the first supported providers.
 
 The original use case involved five accounts, but the current UI supports adding and removing account entries rather than enforcing a fixed count.
 
@@ -35,7 +35,7 @@ There is currently:
 - no hosted database;
 - no QuotaOps login;
 - no cloud synchronization;
-- an optional experimental same-PC Claude quota collector.
+- an optional experimental same-PC multi-provider quota collector.
 
 ## Current account model
 
@@ -45,12 +45,9 @@ Each account contains:
 - local display label;
 - optional locally entered email metadata;
 - source: manual or collector;
-- provider: currently Claude;
-- plan: currently Team;
-- 5-hour usage percentage;
-- 5-hour reset timestamp;
-- weekly usage percentage;
-- weekly reset timestamp;
+- provider and plan label;
+- one or more named quota windows;
+- usage percentage and reset timestamp per window;
 - local update timestamp.
 
 ## Derived states
@@ -59,9 +56,8 @@ QuotaOps derives states from stored metadata:
 
 - `available` — quota is usable;
 - `low` — at least one known quota window is near the low-capacity threshold;
-- `five_hour_limited` — 5-hour usage is exhausted before its reset;
-- `weekly_limited` — weekly usage is exhausted before its reset;
-- `exhausted` — both windows are exhausted;
+- `limited` — at least one quota window is exhausted;
+- `exhausted` — all known quota windows are exhausted;
 - `needs_setup` — required reset metadata is missing;
 - `refresh_required` — a known reset timestamp has passed and current usage must be refreshed.
 
@@ -131,7 +127,7 @@ The backend boundary should only be introduced when a concrete feature requires 
 
 The repository now contains an experimental local collector.
 
-Each collector account is assigned a separate persistent Chrome / Edge profile. The user signs in interactively to the intended Claude account inside that profile. On Windows, scheduled refreshes later start the installed browser against that same profile in hidden/headless mode and attach over an ephemeral loopback-only DevTools listener.
+Each collector account is assigned a provider and a separate persistent Chrome / Edge profile. The user signs in interactively to the intended provider account inside that profile. Claude collection observes the real Usage-page response. OpenAI collection reads Codex quota metadata from the authenticated ChatGPT browser session without returning the session token in the collector snapshot.
 
 The collector:
 
@@ -142,26 +138,31 @@ The collector:
 - reports login, availability, or unsupported-format failures explicitly;
 - supports per-account `collect`, `enable`, and `disable` operations so accounts can be validated independently before joining the background refresh loop.
 
-The Claude Team web usage response is not treated as a stable public API. The adapter is isolated so provider changes fail closed instead of corrupting the core quota model.
+Provider web quota surfaces are not treated as stable public APIs. Adapters are isolated so provider changes fail closed instead of corrupting the core quota model.
 
 See [local-collector.md](local-collector.md).
 
-## Normalized future snapshot
+## Normalized snapshot
 
 ```json
 {
-  "account": "dev-1",
-  "provider": "claude",
-  "plan": "team",
-  "five_hour": {
-    "used_percent": 82,
-    "reset_at": "2026-10-06T05:40:00+03:00"
-  },
-  "weekly": {
-    "used_percent": 100,
-    "reset_at": "2026-10-10T14:20:00+03:00"
-  },
-  "collected_at": "2026-10-06T03:15:00+03:00"
+  "id": "openai-1",
+  "provider": "openai",
+  "plan": "pro",
+  "windows": [
+    {
+      "id": "five-hour",
+      "label": "5-hour",
+      "usedPercent": 27,
+      "resetAt": "2026-10-07T19:30:00.000Z"
+    },
+    {
+      "id": "weekly",
+      "label": "Weekly",
+      "usedPercent": 21,
+      "resetAt": "2026-10-12T03:00:00.000Z"
+    }
+  ]
 }
 ```
 

@@ -1,8 +1,13 @@
-import { clampPercent, type QuotaWindow } from "../lib/quota.ts";
+import { clampPercent } from "../lib/quota.ts";
+
+export interface ParsedUsageWindow {
+  usedPercent: number;
+  resetAt: string | null;
+}
 
 export interface ParsedUsage {
-  fiveHour: QuotaWindow;
-  weekly: QuotaWindow;
+  fiveHour: ParsedUsageWindow;
+  weekly: ParsedUsageWindow;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -19,7 +24,7 @@ function parseResetAt(value: unknown): string | null {
     : null;
 }
 
-function parseWindow(value: unknown): QuotaWindow | null {
+function parseWindow(value: unknown): ParsedUsageWindow | null {
   const record = asRecord(value);
   if (!record) return null;
 
@@ -162,7 +167,7 @@ export function resolveClaudeUsageOrganizationIds(
 function parseNamedLimit(
   root: Record<string, unknown>,
   names: readonly string[],
-): QuotaWindow | null {
+): ParsedUsageWindow | null {
   for (const name of names) {
     const direct = parseWindow(root[name]);
     if (direct) return direct;
