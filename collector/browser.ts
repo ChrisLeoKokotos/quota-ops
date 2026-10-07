@@ -10,7 +10,7 @@ import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts"
 import {
   looksLikeClaudeUsageUrl,
   parseClaudeUsagePayload,
-  resolveClaudeUsageOrganizationId,
+  resolveClaudeUsageOrganizationIds,
 } from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
@@ -272,27 +272,45 @@ async function preferredClaudeOrganizationId(
 
 async function fetchClaudeOrganizations(
   page: Page,
-): Promise<unknown | null> {
+): Promise<{ payload: unknown | null; reason: string | null }> {
   try {
-    return await page.evaluate(async () => {
-      const response = await fetch("/api/organizations", {
+    const response = await page.evaluate(async () => {
+      const result = await fetch("/api/organizations", {
         method: "GET",
         credentials: "include",
         cache: "no-store",
         headers: {
           Accept: "application/json",
+          "anthropic-client-platform": "web_claude_ai",
+          "anthropic-client-version": "1.0.0",
         },
       });
 
-      if (!response.ok) return null;
+      const contentType = result.headers.get("content-type") ?? "";
+      const text = await result.text();
 
-      const contentType = response.headers.get("content-type") ?? "";
-      if (!contentType.toLowerCase().includes("application/json")) return null;
-
-      return await response.json();
+      return {
+        ok: result.ok,
+        status: result.status,
+        contentType,
+        text,
+      };
     });
+
+    if (!response.ok) {
+      return {
+        payload: null,
+        reason: `organizations_http_${response.status}`,
+      };
+    }
+
+    if (!response.contentType.toLowerCase().includes("application/json")) {
+      return { payload: null, reason: "organizations_not_json" };
+    }
+
+    return { payload: JSON.parse(response.text) as unknown, reason: null };
   } catch {
-    return null;
+    return { payload: null, reason: "organizations_fetch_failed" };
   }
 }
 
@@ -312,6 +330,8 @@ async function fetchUsagePayload(
           cache: "no-store",
           headers: {
             Accept: "application/json",
+            "anthropic-client-platform": "web_claude_ai",
+            "anthropic-client-version": "1.0.0",
           },
         });
 
@@ -402,31 +422,43 @@ async function collectFromContext(
 
   const preferredOrganizationId =
     await preferredClaudeOrganizationId(context);
-  const organizationsPayload = await fetchClaudeOrganizations(page);
-  const organizationId = resolveClaudeUsageOrganizationId(
-    organizationsPayload,
+  const organizations = await fetchClaudeOrganizations(page);
+  const organizationIds = resolveClaudeUsageOrganizationIds(
+    organizations.payload,
     preferredOrganizationId,
   );
 
-  if (!organizationId) {
+  if (organizationIds.length === 0) {
     return result(
       account,
       "unsupported",
-      "Could not determine the Claude chat organization for this local profile.",
+      organizations.reason
+        ? `Could not determine the Claude chat organization (${organizations.reason}).`
+        : "Could not determine the Claude chat organization for this local profile.",
     );
   }
 
-  const fetched = await fetchUsagePayload(page, organizationId);
-  const parsed = fetched.payload
-    ? parseClaudeUsagePayload(fetched.payload)
-    : null;
+  let lastReason: string | null = null;
+  let parsed: ReturnType<typeof parseClaudeUsagePayload> = null;
+
+  for (const organizationId of organizationIds) {
+    const fetched = await fetchUsagePayload(page, organizationId);
+    lastReason = fetched.reason;
+
+    if (!fetched.payload) continue;
+
+    parsed = parseClaudeUsagePayload(fetched.payload);
+    if (parsed) break;
+
+    lastReason = "usage_unrecognized";
+  }
 
   if (!parsed) {
     return result(
       account,
       "unsupported",
-      fetched.reason
-        ? `Could not read Claude usage data (${fetched.reason}). Open this profile manually and verify Settings > Usage is available.`
+      lastReason
+        ? `Could not read Claude usage data (${lastReason}). Open this profile manually and verify Settings > Usage is available.`
         : "Claude returned a usage response in an unrecognized format.",
     );
   }
