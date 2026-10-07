@@ -14,9 +14,10 @@ QuotaOps is currently a local-first MVP for Claude Team quota and reset manageme
 - light / dark themes;
 - reset notifications;
 - optional browser voice input;
-- keyboard shortcuts.
+- keyboard shortcuts;
+- an experimental same-PC Claude collector with isolated browser profiles, per-account validation, and a loopback-only local snapshot service.
 
-There is no backend or automatic provider collector yet.
+There is no hosted backend or cloud sync.
 
 ## Ground rules
 
@@ -34,7 +35,7 @@ There is no backend or automatic provider collector yet.
 Recommended runtime: Node.js 22.21.0.
 
 ```bash
-npm install
+npm ci --ignore-scripts --no-audit --no-fund
 npm run dev
 ```
 

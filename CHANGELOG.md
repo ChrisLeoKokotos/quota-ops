@@ -8,6 +8,9 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 
 ### Added
 
+- Experimental same-PC multi-account collector with isolated local Chrome / Edge profiles, loopback-only snapshot service, per-account login/collect/enable/disable controls, hidden scheduled Windows refreshes, and automatic dashboard synchronization.
+- Local display-name and optional email metadata for collector-synced accounts, preserved across automatic quota refreshes.
+
 - Functional Claude Team quota dashboard.
 - Real local account creation, editing, and removal.
 - 5-hour and weekly usage tracking with exact reset timestamps.
@@ -34,9 +37,13 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 - Refined dashboard layout, sidebar, cards, controls, and responsive behavior.
 - Changed primary visual accents to neutral inverse styling: dark on light theme and light on dark theme.
 - Updated documentation to reflect the current product state and identify QuotaOps as a product created by **SO HOMELY**.
+- Expanded the collector setup guide with the complete five-account workflow, command reference, troubleshooting, data boundaries, and validated Windows behavior.
 
 ### Security
 
+- Hardened the local collector with a random 256-bit API token, loopback-only authenticated access, strict Host/Origin checks, rate limiting, HTTP timeouts, protected profile roots, Windows ACL / Unix permission hardening, exact provider Usage endpoint filtering, and response-size limits.
+- Added Content Security Policy and corrected microphone permissions to allow only the QuotaOps origin.
+- Added production dependency audit and pinned CodeQL analysis to CI.
 - Local-first MVP with no QuotaOps backend, hosted database, cloud sync, or provider credential storage.
 - GitHub Actions use read-only permissions where applicable and immutable action SHAs.
 - Secret Protection, Push Protection, dependency review, and repository branch protections are part of the repository security baseline.

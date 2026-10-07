@@ -12,6 +12,8 @@
   --accent: #202123;
   --accent-hover: #000000;
   --accent-soft: #ececee;
+  --success: #1f8f5f;
+  --success-soft: #edf9f3;
   --warn: #b7791f;
   --warn-soft: #fff8e8;
   --danger: #c94b52;
@@ -35,6 +37,8 @@
   --accent: #f4f4f4;
   --accent-hover: #ffffff;
   --accent-soft: rgba(255, 255, 255, 0.10);
+  --success: #57c994;
+  --success-soft: rgba(87, 201, 148, 0.12);
   --warn: #e2a84b;
   --warn-soft: rgba(226, 168, 75, 0.10);
   --danger: #ef6b73;
@@ -94,26 +98,60 @@ a {
   padding: 14px 12px;
 }
 
-.sidebar-brand {
+.sidebar-top {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  padding: 0 10px;
-  font-size: 0.95rem;
-  font-weight: 650;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.brand-mark {
-  display: grid;
-  width: 28px;
-  height: 28px;
+.sidebar-toggle {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
   place-items: center;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.sidebar-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.sidebar-toggle-floating {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 30;
+  border: 1px solid var(--border);
   background: var(--surface);
-  font-size: 0.78rem;
-  font-weight: 750;
+}
+
+.sidebar-brand {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 10px;
+}
+
+.sidebar-brand strong {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 680;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.sidebar-brand span {
+  color: var(--subtle);
+  font-size: 0.58rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
 }
 
 .sidebar-nav {
@@ -196,6 +234,13 @@ a {
   width: min(1080px, calc(100% - 292px));
   margin-left: 244px;
   padding: 64px 24px 52px 48px;
+  transition: margin-left 180ms ease, width 180ms ease, padding-left 180ms ease;
+}
+
+.app-shell[data-sidebar-open="false"] .workspace {
+  width: min(1080px, calc(100% - 72px));
+  margin-left: 0;
+  padding-left: 72px;
 }
 
 .page-header {
@@ -460,6 +505,15 @@ a {
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+.status-badge[data-status="available"] {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-badge[data-status="available"] .status-dot {
+  background: var(--success);
 }
 
 .status-badge[data-status="low"] .status-dot,
@@ -774,12 +828,25 @@ input:focus {
     width: 76px;
   }
 
+  .sidebar-top {
+    justify-content: center;
+  }
+
   .sidebar-brand {
     justify-content: center;
     padding: 0;
+    text-align: center;
   }
 
-  .sidebar-brand > span:last-child,
+  .sidebar-toggle-inside {
+    display: none;
+  }
+
+  .sidebar-brand strong {
+    font-size: 0.82rem;
+  }
+
+  .sidebar-brand span,
   .collector-status div,
   .theme-button span {
     display: none;
@@ -801,6 +868,12 @@ input:focus {
     margin-left: 76px;
     padding-left: 32px;
   }
+
+  .app-shell[data-sidebar-open="false"] .workspace {
+    width: 100%;
+    margin-left: 0;
+    padding-left: 72px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -819,10 +892,16 @@ input:focus {
   .sidebar-brand {
     justify-content: flex-start;
     min-height: 38px;
+    text-align: left;
   }
 
-  .sidebar-brand > span:last-child {
-    display: inline;
+  .sidebar-brand strong {
+    font-size: 0.92rem;
+  }
+
+  .sidebar-brand span {
+    display: block;
+    font-size: 0.52rem;
   }
 
   .sidebar-nav {
@@ -854,6 +933,21 @@ input:focus {
     width: 100%;
     margin-left: 0;
     padding: 36px 18px 42px;
+  }
+
+  .app-shell[data-sidebar-open="false"] .workspace {
+    width: 100%;
+    margin-left: 0;
+    padding: 68px 18px 42px;
+  }
+
+  .sidebar-toggle-floating {
+    top: 10px;
+    left: 12px;
+  }
+
+  .sidebar-toggle-inside {
+    display: inline-grid;
   }
 
   .page-header {
@@ -1099,4 +1193,22 @@ kbd {
     grid-template-columns: 1fr;
     gap: 4px;
   }
+}
+
+.auto-sync-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 560;
+}
+
+.collector-status[data-state="connected"] .collector-dot {
+  background: var(--accent);
+}
+
+.collector-status[data-state="checking"] .collector-dot {
+  background: var(--warn);
+}
+
+.collector-status[data-state="offline"] .collector-dot {
+  background: var(--subtle);
 }

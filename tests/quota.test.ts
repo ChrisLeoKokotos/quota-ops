@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   getAccountStatus,
   getRecommendedAccount,
+  getWindowState,
+  recommendationScore,
   type QuotaAccount,
 } from "../lib/quota.ts";
 
@@ -49,6 +51,23 @@ test("missing reset timestamps require setup instead of stale-refresh messaging"
   assert.equal(getAccountStatus(incomplete, NOW), "needs_setup");
 });
 
+test("collector zero-usage windows may omit a reset without requiring setup", () => {
+  const synced = account("dev-collector", 0, 10);
+  synced.source = "collector";
+  synced.fiveHour.resetAt = null;
+
+  assert.equal(getAccountStatus(synced, NOW), "available");
+  assert.ok(Number.isFinite(recommendationScore(synced, NOW)));
+});
+
+test("collector nonzero windows still require a reset timestamp", () => {
+  const incomplete = account("dev-collector-incomplete", 25, 10);
+  incomplete.source = "collector";
+  incomplete.fiveHour.resetAt = null;
+
+  assert.equal(getAccountStatus(incomplete, NOW), "needs_setup");
+});
+
 test("expired reset timestamps require refresh instead of inventing capacity", () => {
   const stale = account("dev-3", 60, 60);
   stale.fiveHour.resetAt = "2026-10-05T23:00:00.000Z";
@@ -67,4 +86,23 @@ test("recommendation prefers the account with the strongest remaining capacity",
   );
 
   assert.equal(recommended?.id, "dev-2");
+});
+
+test("weekly exhaustion remains the primary account status after its reset timestamp passes", () => {
+  const blocked = account("dev-weekly-stale", 0, 100);
+  blocked.fiveHour.resetAt = new Date(NOW + 60 * 60 * 1000).toISOString();
+  blocked.weekly.resetAt = new Date(NOW - 60 * 1000).toISOString();
+
+  assert.equal(getWindowState(blocked.weekly, NOW), "exhausted");
+  assert.equal(getAccountStatus(blocked, NOW), "weekly_limited");
+  assert.equal(recommendationScore(blocked, NOW), Number.NEGATIVE_INFINITY);
+});
+
+test("stale reset remains refresh required when the quota is not exhausted", () => {
+  const stale = account("dev-stale", 0, 50);
+  stale.fiveHour.resetAt = new Date(NOW + 60 * 60 * 1000).toISOString();
+  stale.weekly.resetAt = new Date(NOW - 60 * 1000).toISOString();
+
+  assert.equal(getWindowState(stale.weekly, NOW), "refresh_required");
+  assert.equal(getAccountStatus(stale, NOW), "refresh_required");
 });

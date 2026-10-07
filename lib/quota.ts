@@ -9,11 +9,13 @@ export interface QuotaWindow {
 export interface QuotaAccount {
   id: string;
   label: string;
+  email?: string;
   provider: Provider;
   plan: Plan;
   fiveHour: QuotaWindow;
   weekly: QuotaWindow;
   updatedAt: string;
+  source?: "manual" | "collector";
 }
 
 export type WindowState =
@@ -45,19 +47,44 @@ export function getWindowState(
 
   const resetMs = Date.parse(window.resetAt);
   if (!Number.isFinite(resetMs)) return "unknown";
+
+  const usedPercent = clampPercent(window.usedPercent);
+  if (usedPercent >= 100) return "exhausted";
   if (resetMs <= nowMs) return "refresh_required";
-  if (clampPercent(window.usedPercent) >= 100) return "exhausted";
-  if (clampPercent(window.usedPercent) >= 85) return "low";
+  if (usedPercent >= 85) return "low";
 
   return "available";
+}
+
+function getAccountWindowState(
+  account: QuotaAccount,
+  window: QuotaWindow,
+  nowMs: number,
+): WindowState {
+  if (
+    account.source === "collector" &&
+    window.resetAt === null &&
+    clampPercent(window.usedPercent) === 0
+  ) {
+    return "available";
+  }
+
+  return getWindowState(window, nowMs);
 }
 
 export function getAccountStatus(
   account: QuotaAccount,
   nowMs: number,
 ): AccountStatus {
-  const fiveHour = getWindowState(account.fiveHour, nowMs);
-  const weekly = getWindowState(account.weekly, nowMs);
+  const fiveHour = getAccountWindowState(account, account.fiveHour, nowMs);
+  const weekly = getAccountWindowState(account, account.weekly, nowMs);
+
+  if (fiveHour === "exhausted" && weekly === "exhausted") {
+    return "exhausted";
+  }
+
+  if (weekly === "exhausted") return "weekly_limited";
+  if (fiveHour === "exhausted") return "five_hour_limited";
 
   if (
     fiveHour === "refresh_required" ||
@@ -69,13 +96,6 @@ export function getAccountStatus(
   if (fiveHour === "unknown" || weekly === "unknown") {
     return "needs_setup";
   }
-
-  if (fiveHour === "exhausted" && weekly === "exhausted") {
-    return "exhausted";
-  }
-
-  if (weekly === "exhausted") return "weekly_limited";
-  if (fiveHour === "exhausted") return "five_hour_limited";
   if (weekly === "low" || fiveHour === "low") return "low";
 
   return "available";
@@ -140,58 +160,3 @@ export function formatCountdown(resetAt: string | null, nowMs: number): string {
   return `${minutes}m`;
 }
 
-export function createDemoAccounts(nowMs = Date.now()): QuotaAccount[] {
-  const isoIn = (milliseconds: number) =>
-    new Date(nowMs + milliseconds).toISOString();
-  const hours = (value: number) => value * 60 * 60 * 1_000;
-  const days = (value: number) => hours(value * 24);
-  const updatedAt = new Date(nowMs).toISOString();
-
-  return [
-    {
-      id: "dev-1",
-      label: "Dev 1",
-      provider: "claude",
-      plan: "team",
-      fiveHour: { usedPercent: 63, resetAt: isoIn(hours(2.4)) },
-      weekly: { usedPercent: 100, resetAt: isoIn(days(4) + hours(7)) },
-      updatedAt,
-    },
-    {
-      id: "dev-2",
-      label: "Dev 2",
-      provider: "claude",
-      plan: "team",
-      fiveHour: { usedPercent: 92, resetAt: isoIn(hours(0.8)) },
-      weekly: { usedPercent: 44, resetAt: isoIn(days(1) + hours(7)) },
-      updatedAt,
-    },
-    {
-      id: "dev-3",
-      label: "Dev 3",
-      provider: "claude",
-      plan: "team",
-      fiveHour: { usedPercent: 21, resetAt: isoIn(hours(3.2)) },
-      weekly: { usedPercent: 73, resetAt: isoIn(days(5) + hours(2)) },
-      updatedAt,
-    },
-    {
-      id: "dev-4",
-      label: "Dev 4",
-      provider: "claude",
-      plan: "team",
-      fiveHour: { usedPercent: 100, resetAt: isoIn(hours(1.1)) },
-      weekly: { usedPercent: 38, resetAt: isoIn(days(2) + hours(11)) },
-      updatedAt,
-    },
-    {
-      id: "dev-5",
-      label: "Dev 5",
-      provider: "claude",
-      plan: "team",
-      fiveHour: { usedPercent: 47, resetAt: isoIn(hours(4.5)) },
-      weekly: { usedPercent: 12, resetAt: isoIn(days(6) + hours(4)) },
-      updatedAt,
-    },
-  ];
-}

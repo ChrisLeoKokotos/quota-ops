@@ -17,11 +17,20 @@ import {
   getDueResetEvents,
   resetWindowLabel,
 } from "@/lib/reset-notifications";
+import {
+  fetchCollectorSnapshot,
+  type CollectorConnectionState,
+} from "@/lib/collector-client";
+import {
+  parseVoiceUsageCommand,
+  voiceWindowLabel,
+} from "@/lib/voice-command";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
 const NOTIFICATIONS_KEY = "quotaops:notifications";
 const SEEN_RESETS_KEY = "quotaops:seen-resets";
+const SIDEBAR_KEY = "quotaops:sidebar-open";
 
 type Theme = "light" | "dark";
 type Toast = { id: string; message: string };
@@ -30,12 +39,18 @@ interface SpeechRecognitionEventLike {
   results: ArrayLike<{ 0: { transcript: string } }>;
 }
 
+interface SpeechRecognitionErrorEventLike {
+  error: string;
+  message?: string;
+}
+
 interface SpeechRecognitionLike {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
+  onstart: (() => void) | null;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -98,6 +113,16 @@ function PlusIcon() {
     </SvgIcon>
   );
 }
+
+function SidebarIcon() {
+  return (
+    <SvgIcon size={18}>
+      <rect x="3.5" y="4" width="17" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M8.5 4v16" stroke="currentColor" strokeWidth="1.6" />
+    </SvgIcon>
+  );
+}
+
 
 function SunIcon() {
   return (
@@ -166,6 +191,7 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.label === "string" &&
+    (candidate.email === undefined || typeof candidate.email === "string") &&
     candidate.provider === "claude" &&
     candidate.plan === "team" &&
     isQuotaWindow(candidate.fiveHour) &&
@@ -204,6 +230,15 @@ function loadBoolean(key: string): boolean {
     return false;
   }
 }
+
+function loadSidebarOpen(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
 
 function loadSeenResets(): Set<string> {
   try {
@@ -258,6 +293,12 @@ function formatResetTimestamp(iso: string | null): string {
   }).format(date);
 }
 
+function hasResetReached(resetAt: string | null, nowMs: number): boolean {
+  if (!resetAt) return false;
+  const resetMs = Date.parse(resetAt);
+  return Number.isFinite(resetMs) && resetMs <= nowMs;
+}
+
 function formatUpdatedAt(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "Unknown";
@@ -297,11 +338,13 @@ function QuotaRow({
   quotaWindow,
   nowMs,
   onChange,
+  editable = true,
 }: {
   title: string;
   quotaWindow: QuotaWindow;
   nowMs: number;
   onChange: (next: QuotaWindow) => void;
+  editable?: boolean;
 }) {
   const state = getWindowState(quotaWindow, nowMs);
   const value = clampPercent(quotaWindow.usedPercent);
@@ -319,12 +362,13 @@ function QuotaRow({
       <div className="reset-copy">
         <strong>{formatCountdown(quotaWindow.resetAt, nowMs)}</strong>
         <span>
-          {getWindowState(quotaWindow, nowMs) === "refresh_required"
+          {hasResetReached(quotaWindow.resetAt, nowMs)
             ? "Update current usage"
             : formatResetTimestamp(quotaWindow.resetAt)}
         </span>
       </div>
 
+      {editable ? (
       <details className="inline-editor">
         <summary>Edit</summary>
         <div className="edit-grid">
@@ -359,6 +403,9 @@ function QuotaRow({
           </label>
         </div>
       </details>
+      ) : (
+        <span className="auto-sync-label">Auto</span>
+      )}
     </section>
   );
 }
@@ -397,7 +444,10 @@ function AccountCard({
             <h2>{account.label}</h2>
             {recommended ? <span className="recommended">Best capacity</span> : null}
           </div>
-          <p>Claude Team · updated {formatUpdatedAt(account.updatedAt)}</p>
+          <p>
+            Claude Team · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
+          </p>
+          {account.email ? <p>{account.email}</p> : null}
         </div>
 
         <span className="status-badge" data-status={status}>
@@ -412,20 +462,22 @@ function AccountCard({
           quotaWindow={account.fiveHour}
           nowMs={nowMs}
           onChange={(next) => updateWindow("fiveHour", next)}
+          editable={account.source !== "collector"}
         />
         <QuotaRow
           title="Weekly"
           quotaWindow={account.weekly}
           nowMs={nowMs}
           onChange={(next) => updateWindow("weekly", next)}
+          editable={account.source !== "collector"}
         />
       </div>
 
       <details className="account-editor">
-        <summary>Account settings</summary>
+        <summary>Account details</summary>
         <div className="account-settings-grid">
           <label>
-            Account label
+            Display name
             <input
               value={account.label}
               maxLength={40}
@@ -438,10 +490,39 @@ function AccountCard({
               }
             />
           </label>
-          <button className="danger-button" type="button" onClick={onDelete}>
-            <TrashIcon />
-            Remove account
-          </button>
+          <label>
+            Email
+            <input
+              type="email"
+              value={account.email ?? ""}
+              maxLength={254}
+              placeholder="dev@example.com"
+              onChange={(event) => {
+                const email = event.target.value.trim();
+                const { email: _currentEmail, ...accountWithoutEmail } = account;
+                onChange(
+                  email
+                    ? {
+                        ...account,
+                        email,
+                        updatedAt: new Date().toISOString(),
+                      }
+                    : {
+                        ...accountWithoutEmail,
+                        updatedAt: new Date().toISOString(),
+                      },
+                );
+              }}
+            />
+          </label>
+          {account.source !== "collector" ? (
+            <button className="danger-button" type="button" onClick={onDelete}>
+              <TrashIcon />
+              Remove account
+            </button>
+          ) : (
+            <span className="auto-sync-label">Local profile details</span>
+          )}
         </div>
       </details>
     </article>
@@ -594,30 +675,6 @@ function AddAccountDialog({
   );
 }
 
-function parseVoiceUsageCommand(
-  transcript: string,
-  accounts: QuotaAccount[],
-): { accountId: string; window: "fiveHour" | "weekly"; usedPercent: number } | null {
-  const normalized = transcript.toLowerCase().replace(",", ".");
-  const account = accounts.find((candidate) =>
-    normalized.includes(candidate.label.toLowerCase()),
-  );
-  if (!account) return null;
-
-  const window =
-    normalized.includes("weekly") || normalized.includes("week") || normalized.includes("βδομα")
-      ? "weekly"
-      : normalized.includes("5") || normalized.includes("five") || normalized.includes("πεντ")
-        ? "fiveHour"
-        : null;
-
-  const numbers = normalized.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
-  const percentage = numbers.find((value) => value >= 0 && value <= 100);
-
-  if (!window || percentage === undefined) return null;
-  return { accountId: account.id, window, usedPercent: clampPercent(percentage) };
-}
-
 export function QuotaDashboard() {
   const [accounts, setAccounts] = useState<QuotaAccount[]>([]);
   const [nowMs, setNowMs] = useState(0);
@@ -627,7 +684,11 @@ export function QuotaDashboard() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [listening, setListening] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
+  const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
+  const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -638,6 +699,7 @@ export function QuotaDashboard() {
     document.documentElement.dataset.theme = initialTheme;
     setNowMs(Date.now());
     setNotificationsEnabled(loadBoolean(NOTIFICATIONS_KEY));
+    setSidebarOpen(loadSidebarOpen());
     seenResetsRef.current = loadSeenResets();
     setReady(true);
 
@@ -653,6 +715,86 @@ export function QuotaDashboard() {
       // The dashboard remains usable in memory if browser storage is unavailable.
     }
   }, [accounts, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, String(sidebarOpen));
+    } catch {
+      // Sidebar state still applies for the current session.
+    }
+  }, [ready, sidebarOpen]);
+
+
+  useEffect(() => {
+    if (!ready) return;
+
+    let cancelled = false;
+    let controller: AbortController | null = null;
+
+    const sync = async () => {
+      controller?.abort();
+      controller = new AbortController();
+
+      try {
+        const snapshot = await fetchCollectorSnapshot(controller.signal);
+        if (cancelled) return;
+
+        setCollectorState("connected");
+        setCollectorLastSync(snapshot.generatedAt);
+        setCollectorIssues(
+          snapshot.issues.map((issue) =>
+            issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
+          ),
+        );
+
+        if (snapshot.accounts.length > 0) {
+          setAccounts((current) => {
+            const collectorLabels = new Set(
+              snapshot.accounts.map((account) => account.label.trim().toLowerCase()),
+            );
+            const collectorIds = new Set(snapshot.accounts.map((account) => account.id));
+
+            const preserved = current.filter((account) => {
+              if (collectorIds.has(account.id)) return false;
+              if (
+                account.source !== "collector" &&
+                collectorLabels.has(account.label.trim().toLowerCase())
+              ) {
+                return false;
+              }
+              return true;
+            });
+
+            const mergedCollectorAccounts = snapshot.accounts.map((account) => {
+              const existing = current.find((item) => item.id === account.id);
+              return {
+                ...account,
+                label: existing?.label?.trim() || account.label,
+                ...(existing?.email?.trim()
+                  ? { email: existing.email.trim() }
+                  : {}),
+              };
+            });
+
+            return [...preserved, ...mergedCollectorAccounts];
+          });
+        }
+      } catch {
+        if (cancelled) return;
+        setCollectorState("offline");
+      }
+    };
+
+    void sync();
+    const timer = window.setInterval(() => void sync(), 30_000);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(timer);
+    };
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -777,7 +919,41 @@ export function QuotaDashboard() {
     }
   };
 
-  const startVoiceCommand = () => {
+  const showToast = (message: string) => {
+    setToasts((current) => [
+      ...current,
+      { id: `${Date.now()}-${Math.random()}`, message },
+    ]);
+  };
+
+  const ensureMicrophonePermission = async (): Promise<boolean> => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return true;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of stream.getTracks()) track.stop();
+      return true;
+    } catch (error) {
+      const name =
+        error instanceof DOMException ? error.name : "MicrophoneError";
+
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        showToast(
+          "Microphone access is blocked. Allow microphone permission for localhost in your browser, then try again.",
+        );
+      } else if (name === "NotFoundError") {
+        showToast("No microphone was detected on this device.");
+      } else {
+        showToast("Could not access the microphone. Check your browser and Windows microphone settings.");
+      }
+
+      return false;
+    }
+  };
+
+  const startVoiceCommand = async () => {
     const speechWindow = window as typeof window & {
       SpeechRecognition?: SpeechRecognitionConstructor;
       webkitSpeechRecognition?: SpeechRecognitionConstructor;
@@ -786,31 +962,43 @@ export function QuotaDashboard() {
       speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 
     if (!Recognition) {
-      setToasts((current) => [
-        ...current,
-        { id: String(Date.now()), message: "Voice input is not supported by this browser." },
-      ]);
+      showToast(
+        "Voice input is not supported by this browser. Try the latest Chrome or Edge.",
+      );
+      return;
+    }
+
+    if (!(await ensureMicrophonePermission())) {
+      setListening(false);
       return;
     }
 
     speechRef.current?.stop();
     const recognition = new Recognition();
     speechRef.current = recognition;
+
     recognition.lang = navigator.language || "en-US";
     recognition.interimResults = false;
     recognition.continuous = false;
+
+    recognition.onstart = () => {
+      setListening(true);
+      showToast('Listening… Try: "Dev 1 weekly 82".');
+    };
+
     recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      const transcript = event.results[0]?.[0]?.transcript?.trim() ?? "";
+      if (!transcript) {
+        showToast("I did not catch any speech. Try again and speak close to the microphone.");
+        return;
+      }
+
       const command = parseVoiceUsageCommand(transcript, accounts);
 
       if (!command) {
-        setToasts((current) => [
-          ...current,
-          {
-            id: String(Date.now()),
-            message: 'Try: "Dev 1 weekly 82" or "Dev 2 five hour 40".',
-          },
-        ]);
+        showToast(
+          `Heard: "${transcript}". Try: "Dev 1 weekly 82" or "Dev 2 five hour 40".`,
+        );
         return;
       }
 
@@ -827,11 +1015,45 @@ export function QuotaDashboard() {
           };
         }),
       );
+
+      showToast(
+        `Updated ${command.accountLabel} ${voiceWindowLabel(command.window)} to ${command.usedPercent}%.`,
+      );
     };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    setListening(true);
-    recognition.start();
+
+    recognition.onerror = (event) => {
+      setListening(false);
+
+      const copy: Record<string, string> = {
+        "not-allowed":
+          "Microphone permission was denied. Allow microphone access for localhost and try again.",
+        "service-not-allowed":
+          "The browser speech-recognition service is blocked or unavailable.",
+        "audio-capture":
+          "The browser could not capture microphone audio. Check Windows microphone permissions.",
+        "no-speech":
+          "No speech was detected. Try again and speak after Listening appears.",
+        network:
+          "Speech recognition could not reach the browser speech service. Voice input may require internet access.",
+        aborted: "Voice input was stopped.",
+      };
+
+      showToast(
+        copy[event.error] ??
+          `Voice input failed (${event.error}). Try Chrome/Edge and check microphone permissions.`,
+      );
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      setListening(false);
+      showToast("Voice input could not start. Wait a moment and try again.");
+    }
   };
 
   const removeAccount = (account: QuotaAccount) => {
@@ -849,11 +1071,23 @@ export function QuotaDashboard() {
 
   return (
     <>
-      <div className="app-shell">
+      <div className="app-shell" data-sidebar-open={sidebarOpen ? "true" : "false"}>
+        {sidebarOpen ? (
         <aside className="sidebar">
-          <div className="sidebar-brand">
-            <span className="brand-mark">Q</span>
-            <span>QuotaOps</span>
+          <div className="sidebar-top">
+            <div className="sidebar-brand">
+              <strong>QuotaOps</strong>
+              <span>by SO HOMELY</span>
+            </div>
+            <button
+              aria-label="Close sidebar"
+              className="sidebar-toggle sidebar-toggle-inside"
+              title="Close sidebar"
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <SidebarIcon />
+            </button>
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
@@ -895,15 +1129,36 @@ export function QuotaDashboard() {
               <span>Keyboard shortcuts</span>
             </button>
 
-            <div className="collector-status">
+            <div className="collector-status" data-state={collectorState}>
               <span className="collector-dot" aria-hidden="true" />
               <div>
-                <strong>Local mode</strong>
-                <span>Saved in this browser</span>
+                <strong>
+                  {collectorState === "connected"
+                    ? "Collector connected"
+                    : collectorState === "checking"
+                      ? "Checking collector"
+                      : "Manual fallback"}
+                </strong>
+                <span>
+                  {collectorState === "connected" && collectorLastSync
+                    ? `Local sync ${formatUpdatedAt(collectorLastSync)}`
+                    : "127.0.0.1 only"}
+                </span>
               </div>
             </div>
           </div>
         </aside>
+        ) : (
+          <button
+            aria-label="Open sidebar"
+            className="sidebar-toggle sidebar-toggle-floating"
+            title="Open sidebar"
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <SidebarIcon />
+          </button>
+        )}
 
         <main className="workspace">
           <section id="overview" className="page-header">
@@ -920,7 +1175,7 @@ export function QuotaDashboard() {
               <button
                 className="secondary-button"
                 type="button"
-                onClick={startVoiceCommand}
+                onClick={() => void startVoiceCommand()}
                 aria-pressed={listening}
               >
                 <MicIcon />
@@ -951,6 +1206,13 @@ export function QuotaDashboard() {
               <strong>{recommended?.label ?? "—"}</strong>
             </div>
           </section>
+
+          {collectorIssues.length > 0 ? (
+            <div className="notice" role="status">
+              <strong>Collector needs attention.</strong>
+              <span>{collectorIssues[0]}</span>
+            </div>
+          ) : null}
 
           {summary.refresh > 0 || summary.setup > 0 ? (
             <div className="notice" role="status">
@@ -1056,8 +1318,8 @@ export function QuotaDashboard() {
           <footer className="privacy-note">
             <strong>Local-first.</strong>
             <span>
-              Account labels, quota percentages, reset timestamps, and theme
-              preference are stored only in this browser.
+              Manual data stays in this browser. Auto-sync uses a collector bound
+              only to 127.0.0.1 on this PC; Claude browser profiles remain local.
             </span>
           </footer>
         </main>

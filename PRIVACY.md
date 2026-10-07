@@ -8,15 +8,16 @@ This document describes the current privacy behavior of the MVP and the rules fu
 
 QuotaOps is local-first.
 
-The current MVP has no SO HOMELY-operated backend, hosted database, user account system, or cloud synchronization.
+The current MVP has no SO HOMELY-operated backend, hosted database, user account system, or cloud synchronization. An optional same-PC collector can run locally on `127.0.0.1`.
 
-Quota data entered into the app is stored in browser local storage for the local QuotaOps origin.
+Manual quota data entered into the app is stored in browser local storage for the local QuotaOps origin. Auto-collected quota snapshots remain on the same PC and are exposed to the dashboard through a loopback-only local service. Provider authentication remains inside isolated local browser profiles.
 
 ## Data currently stored locally
 
 The MVP may store:
 
 - user-defined account labels;
+- optional user-entered account email metadata;
 - 5-hour usage percentages;
 - weekly usage percentages;
 - reset timestamps;
@@ -29,7 +30,7 @@ These values are operational metadata, not secrets.
 
 ## Data QuotaOps does not intentionally collect
 
-The current application does not intentionally collect or store:
+Outside the provider-managed isolated browser profiles required to preserve login sessions, the current application does not intentionally collect or store:
 
 - provider passwords;
 - API keys;

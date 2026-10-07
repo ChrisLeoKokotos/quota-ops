@@ -21,9 +21,15 @@ The current MVP:
 - stores quota metadata and preferences in browser local storage;
 - has no QuotaOps backend or hosted database;
 - has no QuotaOps authentication system;
-- does not automatically log in to Claude;
-- does not collect provider passwords, API keys, OAuth tokens, or session cookies;
+- does not automatically obtain or bypass Claude credentials;
+- can reuse isolated local browser profiles for same-PC quota collection;
+- keeps interactive provider login visible and user-controlled while scheduled Windows quota refreshes run hidden/headless;
+- does not export provider passwords, API keys, OAuth tokens, or session cookies into QuotaOps snapshots;
 - does not upload quota data to SO HOMELY infrastructure;
+- exposes the optional collector only on `127.0.0.1:4317`;
+- authenticates collector API requests with a random 256-bit local token kept out of browser JavaScript;
+- rejects direct browser access, unexpected Host / Origin values, and provider responses outside the exact accepted Usage endpoint;
+- keeps collector profiles inside a protected local root with Windows ACL / Unix mode hardening;
 - uses browser notifications only after user permission;
 - can use browser speech recognition only after user action.
 
@@ -65,6 +71,7 @@ A future provider collector must preserve the same boundary: provider authentica
 The MVP stores non-secret operational metadata locally in the browser, including:
 
 - account labels;
+- optional user-entered account email metadata;
 - usage percentages;
 - reset timestamps;
 - update timestamps;
@@ -103,6 +110,8 @@ QuotaOps should:
 ## Supply-chain and CI security
 
 Repository workflows use least-privilege permissions and pinned GitHub Actions. Public pull requests are treated as untrusted.
+
+The repository uses Dependency Review, Repository Guard, production dependency auditing, and CodeQL analysis. The goal is defense in depth; no static or dependency scanner can guarantee the absence of unknown vulnerabilities.
 
 Changes involving dependencies, workflows, authentication, networking, telemetry, persistence, voice processing, browser permissions, or future collectors require explicit maintainer review.
 

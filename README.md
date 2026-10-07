@@ -23,13 +23,14 @@ Today it supports:
 - voice commands for quick usage updates when supported by the browser;
 - keyboard shortcuts;
 - light and dark themes;
-- browser-local persistence.
+- browser-local persistence;
+- experimental same-PC automatic collection for multiple Claude accounts through isolated local browser profiles.
 
-There is **no QuotaOps backend, hosted database, account system, or cloud sync** in the current MVP.
+There is **no hosted QuotaOps backend, hosted database, account system, or cloud sync** in the current MVP. An optional local collector can run on the same PC and binds only to `127.0.0.1`.
 
 ## Local-first data model
 
-Current application data is stored in browser local storage for the local QuotaOps origin. This includes account labels, usage percentages, reset timestamps, notification state, reset-notification history, and theme preference.
+Current application data is stored in browser local storage for the local QuotaOps origin. This includes account display names, optional locally entered email metadata, usage percentages, reset timestamps, notification state, reset-notification history, and theme preference.
 
 QuotaOps does not intentionally store Claude passwords, API keys, OAuth tokens, session cookies, provider authentication state, prompts, source code, or conversations.
 
@@ -71,7 +72,7 @@ Recommended Node version: **22.21.0**.
 ```bash
 git clone https://github.com/ChrisLeoKokotos/quota-ops.git
 cd quota-ops
-npm install
+npm ci --ignore-scripts --no-audit --no-fund
 npm run dev
 ```
 
@@ -89,18 +90,15 @@ npm test
 npm run build
 ```
 
-## Architecture direction
+## Local collector
 
-The current application deliberately has no backend.
+QuotaOps includes an **experimental same-PC collector** for multiple Claude accounts. Each account uses its own persistent local Chrome / Edge profile. Interactive login is visible and provider-controlled; scheduled Windows refreshes run hidden/headless. The collector exposes only normalized snapshots on `127.0.0.1:4317`.
 
-The next major architecture milestone is automatic quota collection behind a narrow provider-adapter boundary. The preferred order is:
+The local API is authenticated with a random local token that stays server-side, browser-direct access is rejected, profile paths are constrained to the protected QuotaOps home, and the provider adapter accepts only the exact expected Claude Usage response before normalizing quota metadata. It deliberately does not export cookies, passwords, or provider tokens into QuotaOps data.
 
-1. a documented / supported provider interface where available;
-2. otherwise a security-reviewed local collector;
-3. normalized quota metadata only;
-4. no credential relay to SO HOMELY-operated infrastructure.
+The full setup guide covers `bootstrap-five`, per-account login, one-account verification with `collect`, enable/disable controls, security checks, token rotation, troubleshooting, and the five-account workflow: [docs/local-collector.md](docs/local-collector.md).
 
-A future collector may use Python if that remains the safest and most maintainable implementation path.
+The collector adapter is considered experimental because the Claude Team usage response used by the web application is not a documented public quota API and may change.
 
 See [docs/mvp-architecture.md](docs/mvp-architecture.md) and [docs/security-architecture.md](docs/security-architecture.md).
 

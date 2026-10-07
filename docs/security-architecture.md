@@ -10,14 +10,14 @@ The current MVP consists of a browser-rendered Next.js application and local quo
 
 It has:
 
-- no QuotaOps backend;
+- no hosted QuotaOps backend;
 - no hosted database;
 - no cloud sync;
 - no QuotaOps user authentication;
-- no automatic provider login;
-- no automatic provider quota collector.
+- no automatic credential collection;
+- an optional experimental same-PC local collector.
 
-Non-secret quota metadata and preferences are stored in browser local storage.
+Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory and exposes normalized snapshots only over a loopback-only HTTP service.
 
 ## Security goals
 
@@ -152,21 +152,32 @@ New dependencies should be evaluated for:
 - license compatibility;
 - whether the same functionality can reasonably be implemented without the dependency.
 
-## Future collector security
+## Local collector security
 
-A local collector must have a separately documented threat model before release.
+The experimental local collector uses separate persistent browser profiles per account.
 
-At minimum it should define:
+Security rules:
 
-- how provider sessions are accessed;
-- what data leaves the provider boundary;
-- local IPC / API binding and authentication;
-- storage locations and file permissions;
-- update mechanism;
-- log redaction;
-- browser automation behavior if used;
-- handling of expired provider sessions;
-- background notification behavior.
+- browser profiles remain local to the user's machine;
+- no browser cookies, passwords, tokens, or Authorization headers are included in collector snapshots;
+- the HTTP service binds to `127.0.0.1`, not `0.0.0.0`;
+- the collector API requires a random 256-bit local token using constant-time comparison;
+- the token remains server-side and is not exposed to browser JavaScript;
+- direct browser access, unexpected Host values, and unexpected Origin values are rejected;
+- the Next.js server proxies collector snapshots through a same-origin route;
+- local request rate limiting reduces accidental or hostile request floods;
+- Windows ACLs or Unix file modes restrict collector state and browser profiles;
+- configured browser profiles must remain inside the protected QuotaOps profile root;
+- interactive provider login is visible and user-controlled;
+- scheduled Windows collection runs hidden/headless against the isolated profile and attaches through an ephemeral DevTools listener bound to `127.0.0.1`;
+- the Claude adapter accepts only the exact expected HTTPS Usage endpoint and rejects unrelated responses;
+- provider responses are size-limited and parsed into a narrow normalized quota schema;
+- unrecognized response formats fail as `unsupported`;
+- expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
+- profile directories and collector state must never be committed;
+- background collection must not require exporting provider session material.
+
+Five isolated Claude profiles have passed individual real-account collection and simultaneous dashboard synchronization on Windows. The collector remains experimental until session-expiry handling, token rotation, LAN isolation, and long-running hidden scheduled refresh behavior are also verified. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
 
 ## Security changes
 

@@ -33,14 +33,12 @@ The branch ruleset currently requires:
 - **Repository hygiene**
 - **Dependency review**
 
-The repository also has an **App validation** CI workflow that runs on pull requests and performs:
+The repository also has:
 
-- dependency installation;
-- TypeScript typecheck;
-- unit tests;
-- production build.
+- **App validation** — installs dependencies with lifecycle scripts disabled, audits production dependencies, runs TypeScript typecheck, unit tests, and a production build.
+- **CodeQL** — pinned JavaScript / TypeScript static analysis on pull requests, pushes to `main`, and a weekly schedule.
 
-App validation should be added to the required-status-check list when the repository ruleset is next updated so the branch rule reflects the application CI that already runs on pull requests.
+Both **App validation** and **CodeQL** should be added to the required-status-check list when the repository ruleset is next updated, so security-sensitive collector changes cannot merge while either check is failing.
 
 ## Security features
 
@@ -55,7 +53,7 @@ Configured repository security features include:
 - grouped security updates;
 - malware alerts.
 
-CodeQL is intentionally deferred until the scanning configuration is introduced and reviewed for the application stack.
+CodeQL is now configured through the pinned `.github/workflows/codeql.yml` workflow for JavaScript / TypeScript.
 
 ## GitHub Actions
 
@@ -83,9 +81,9 @@ Preferred behavior:
 
 ## Dependency maintenance
 
-GitHub Actions dependencies are managed through Dependabot.
+GitHub Actions and npm dependencies are managed through Dependabot.
 
-When npm dependency automation is expanded, it should preserve the same review, CI, and dependency-review requirements.
+Direct dependencies are pinned. A committed npm lockfile and migration of CI installation to `npm ci --ignore-scripts` remain release gates for the hardened collector. Dependency Review and the production dependency audit must stay green.
 
 ## Review cadence
 
