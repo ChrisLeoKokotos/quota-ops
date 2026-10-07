@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { spawn, type ChildProcess } from "node:child_process";
+import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
@@ -12,6 +12,7 @@ import {
 } from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
+const DEVTOOLS_ACTIVE_PORT = "DevToolsActivePort";
 
 async function findWindowsBrowserExecutable(): Promise<string> {
   const roots = [
@@ -39,8 +40,18 @@ async function findWindowsBrowserExecutable(): Promise<string> {
   }
 
   throw new Error(
-    "Could not find an installed Chrome or Edge browser for interactive Claude login.",
+    "Could not find an installed Chrome or Edge browser for Claude collection.",
   );
+}
+
+async function waitForEnter(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", () => {
+      process.stdin.pause();
+      resolve();
+    });
+  });
 }
 
 async function openInteractiveWindowsLogin(
@@ -65,7 +76,7 @@ async function openInteractiveWindowsLogin(
   );
 
   await new Promise<void>((resolve, reject) => {
-    child.once("spawn", () => resolve());
+    child.once("spawn", resolve);
     child.once("error", reject);
   });
   child.unref();
@@ -74,20 +85,14 @@ async function openInteractiveWindowsLogin(
     [
       "",
       `Opened the isolated system-browser profile for ${account.label}.`,
-      "Complete Claude\'s normal login and any provider verification in that window.",
+      "Complete Claude's normal login and any provider verification in that window.",
       "When Settings > Usage is visible, close that browser window completely.",
       "Then return here and press Enter.",
       "",
-    ].join("\\n"),
+    ].join("\n"),
   );
 
-  await new Promise<void>((resolve) => {
-    process.stdin.resume();
-    process.stdin.once("data", () => {
-      process.stdin.pause();
-      resolve();
-    });
-  });
+  await waitForEnter();
 }
 
 async function launchProfile(
@@ -118,6 +123,102 @@ async function launchProfile(
     } catch {
       throw chromeError;
     }
+  }
+}
+
+async function waitForDevToolsPort(
+  profileDir: string,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const portFile = join(profileDir, DEVTOOLS_ACTIVE_PORT);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const raw = await readFile(portFile, "utf8");
+      const [portLine] = raw.split(/\r?\n/);
+      const port = Number(portLine);
+      if (
+        Number.isInteger(port) &&
+        port >= 1 &&
+        port <= 65_535
+      ) {
+        return port;
+      }
+    } catch {
+      // Chrome writes the file after its DevTools listener is ready.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error("Timed out waiting for the local browser DevTools endpoint.");
+}
+
+async function stopSpawnedBrowser(
+  browser: Browser | null,
+  child: ChildProcess | null,
+): Promise<void> {
+  if (browser) {
+    await browser.close().catch(() => undefined);
+  }
+
+  if (child && child.exitCode === null && !child.killed) {
+    child.kill();
+  }
+}
+
+async function launchWindowsCollectionBrowser(
+  account: CollectorAccountConfig,
+): Promise<{ browser: Browser; context: BrowserContext; child: ChildProcess }> {
+  await assertSafeProfileDirectory(account.profileDir);
+
+  const executablePath = await findWindowsBrowserExecutable();
+  const devToolsPortFile = join(account.profileDir, DEVTOOLS_ACTIVE_PORT);
+  await rm(devToolsPortFile, { force: true });
+
+  const child = spawn(
+    executablePath,
+    [
+      `--user-data-dir=${account.profileDir}`,
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--start-minimized",
+      "about:blank",
+    ],
+    {
+      detached: false,
+      stdio: "ignore",
+      windowsHide: false,
+    },
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+
+  try {
+    const port = await waitForDevToolsPort(account.profileDir);
+    const browser = await chromium.connectOverCDP(
+      `http://127.0.0.1:${port}`,
+      { timeout: 10_000 },
+    );
+    const context = browser.contexts()[0];
+    if (!context) {
+      await browser.close().catch(() => undefined);
+      throw new Error("Local browser did not expose its isolated profile context.");
+    }
+
+    return { browser, context, child };
+  } catch (error) {
+    if (child.exitCode === null && !child.killed) {
+      child.kill();
+    }
+    throw error;
   }
 }
 
@@ -187,6 +288,64 @@ function result(
   };
 }
 
+function isLoginLocation(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "claude.ai") return false;
+    return (
+      parsed.pathname.includes("/login") ||
+      parsed.pathname.includes("/oauth") ||
+      parsed.pathname.includes("/onboarding")
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function collectFromContext(
+  account: CollectorAccountConfig,
+  context: BrowserContext,
+): Promise<CollectorAccountResult> {
+  const page = context.pages()[0] ?? (await context.newPage());
+  const payloadPromise = waitForUsagePayload(page, 15_000);
+
+  await page.goto(CLAUDE_USAGE_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 30_000,
+  });
+
+  const payload = await payloadPromise;
+  const currentUrl = page.url();
+
+  if (isLoginLocation(currentUrl)) {
+    return result(
+      account,
+      "login_required",
+      "Claude login is required for this local profile.",
+    );
+  }
+
+  const parsed = payload ? parseClaudeUsagePayload(payload) : null;
+  if (!parsed) {
+    return result(
+      account,
+      "unsupported",
+      "Could not recognize Claude usage data. Open this profile manually and verify Settings > Usage is available.",
+    );
+  }
+
+  const checkedAt = new Date().toISOString();
+  return result(account, "ok", null, checkedAt, {
+    id: account.id,
+    label: account.label,
+    provider: "claude",
+    plan: "team",
+    fiveHour: parsed.fiveHour,
+    weekly: parsed.weekly,
+    updatedAt: checkedAt,
+  });
+}
+
 export async function openClaudeLogin(
   account: CollectorAccountConfig,
 ): Promise<void> {
@@ -207,72 +366,44 @@ export async function openClaudeLogin(
     [
       "",
       `Opened the isolated browser profile for ${account.label}.`,
-      "Complete Claude\'s normal login and any provider verification in that window.",
+      "Complete Claude's normal login and any provider verification in that window.",
       "When Settings > Usage is visible, return here and press Enter.",
       "",
-    ].join("\\n"),
+    ].join("\n"),
   );
 
-  await new Promise<void>((resolve) => {
-    process.stdin.resume();
-    process.stdin.once("data", () => {
-      process.stdin.pause();
-      resolve();
-    });
-  });
-
+  await waitForEnter();
   await context.close();
 }
 
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
 ): Promise<CollectorAccountResult> {
+  if (process.platform === "win32") {
+    let browser: Browser | null = null;
+    let child: ChildProcess | null = null;
+
+    try {
+      const launched = await launchWindowsCollectionBrowser(account);
+      browser = launched.browser;
+      child = launched.child;
+      return await collectFromContext(account, launched.context);
+    } catch {
+      return result(
+        account,
+        "unavailable",
+        "Local browser collector is unavailable for this account.",
+      );
+    } finally {
+      await stopSpawnedBrowser(browser, child);
+    }
+  }
+
   let context: BrowserContext | null = null;
 
   try {
     context = await launchProfile(account, true);
-    const page = context.pages()[0] ?? (await context.newPage());
-    const payloadPromise = waitForUsagePayload(page, 15_000);
-
-    await page.goto(CLAUDE_USAGE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
-
-    const payload = await payloadPromise;
-    const currentUrl = page.url();
-
-    if (
-      currentUrl.includes("/login") ||
-      currentUrl.includes("/oauth") ||
-      currentUrl.includes("/onboarding")
-    ) {
-      return result(
-        account,
-        "login_required",
-        "Claude login is required for this local profile.",
-      );
-    }
-
-    const parsed = payload ? parseClaudeUsagePayload(payload) : null;
-    if (!parsed) {
-      return result(
-        account,
-        "unsupported",
-        "Could not recognize Claude usage data. Open this profile manually and verify Settings > Usage is available.",
-      );
-    }
-
-    const checkedAt = new Date().toISOString();
-    return result(account, "ok", null, checkedAt, {
-      id: account.id,
-      label: account.label,
-      provider: "claude",
-      plan: "team",
-      fiveHour: parsed.fiveHour,
-      weekly: parsed.weekly,
-      updatedAt: checkedAt,
-    });
+    return await collectFromContext(account, context);
   } catch {
     return result(
       account,
