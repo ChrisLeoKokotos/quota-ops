@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   looksLikeClaudeUsageUrl,
   parseClaudeUsagePayload,
+  resolveClaudeUsageOrganizationId,
 } from "../collector/usage-parser.ts";
 
 test("parses five-hour and weekly Claude usage windows", () => {
@@ -88,5 +89,30 @@ test("filters usage responses to the active organization when provided", () => {
       "org_active",
     ),
     false,
+  );
+});
+
+
+test("prefers a chat-capable Claude organization over a non-chat preferred org", () => {
+  const organizations = [
+    { uuid: "org_console", capabilities: ["api"] },
+    { uuid: "org_chat", capabilities: ["chat"] },
+  ];
+
+  assert.equal(
+    resolveClaudeUsageOrganizationId(organizations, "org_console"),
+    "org_chat",
+  );
+});
+
+test("keeps the preferred organization when it is chat-capable", () => {
+  const organizations = [
+    { uuid: "org_chat_a", capabilities: ["chat"] },
+    { uuid: "org_chat_b", capabilities: ["chat"] },
+  ];
+
+  assert.equal(
+    resolveClaudeUsageOrganizationId(organizations, "org_chat_b"),
+    "org_chat_b",
   );
 });
