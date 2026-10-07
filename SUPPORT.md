@@ -14,10 +14,10 @@ QuotaOps is an open-source product created by **SO HOMELY** and maintained on a 
 Before reporting a bug, note that the current MVP:
 
 - is focused on Claude Team;
-- uses manual quota entry;
-- stores data in the current browser profile;
-- has no backend or cloud sync;
-- does not automatically collect Claude quota data;
+- supports manual quota entry and an experimental same-PC automatic Claude collector;
+- stores dashboard metadata in the current browser profile and collector browser sessions under the protected local QuotaOps directory;
+- has no hosted backend or cloud sync;
+- requires interactive provider login per isolated account profile before automatic collection;
 - provides reset notifications while QuotaOps is running;
 - depends on browser support for voice recognition;
 - does not guarantee that voice recognition is processed offline;
@@ -33,6 +33,8 @@ When asking for help, include:
 - browser and browser version;
 - whether light or dark theme is active for UI issues;
 - affected account state without exposing sensitive identifiers;
+- whether the account is manual or collector-synced;
+- the sanitized result of `npm run collector:setup -- collect <id>` when relevant;
 - relevant browser permission state for notification / voice issues;
 - sanitized logs;
 - steps to reproduce;
