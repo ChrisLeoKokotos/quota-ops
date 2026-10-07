@@ -54,4 +54,4 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 
 ## Release policy
 
-Unreleased work remains under `[Unreleased]` until a maintainer intentionally creates a versioned release. See [RELEASING.md](RELEASING.md).
+Unreleased work remains under `[Unreleased]` until a maintainer intentionally creates a versioned release. A release should promote those entries into a dated version section and pair that version with an intentional tag and GitHub Release.
