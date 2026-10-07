@@ -8,7 +8,8 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 
 ### Added
 
-- Experimental same-PC multi-account collector with isolated local Chrome / Edge profiles, loopback-only snapshot service, and automatic dashboard synchronization.
+- Experimental same-PC multi-account collector with isolated local Chrome / Edge profiles, loopback-only snapshot service, per-account login/collect/enable/disable controls, hidden scheduled Windows refreshes, and automatic dashboard synchronization.
+- Local display-name and optional email metadata for collector-synced accounts, preserved across automatic quota refreshes.
 
 - Functional Claude Team quota dashboard.
 - Real local account creation, editing, and removal.
@@ -36,6 +37,7 @@ The format is inspired by Keep a Changelog, and releases should use semantic ver
 - Refined dashboard layout, sidebar, cards, controls, and responsive behavior.
 - Changed primary visual accents to neutral inverse styling: dark on light theme and light on dark theme.
 - Updated documentation to reflect the current product state and identify QuotaOps as a product created by **SO HOMELY**.
+- Expanded the collector setup guide with the complete five-account workflow, command reference, troubleshooting, data boundaries, and validated Windows behavior.
 
 ### Security
 
