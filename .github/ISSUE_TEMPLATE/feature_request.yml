@@ -42,6 +42,7 @@ body:
       label: Provider scope
       options:
         - Claude / Anthropic
+        - OpenAI / ChatGPT Codex
         - Provider-agnostic
         - Another provider
         - Not provider-related
