@@ -2,86 +2,156 @@
 
 QuotaOps is a product created by **SO HOMELY**.
 
-The local collector is an experimental same-PC automation layer for multiple Claude Team accounts.
+This document is the canonical setup and operations guide for the current same-PC Claude Team collector.
 
-## Scope
+## What the collector does
 
-The collector is designed for a setup where several Claude accounts are used on the same Windows PC.
+QuotaOps can track several Claude accounts on one Windows PC without combining their browser sessions.
 
-Each QuotaOps account receives a separate persistent Chrome / Edge profile directory under:
+Each account gets its own persistent Chrome / Edge profile under:
 
 ```text
 %USERPROFILE%\.quotaops\browser-profiles\
 ```
 
-QuotaOps does not copy browser cookies, passwords, or provider tokens into its own snapshot model.
+The collector keeps only normalized capacity metadata in its snapshot model:
 
-The collector observes only the exact Claude organization Usage endpoint accepted by its strict adapter and then keeps only normalized quota metadata:
-
-- account label;
+- account id and display label;
 - 5-hour usage percentage;
-- 5-hour reset timestamp;
+- 5-hour reset timestamp when the provider supplies one;
 - weekly usage percentage;
 - weekly reset timestamp;
 - collection time and health state.
 
-## Network boundary
+Provider login state remains inside the isolated browser profile. QuotaOps does not copy provider passwords, cookies, or provider access credentials into collector snapshots.
 
-The collector HTTP service binds only to:
+## Requirements
 
-```text
-127.0.0.1:4317
-```
+Recommended environment:
 
-It is not exposed to the LAN.
+- Windows 11;
+- Node.js 22.21.0;
+- current Google Chrome or Microsoft Edge;
+- one or more Claude accounts that can open `Settings > Usage`.
 
-The collector API requires a random 256-bit local bearer token stored under the protected QuotaOps home directory. The token is never exposed to browser JavaScript. The Next.js server reads it locally and proxies the dashboard snapshot through a same-origin route.
-
-Direct browser access to the collector is rejected, requests with unexpected Host / Origin values are rejected, and the collector applies a local request-rate limit.
-
-The browser profiles themselves still communicate with Claude / Anthropic because that is how the provider usage page is loaded. No SO HOMELY server is involved.
-
-## Setup
-
-Install dependencies first:
+Install the repository dependencies from the committed lockfile:
 
 ```powershell
-npm install
+npm ci --ignore-scripts --no-audit --no-fund
 ```
 
-Create five isolated local account profiles:
+## First-time setup
+
+Create the default five account profiles:
 
 ```powershell
 npm run collector:setup -- bootstrap-five
 ```
 
-List them:
+Run the local security check:
+
+```powershell
+npm run collector:setup -- security-check
+```
+
+List the configured profiles:
 
 ```powershell
 npm run collector:setup -- list
 ```
 
-For each account, open its isolated browser profile and log in to the intended Claude account:
+A configured account is either `enabled` or `disabled`. Disabled accounts remain configured locally but are skipped by the background collector.
+
+## Connect an account
+
+Connect accounts one at a time.
+
+For Dev 1:
 
 ```powershell
 npm run collector:setup -- login dev-1
-npm run collector:setup -- login dev-2
-npm run collector:setup -- login dev-3
-npm run collector:setup -- login dev-4
-npm run collector:setup -- login dev-5
 ```
 
-When the Claude Usage page is visible, return to the terminal and press Enter so QuotaOps can close that setup browser cleanly.
+QuotaOps opens the isolated system-browser profile for that account. Complete Claude's normal login and any provider verification in that browser.
 
-## Run
+When `Settings > Usage` is visible:
 
-Start the collector:
+1. close that isolated browser window completely;
+2. return to PowerShell;
+3. press Enter.
+
+QuotaOps does not ask for the password in the terminal.
+
+Repeat with `dev-2`, `dev-3`, and so on as needed.
+
+## Verify one account before enabling it
+
+After login, test the account directly:
+
+```powershell
+npm run collector:setup -- collect dev-1
+```
+
+A successful result contains:
+
+```json
+{
+  "id": "dev-1",
+  "status": "ok",
+  "account": {
+    "provider": "claude",
+    "plan": "team",
+    "fiveHour": {
+      "usedPercent": 0,
+      "resetAt": null
+    },
+    "weekly": {
+      "usedPercent": 42,
+      "resetAt": "2026-10-10T12:00:00.000Z"
+    }
+  }
+}
+```
+
+A 5-hour window may legitimately return `0%` with `resetAt: null` when no active 5-hour reset is exposed by the provider.
+
+## Enable and disable accounts
+
+Enable an account after its individual collection test succeeds:
+
+```powershell
+npm run collector:setup -- enable dev-1
+```
+
+Disable one or more accounts:
+
+```powershell
+npm run collector:setup -- disable dev-2 dev-3 dev-4 dev-5
+```
+
+Enable several accounts:
+
+```powershell
+npm run collector:setup -- enable dev-2 dev-3
+```
+
+Check the final state:
+
+```powershell
+npm run collector:setup -- list
+```
+
+For a five-account setup, the target state is `dev-1` through `dev-5` all marked `enabled`.
+
+## Run QuotaOps
+
+Start the collector in one PowerShell window:
 
 ```powershell
 npm run collector:start
 ```
 
-In another terminal, start the dashboard:
+Start the dashboard in a second window:
 
 ```powershell
 npm run dev
@@ -93,64 +163,144 @@ Open:
 http://localhost:3000
 ```
 
-The dashboard checks the local collector every 30 seconds. The collector refreshes provider snapshots every five minutes by default.
+The dashboard polls the local collector every 30 seconds.
 
-## Manual fallback
+The collector refreshes enabled provider profiles every five minutes by default and processes accounts sequentially.
 
-Manual accounts remain supported.
+## Visible login vs hidden scheduled refresh
 
-When a collector account successfully syncs, QuotaOps replaces a manual account with the same label to avoid duplicate Dev 1 / Dev 2 entries. Auto-synced accounts are marked as such and their quota values are treated as collector-owned.
+Interactive login is intentionally visible because provider authentication and verification must remain user-controlled.
 
-## Experimental provider adapter
+Scheduled Windows collection is different: QuotaOps starts the locally installed Chrome / Edge against the isolated profile in hidden/headless mode, attaches through an ephemeral DevTools listener bound to `127.0.0.1`, reads the Usage response, then closes the browser process.
 
-Claude Team does not currently expose a documented public quota API intended for this QuotaOps use case.
+Scheduled refresh should therefore not open five visible browser windows every cycle.
 
-The collector therefore uses an authenticated local browser profile and observes the Usage page's own JSON usage response. This behavior is isolated in the collector adapter because the provider response shape may change without notice.
+If Claude requires a fresh login, run the explicit `login <id>` command again. QuotaOps does not bypass provider authentication.
 
-If the format changes, QuotaOps returns `unsupported` instead of inventing quota values.
+## Local account details
 
-## Failure modes
+The dashboard lets you maintain local display metadata for every account.
 
-Possible account health states include:
+You can edit:
 
-- `ok`;
-- `login_required`;
-- `unavailable`;
-- `unsupported`.
+- display name;
+- optional email address.
 
-A failed account refresh does not expose credentials and does not make fabricated capacity available.
+These values are local QuotaOps metadata. The email is not fetched from Claude and is not required for quota collection.
 
-## Security rules
+Custom display name and email are preserved across collector refreshes while usage and reset data remain collector-owned.
 
-- Never commit anything under `~/.quotaops/`.
-- Never export or upload the collector browser profile directories.
-- Never log cookies, tokens, Authorization headers, or provider session state.
-- Keep the HTTP collector bound to `127.0.0.1`.
-- Treat usage responses as untrusted input.
-- Close the interactive setup browser before starting the background collector for that account.
+## Command reference
+
+```text
+npm run collector:setup -- bootstrap-five
+npm run collector:setup -- list
+npm run collector:setup -- add <id> <label>
+npm run collector:setup -- login <id>
+npm run collector:setup -- collect <id>
+npm run collector:setup -- enable <id> [id...]
+npm run collector:setup -- disable <id> [id...]
+npm run collector:setup -- security-check
+npm run collector:setup -- rotate-token
+npm run collector:start
+```
+
+Examples:
+
+```powershell
+npm run collector:setup -- collect dev-3
+npm run collector:setup -- disable dev-4 dev-5
+npm run collector:setup -- enable dev-4 dev-5
+```
+
+## Collector health states
+
+Possible per-account statuses are:
+
+- `ok` — normalized usage was collected;
+- `login_required` — the isolated profile needs normal provider authentication;
+- `unsupported` — the Usage page loaded but the expected provider response could not be recognized;
+- `unavailable` — the local browser collection path could not complete.
+
+QuotaOps fails closed: a failed refresh does not invent capacity.
+
+## Network boundary
+
+The collector HTTP service binds only to:
+
+```text
+127.0.0.1:4317
+```
+
+It is not intended to be reachable from the LAN.
+
+The collector API requires a random local bearer token stored under the protected QuotaOps home directory. The token stays server-side. Browser JavaScript talks to the Next.js same-origin route, which proxies the normalized snapshot to the loopback collector.
+
+The temporary Windows DevTools listener used for scheduled collection is also bound to `127.0.0.1` and exists only for the lifetime of that collection browser.
+
+## Local files
+
+QuotaOps collector state lives under:
+
+```text
+%USERPROFILE%\.quotaops\
+```
+
+Important paths include:
+
+```text
+%USERPROFILE%\.quotaops\collector.json
+%USERPROFILE%\.quotaops\collector.token
+%USERPROFILE%\.quotaops\browser-profiles\dev-1
+%USERPROFILE%\.quotaops\browser-profiles\dev-2
+...
+```
+
+Do not commit or upload the `.quotaops` directory or browser profiles.
 
 ## Security hardening
 
-Before daily use, run:
+Run:
 
 ```powershell
 npm run collector:setup -- security-check
 ```
 
-This verifies the protected QuotaOps home, account profile paths, and local collector token.
+On Windows, QuotaOps hardens its local home directory with ACLs for the current Windows identity, SYSTEM, and local Administrators.
 
-On Windows, QuotaOps applies an ACL to its local home directory for the current Windows identity, SYSTEM, and local Administrators. On Unix-like systems, directories are restricted to mode `0700` and token/config files to `0600`.
+On Unix-like systems, protected directories use mode `0700` and token/config files use mode `0600`.
 
-To invalidate the local collector credential:
+To rotate the local collector credential:
 
 ```powershell
 npm run collector:setup -- rotate-token
 ```
 
-Restart both the collector and QuotaOps server after rotation.
+Restart both the collector and Next.js server after token rotation.
 
-The provider adapter rejects unrelated Claude API responses, oversized usage responses, unexpected response formats, stale authentication, and profile directories outside the protected QuotaOps root.
+## Troubleshooting
 
-QuotaOps does not bypass provider authentication. If Claude requires a new login, the collector reports `login_required` and waits for an interactive login through the isolated browser profile.
+If `collect <id>` returns `login_required`, run `login <id>` and complete normal provider authentication.
 
-See [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries, residual risks, and release gates.
+If it returns `unsupported`, open that isolated profile with `login <id>` and confirm `Settings > Usage` is available. Provider response formats are not treated as a stable public API and can change.
+
+If it returns `unavailable`, confirm Chrome or Edge is installed and current, close any stale isolated profile window, then retry.
+
+If the dashboard shows `Manual fallback`, confirm `npm run collector:start` is still running.
+
+If port `4317` is already in use, stop the older collector process before starting another instance.
+
+Do not attempt to bypass provider verification or anti-bot checks.
+
+## Current validation status
+
+The current Windows MVP has been exercised end to end with five isolated Claude profiles:
+
+- each account passed individual `collect <id>` validation;
+- all five accounts were enabled together;
+- all five appeared as auto-synced in the dashboard;
+- the collector remained local-first and returned normalized quota metadata.
+
+The collector remains experimental because the Claude web Usage response is not a documented public quota API. Session-expiry handling, token rotation, LAN-isolation verification, and hidden scheduled-refresh behavior remain release-gate checks before calling the collector fully production-ready.
+
+See [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries and residual risks.
