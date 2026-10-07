@@ -180,6 +180,7 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.label === "string" &&
+    (candidate.email === undefined || typeof candidate.email === "string") &&
     candidate.provider === "claude" &&
     candidate.plan === "team" &&
     isQuotaWindow(candidate.fiveHour) &&
@@ -426,6 +427,7 @@ function AccountCard({
           <p>
             Claude Team · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
           </p>
+          {account.email ? <p>{account.email}</p> : null}
         </div>
 
         <span className="status-badge" data-status={status}>
@@ -451,12 +453,11 @@ function AccountCard({
         />
       </div>
 
-      {account.source !== "collector" ? (
       <details className="account-editor">
-        <summary>Account settings</summary>
+        <summary>Account details</summary>
         <div className="account-settings-grid">
           <label>
-            Account label
+            Display name
             <input
               value={account.label}
               maxLength={40}
@@ -469,13 +470,33 @@ function AccountCard({
               }
             />
           </label>
-          <button className="danger-button" type="button" onClick={onDelete}>
-            <TrashIcon />
-            Remove account
-          </button>
+          <label>
+            Email
+            <input
+              type="email"
+              value={account.email ?? ""}
+              maxLength={254}
+              placeholder="dev@example.com"
+              onChange={(event) => {
+                const email = event.target.value;
+                onChange({
+                  ...account,
+                  ...(email ? { email } : { email: undefined }),
+                  updatedAt: new Date().toISOString(),
+                });
+              }}
+            />
+          </label>
+          {account.source !== "collector" ? (
+            <button className="danger-button" type="button" onClick={onDelete}>
+              <TrashIcon />
+              Remove account
+            </button>
+          ) : (
+            <span className="auto-sync-label">Local profile details</span>
+          )}
         </div>
       </details>
-      ) : null}
     </article>
   );
 }
@@ -705,7 +726,18 @@ export function QuotaDashboard() {
               return true;
             });
 
-            return [...preserved, ...snapshot.accounts];
+            const mergedCollectorAccounts = snapshot.accounts.map((account) => {
+              const existing = current.find((item) => item.id === account.id);
+              return {
+                ...account,
+                label: existing?.label?.trim() || account.label,
+                ...(existing?.email?.trim()
+                  ? { email: existing.email.trim() }
+                  : {}),
+              };
+            });
+
+            return [...preserved, ...mergedCollectorAccounts];
           });
         }
       } catch {
