@@ -528,9 +528,19 @@ async function collectFromContext(
     id: account.id,
     label: account.label,
     provider: "claude",
-    plan: "team",
-    fiveHour: collected.parsed.fiveHour,
-    weekly: collected.parsed.weekly,
+    plan: "Team",
+    windows: [
+      {
+        id: "five-hour",
+        label: "5-hour",
+        ...collected.parsed.fiveHour,
+      },
+      {
+        id: "weekly",
+        label: "Weekly",
+        ...collected.parsed.weekly,
+      },
+    ],
     updatedAt: checkedAt,
   });
 }
