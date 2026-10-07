@@ -852,7 +852,7 @@ function TokenAnalyticsPanel({
           </div>
 
           <div className="token-source-row">
-            {analytics.sources.map((source) => (
+            {analytics?.sources.map((source) => (
               <span
                 className="token-source"
                 data-state={source.state}
