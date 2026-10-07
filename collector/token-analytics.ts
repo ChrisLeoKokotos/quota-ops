@@ -41,11 +41,22 @@ function safeTokenNumber(value: unknown): number {
     : 0;
 }
 
-function isoDateKey(value: unknown): string | null {
+function localDateKey(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return null;
-  return new Date(time).toISOString().slice(0, 10);
+
+  const date = new Date(time);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function timestampSeconds(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time / 1000 : null;
 }
 
 function tokenTotals(
@@ -198,7 +209,7 @@ export function parseClaudeTokenRecord(
     record.message && typeof record.message === "object"
       ? (record.message as Record<string, unknown>)
       : null;
-  if (!message) return null;
+  if (!message || message.model === "<synthetic>") return null;
 
   const usage = usageNumbers(message.usage);
   if (
@@ -212,17 +223,19 @@ export function parseClaudeTokenRecord(
   }
 
   const id =
-    typeof record.uuid === "string" && record.uuid
-      ? record.uuid
-      : typeof record.requestId === "string" && record.requestId
-        ? `${String(record.sessionId ?? "")}:${record.requestId}`
-        : "";
+    typeof message.id === "string" && message.id
+      ? message.id
+      : typeof record.uuid === "string" && record.uuid
+        ? record.uuid
+        : typeof record.requestId === "string" && record.requestId
+          ? `${String(record.sessionId ?? "")}:${record.requestId}`
+          : "";
 
   if (!id) return null;
 
   return {
     id,
-    date: isoDateKey(record.timestamp),
+    date: localDateKey(record.timestamp),
     totals: tokenTotals(
       usage.input,
       usage.output,
@@ -233,52 +246,217 @@ export function parseClaudeTokenRecord(
   };
 }
 
-interface CodexCumulative {
+function maxTokenTotals(a: TokenTotals, b: TokenTotals): TokenTotals {
+  const inputTokens = Math.max(a.inputTokens, b.inputTokens);
+  const outputTokens = Math.max(a.outputTokens, b.outputTokens);
+  const cacheReadTokens = Math.max(a.cacheReadTokens, b.cacheReadTokens);
+  const cacheWriteTokens = Math.max(a.cacheWriteTokens, b.cacheWriteTokens);
+  return tokenTotals(
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+  );
+}
+
+interface CodexRawUsage {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
 }
 
-export function parseCodexCumulative(
-  record: Record<string, unknown>,
-): { date: string | null; cumulative: CodexCumulative } | null {
-  if (record.type !== "event_msg") return null;
+export interface CodexTokenState {
+  sawSessionMeta: boolean;
+  sessionId: string;
+  replayGate: { createdAtSeconds: number | null } | null;
+  previousCumulative: CodexRawUsage | null;
+}
 
+export function createCodexTokenState(): CodexTokenState {
+  return {
+    sawSessionMeta: false,
+    sessionId: "",
+    replayGate: null,
+    previousCumulative: null,
+  };
+}
+
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isCodexChildSession(payload: Record<string, unknown>): boolean {
+  if (nonEmptyString(payload.forked_from_id)) return true;
+  if (nonEmptyString(payload.parent_thread_id)) return true;
+  if (payload.thread_source === "subagent") return true;
+
+  const source =
+    payload.source && typeof payload.source === "object"
+      ? (payload.source as Record<string, unknown>)
+      : null;
+  return !!source?.subagent;
+}
+
+function codexUsage(value: unknown): CodexRawUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const usage = value as Record<string, unknown>;
+  return {
+    input: safeTokenNumber(
+      usage.input_tokens ?? usage.prompt_tokens ?? usage.input,
+    ),
+    output: safeTokenNumber(
+      usage.output_tokens ?? usage.completion_tokens ?? usage.output,
+    ),
+    cacheRead: safeTokenNumber(
+      usage.cached_input_tokens ??
+        usage.cache_read_input_tokens ??
+        usage.cached_tokens,
+    ),
+    cacheWrite: safeTokenNumber(
+      usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens,
+    ),
+  };
+}
+
+function sameCodexUsage(a: CodexRawUsage, b: CodexRawUsage): boolean {
+  return (
+    a.input === b.input &&
+    a.output === b.output &&
+    a.cacheRead === b.cacheRead &&
+    a.cacheWrite === b.cacheWrite
+  );
+}
+
+function subtractCodexUsage(
+  current: CodexRawUsage,
+  previous: CodexRawUsage | null,
+): CodexRawUsage {
+  return {
+    input: Math.max(0, current.input - (previous?.input ?? 0)),
+    output: Math.max(0, current.output - (previous?.output ?? 0)),
+    cacheRead: Math.max(0, current.cacheRead - (previous?.cacheRead ?? 0)),
+    cacheWrite: Math.max(
+      0,
+      current.cacheWrite - (previous?.cacheWrite ?? 0),
+    ),
+  };
+}
+
+export function parseCodexTokenRecord(
+  record: Record<string, unknown>,
+  state: CodexTokenState,
+): { id: string; date: string | null; totals: TokenTotals } | null {
   const payload =
     record.payload && typeof record.payload === "object"
       ? (record.payload as Record<string, unknown>)
       : null;
-  if (!payload || payload.type !== "token_count") return null;
+
+  if (record.type === "session_meta" && payload && !state.sawSessionMeta) {
+    state.sawSessionMeta = true;
+    const id = payload.id ?? payload.session_id;
+    if (typeof id === "string") state.sessionId = id;
+
+    if (isCodexChildSession(payload)) {
+      state.replayGate = {
+        createdAtSeconds: timestampSeconds(record.timestamp),
+      };
+    }
+    return null;
+  }
+
+  if (record.type !== "event_msg" || !payload) return null;
+
+  if (payload.type === "task_started" && state.replayGate) {
+    const startedAt =
+      typeof payload.started_at === "number" &&
+      Number.isFinite(payload.started_at)
+        ? payload.started_at
+        : null;
+    const lineSeconds = timestampSeconds(record.timestamp);
+    const threshold =
+      state.replayGate.createdAtSeconds ??
+      (lineSeconds === null ? null : Math.floor(lineSeconds));
+
+    if (startedAt !== null && threshold !== null && startedAt >= threshold) {
+      state.replayGate = null;
+    }
+    return null;
+  }
+
+  if (payload.type !== "token_count") return null;
 
   const info =
     payload.info && typeof payload.info === "object"
       ? (payload.info as Record<string, unknown>)
       : null;
-  const total =
-    info?.total_token_usage && typeof info.total_token_usage === "object"
-      ? (info.total_token_usage as Record<string, unknown>)
-      : null;
-  if (!total) return null;
+  if (!info) return null;
+
+  const cumulative = codexUsage(info.total_token_usage);
+
+  // Child/fork rollouts can replay their parent's complete token history.
+  // The replay still seeds the cumulative baseline, but must not count again.
+  if (state.replayGate) {
+    if (cumulative) state.previousCumulative = cumulative;
+    return null;
+  }
+
+  if (
+    cumulative &&
+    state.previousCumulative &&
+    sameCodexUsage(cumulative, state.previousCumulative)
+  ) {
+    return null;
+  }
+
+  const direct = codexUsage(info.last_token_usage);
+  const usage =
+    direct ?? (cumulative ? subtractCodexUsage(cumulative, state.previousCumulative) : null);
+
+  if (cumulative) state.previousCumulative = cumulative;
+  if (!usage) return null;
+  if (usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0) {
+    return null;
+  }
+
+  // Codex input_tokens includes cached input. Cache values are a breakdown,
+  // not extra tokens on top of input.
+  const cacheRead = Math.min(usage.cacheRead, usage.input);
+  const cacheWrite = Math.min(
+    usage.cacheWrite,
+    Math.max(0, usage.input - cacheRead),
+  );
+  const totals = tokenTotals(
+    usage.input,
+    usage.output,
+    cacheRead,
+    cacheWrite,
+    usage.input + usage.output,
+  );
+  const timestamp =
+    typeof record.timestamp === "string" ? record.timestamp : "";
+  const signature = [
+    usage.input,
+    usage.output,
+    usage.cacheRead,
+    usage.cacheWrite,
+  ].join(":");
 
   return {
-    date: isoDateKey(record.timestamp),
-    cumulative: {
-      input: safeTokenNumber(total.input_tokens),
-      output: safeTokenNumber(total.output_tokens),
-      cacheRead: safeTokenNumber(total.cached_input_tokens),
-    },
+    id: `${state.sessionId || "unknown"}:${timestamp}:${signature}`,
+    date: localDateKey(record.timestamp),
+    totals,
   };
-}
-
-function cumulativeDelta(current: number, previous: number): number {
-  return current >= previous ? current - previous : current;
 }
 
 async function scanClaudeCode(): Promise<ScanResult> {
   const root = join(homedir(), ".claude", "projects");
   const paths = await findJsonlFiles(root);
-  const seen = new Set<string>();
-  let totals = emptyTokenTotals();
+  const best = new Map<
+    string,
+    { date: string | null; totals: TokenTotals }
+  >();
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
@@ -286,13 +464,24 @@ async function scanClaudeCode(): Promise<ScanResult> {
   for (const path of paths) {
     const ok = await readJsonl(path, (record) => {
       const parsed = parseClaudeTokenRecord(record);
-      if (!parsed || seen.has(parsed.id)) return;
-      seen.add(parsed.id);
-      totals = addTokenTotals(totals, parsed.totals);
-      addDaily(daily, "claude", parsed.date, parsed.totals);
+      if (!parsed) return;
+
+      const previous = best.get(parsed.id);
+      best.set(parsed.id, {
+        date: previous?.date ?? parsed.date,
+        totals: previous
+          ? maxTokenTotals(previous.totals, parsed.totals)
+          : parsed.totals,
+      });
     });
     if (ok) files += 1;
     else readErrors += 1;
+  }
+
+  let totals = emptyTokenTotals();
+  for (const item of best.values()) {
+    totals = addTokenTotals(totals, item.totals);
+    addDaily(daily, "claude", item.date, item.totals);
   }
 
   return {
@@ -306,41 +495,25 @@ async function scanClaudeCode(): Promise<ScanResult> {
 }
 
 async function scanCodex(): Promise<ScanResult> {
-  const root = join(homedir(), ".codex", "sessions");
-  const paths = await findJsonlFiles(root);
+  const codexHome = join(homedir(), ".codex");
+  const active = await findJsonlFiles(join(codexHome, "sessions"));
+  const archived = await findJsonlFiles(join(codexHome, "archived_sessions"));
+  const paths = [...new Set([...active, ...archived])];
+  const seen = new Set<string>();
   let totals = emptyTokenTotals();
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
 
   for (const path of paths) {
-    let last: CodexCumulative = { input: 0, output: 0, cacheRead: 0 };
-
+    const state = createCodexTokenState();
     const ok = await readJsonl(path, (record) => {
-      const parsed = parseCodexCumulative(record);
-      if (!parsed) return;
+      const parsed = parseCodexTokenRecord(record, state);
+      if (!parsed || seen.has(parsed.id)) return;
+      seen.add(parsed.id);
 
-      const input = cumulativeDelta(parsed.cumulative.input, last.input);
-      const output = cumulativeDelta(parsed.cumulative.output, last.output);
-      const cacheRead = cumulativeDelta(
-        parsed.cumulative.cacheRead,
-        last.cacheRead,
-      );
-      last = parsed.cumulative;
-
-      if (input + output === 0 && cacheRead === 0) return;
-
-      // Codex reports cached_input_tokens as a subset of input_tokens.
-      // Keep it as a breakdown, but do not add it twice to totalTokens.
-      const value = tokenTotals(
-        input,
-        output,
-        cacheRead,
-        0,
-        input + output,
-      );
-      totals = addTokenTotals(totals, value);
-      addDaily(daily, "openai", parsed.date, value);
+      totals = addTokenTotals(totals, parsed.totals);
+      addDaily(daily, "openai", parsed.date, parsed.totals);
     });
 
     if (ok) files += 1;
