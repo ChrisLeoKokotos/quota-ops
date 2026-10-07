@@ -12,6 +12,8 @@
   --accent: #202123;
   --accent-hover: #000000;
   --accent-soft: #ececee;
+  --success: #1f8f5f;
+  --success-soft: #edf9f3;
   --warn: #b7791f;
   --warn-soft: #fff8e8;
   --danger: #c94b52;
@@ -35,6 +37,8 @@
   --accent: #f4f4f4;
   --accent-hover: #ffffff;
   --accent-soft: rgba(255, 255, 255, 0.10);
+  --success: #57c994;
+  --success-soft: rgba(87, 201, 148, 0.12);
   --warn: #e2a84b;
   --warn-soft: rgba(226, 168, 75, 0.10);
   --danger: #ef6b73;
@@ -501,6 +505,15 @@ a {
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+.status-badge[data-status="available"] {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-badge[data-status="available"] .status-dot {
+  background: var(--success);
 }
 
 .status-badge[data-status="low"] .status-dot,
