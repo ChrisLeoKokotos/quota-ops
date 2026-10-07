@@ -9,6 +9,7 @@ export interface QuotaWindow {
 export interface QuotaAccount {
   id: string;
   label: string;
+  email?: string;
   provider: Provider;
   plan: Plan;
   fiveHour: QuotaWindow;
