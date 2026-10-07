@@ -1,4 +1,4 @@
-import type { QuotaAccount } from "../lib/quota.ts";
+import type { Provider, QuotaAccount } from "../lib/quota.ts";
 
 export type CollectorAccountStatus =
   | "ok"
@@ -9,6 +9,7 @@ export type CollectorAccountStatus =
 export interface CollectorAccountConfig {
   id: string;
   label: string;
+  provider: Provider;
   profileDir: string;
   enabled: boolean;
 }
