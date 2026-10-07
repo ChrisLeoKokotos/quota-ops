@@ -51,6 +51,8 @@ body:
         - Keyboard shortcuts
         - Theme / UI
         - Local persistence
+        - Local collector
+        - Token Analytics
         - Build / CI
         - Other
     validations:
@@ -64,4 +66,4 @@ body:
     id: logs
     attributes:
       label: Sanitized logs
-      description: Remove tokens, cookies, API keys, private keys, sensitive account identifiers, and personal data.
+      description: Remove credentials, sensitive account identifiers, personal data, and raw local session content. For Token Analytics issues, prefer the sanitized numeric output of npm run collector:setup -- tokens.
