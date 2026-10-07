@@ -168,6 +168,8 @@ Security rules:
 - local request rate limiting reduces accidental or hostile request floods;
 - Windows ACLs or Unix file modes restrict collector state and browser profiles;
 - configured browser profiles must remain inside the protected QuotaOps profile root;
+- interactive provider login is visible and user-controlled;
+- scheduled Windows collection runs hidden/headless against the isolated profile and attaches through an ephemeral DevTools listener bound to `127.0.0.1`;
 - the Claude adapter accepts only the exact expected HTTPS Usage endpoint and rejects unrelated responses;
 - provider responses are size-limited and parsed into a narrow normalized quota schema;
 - unrecognized response formats fail as `unsupported`;
@@ -175,7 +177,7 @@ Security rules:
 - profile directories and collector state must never be committed;
 - background collection must not require exporting provider session material.
 
-Before the collector is promoted from experimental status, its provider integration and local browser-profile behavior still require real-account end-to-end validation. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
+Five isolated Claude profiles have passed individual real-account collection and simultaneous dashboard synchronization on Windows. The collector remains experimental until session-expiry handling, token rotation, LAN isolation, and long-running hidden scheduled refresh behavior are also verified. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
 
 ## Security changes
 
