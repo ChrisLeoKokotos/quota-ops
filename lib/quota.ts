@@ -55,12 +55,28 @@ export function getWindowState(
   return "available";
 }
 
+function getAccountWindowState(
+  account: QuotaAccount,
+  window: QuotaWindow,
+  nowMs: number,
+): WindowState {
+  if (
+    account.source === "collector" &&
+    window.resetAt === null &&
+    clampPercent(window.usedPercent) === 0
+  ) {
+    return "available";
+  }
+
+  return getWindowState(window, nowMs);
+}
+
 export function getAccountStatus(
   account: QuotaAccount,
   nowMs: number,
 ): AccountStatus {
-  const fiveHour = getWindowState(account.fiveHour, nowMs);
-  const weekly = getWindowState(account.weekly, nowMs);
+  const fiveHour = getAccountWindowState(account, account.fiveHour, nowMs);
+  const weekly = getAccountWindowState(account, account.weekly, nowMs);
 
   if (fiveHour === "exhausted" && weekly === "exhausted") {
     return "exhausted";
