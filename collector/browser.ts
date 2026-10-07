@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
@@ -8,6 +12,83 @@ import {
 } from "./usage-parser.ts";
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
+
+async function findWindowsBrowserExecutable(): Promise<string> {
+  const roots = [
+    process.env.LOCALAPPDATA,
+    process.env.PROGRAMFILES,
+    process.env["PROGRAMFILES(X86)"],
+  ].filter((value): value is string => Boolean(value));
+
+  const candidates = [
+    ...roots.map((root) =>
+      join(root, "Google", "Chrome", "Application", "chrome.exe"),
+    ),
+    ...roots.map((root) =>
+      join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+    ),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next locally installed browser.
+    }
+  }
+
+  throw new Error(
+    "Could not find an installed Chrome or Edge browser for interactive Claude login.",
+  );
+}
+
+async function openInteractiveWindowsLogin(
+  account: CollectorAccountConfig,
+): Promise<void> {
+  await assertSafeProfileDirectory(account.profileDir);
+  const executablePath = await findWindowsBrowserExecutable();
+
+  const child = spawn(
+    executablePath,
+    [
+      `--user-data-dir=${account.profileDir}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      CLAUDE_USAGE_URL,
+    ],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    },
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => resolve());
+    child.once("error", reject);
+  });
+  child.unref();
+
+  process.stdout.write(
+    [
+      "",
+      `Opened the isolated system-browser profile for ${account.label}.`,
+      "Complete Claude\'s normal login and any provider verification in that window.",
+      "When Settings > Usage is visible, close that browser window completely.",
+      "Then return here and press Enter.",
+      "",
+    ].join("\\n"),
+  );
+
+  await new Promise<void>((resolve) => {
+    process.stdin.resume();
+    process.stdin.once("data", () => {
+      process.stdin.pause();
+      resolve();
+    });
+  });
+}
 
 async function launchProfile(
   account: CollectorAccountConfig,
@@ -109,6 +190,11 @@ function result(
 export async function openClaudeLogin(
   account: CollectorAccountConfig,
 ): Promise<void> {
+  if (process.platform === "win32") {
+    await openInteractiveWindowsLogin(account);
+    return;
+  }
+
   const context = await launchProfile(account, false);
   const page = context.pages()[0] ?? (await context.newPage());
 
@@ -121,10 +207,10 @@ export async function openClaudeLogin(
     [
       "",
       `Opened the isolated browser profile for ${account.label}.`,
-      "Log in to the intended Claude account in that window.",
+      "Complete Claude\'s normal login and any provider verification in that window.",
       "When Settings > Usage is visible, return here and press Enter.",
       "",
-    ].join("\n"),
+    ].join("\\n"),
   );
 
   await new Promise<void>((resolve) => {
