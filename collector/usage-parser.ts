@@ -89,9 +89,16 @@ export function parseClaudeUsagePayload(payload: unknown): ParsedUsage | null {
   return { fiveHour, weekly };
 }
 
-export function looksLikeClaudeUsageUrl(url: string): boolean {
+export function looksLikeClaudeUsageUrl(
+  url: string,
+  expectedOrganizationId?: string | null,
+): boolean {
   try {
     const parsed = new URL(url);
+    const match = /^\/api\/organizations\/([A-Za-z0-9_-]+)\/usage\/?$/.exec(
+      parsed.pathname,
+    );
+
     return (
       parsed.protocol === "https:" &&
       parsed.hostname === "claude.ai" &&
@@ -100,7 +107,8 @@ export function looksLikeClaudeUsageUrl(url: string): boolean {
       parsed.password === "" &&
       parsed.search === "" &&
       parsed.hash === "" &&
-      /^\/api\/organizations\/[A-Za-z0-9_-]+\/usage\/?$/.test(parsed.pathname)
+      match !== null &&
+      (!expectedOrganizationId || match[1] === expectedOrganizationId)
     );
   } catch {
     return false;
