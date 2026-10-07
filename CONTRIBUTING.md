@@ -4,20 +4,22 @@ Thank you for considering a contribution to QuotaOps, a product created by **SO 
 
 ## Current scope
 
-QuotaOps is currently a local-first MVP for Claude Team quota and reset management. The repository includes:
+QuotaOps is a local-first MVP for AI-account capacity and locally observed token activity.
 
-- account onboarding and removal;
-- 5-hour and weekly quota windows;
-- reset countdowns and state derivation;
-- capacity recommendations and tips;
-- local persistence;
-- light / dark themes;
+The current product includes:
+
+- Claude and OpenAI / ChatGPT Codex quota support;
+- provider-neutral quota windows;
+- reset countdowns and account-state derivation;
+- capacity recommendations and attention items;
+- browser-local persistence for non-secret dashboard metadata;
 - reset notifications;
 - optional browser voice input;
-- keyboard shortcuts;
-- an experimental same-PC Claude collector with isolated browser profiles, per-account validation, and a loopback-only local snapshot service.
+- keyboard shortcuts and light / dark themes;
+- an experimental same-PC multi-provider collector with isolated browser profiles;
+- local Token Analytics for Claude Code and Codex session logs.
 
-There is no hosted backend or cloud sync.
+There is no hosted QuotaOps backend or cloud sync.
 
 ## Ground rules
 
@@ -53,7 +55,7 @@ npm run build
 2. Branch from the current default branch.
 3. Make the smallest coherent change.
 4. Run typecheck, tests, and production build.
-5. Update relevant documentation.
+5. Update relevant documentation and `CHANGELOG.md` when the change is user-visible or operationally meaningful.
 6. Open a pull request using the repository template.
 7. Address review feedback and required checks before merge.
 
@@ -63,27 +65,35 @@ The following require explicit maintainer review:
 
 - provider credentials or session state;
 - provider usage endpoints or browser automation;
-- local collector processes;
+- local collectors or background processes;
 - remote synchronization;
 - new browser permissions;
 - speech / audio processing;
 - notifications or background execution;
-- persistence format changes;
+- persistence or snapshot format changes;
+- local token-log parsing;
 - new network destinations;
 - telemetry;
 - GitHub Actions or release tooling.
 
 QuotaOps must not silently upload, proxy, persist, or log provider credentials.
 
+## Token Analytics contributions
+
+Token Analytics must remain explicit about scope.
+
+- Do not present local log totals as provider billing totals.
+- Preserve the **Locally observed** label for local session analytics.
+- Avoid double-counting cache fields when a provider reports them as a subset of input.
+- Handle duplicate, forked, replayed, copied, or archived session records defensively.
+- Do not expose prompts, responses, source code, or raw session contents through the dashboard snapshot.
+- Add fixtures or tests for new parser behavior.
+
 ## UI and product contributions
 
 Keep the interface quiet, information-first, and accessible. Do not introduce third-party brand assets or imply endorsement by AI providers.
 
-Light and dark themes should preserve the current neutral inverse visual language: dark primary elements on light theme and light primary elements on dark theme.
-
-## Tests
-
-Behavioral logic should be testable outside UI rendering where practical. In particular, quota state, reset behavior, recommendation logic, and notification timing should remain deterministic.
+Light and dark themes should preserve the current neutral inverse visual language.
 
 ## Contribution licensing
 
