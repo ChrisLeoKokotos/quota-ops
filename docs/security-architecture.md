@@ -14,8 +14,8 @@ It has:
 - no hosted database;
 - no cloud sync;
 - no QuotaOps user authentication;
-- no automatic credential collection;
-- an optional experimental same-PC local collector.
+- no credential upload to a QuotaOps service;
+- an optional experimental same-PC local collector for provider-authenticated browser profiles.
 
 Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory and exposes normalized snapshots only over a loopback-only HTTP service.
 
@@ -169,8 +169,9 @@ Security rules:
 - Windows ACLs or Unix file modes restrict collector state and browser profiles;
 - configured browser profiles must remain inside the protected QuotaOps profile root;
 - interactive provider login is visible and user-controlled;
-- scheduled Windows collection runs hidden/headless against the isolated profile and attaches through an ephemeral DevTools listener bound to `127.0.0.1`;
-- the Claude adapter accepts only the exact expected HTTPS Usage endpoint and rejects unrelated responses;
+- background collection uses isolated provider profiles and keeps provider credentials inside the local browser execution;
+- the Claude adapter observes only expected Usage-page responses;
+- the OpenAI adapter obtains the current ChatGPT access token only inside the isolated browser context, uses it to request Codex quota metadata, and does not return it to Node snapshots or browser storage;
 - provider responses are size-limited and parsed into a narrow normalized quota schema;
 - unrecognized response formats fail as `unsupported`;
 - expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
