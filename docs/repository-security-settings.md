@@ -83,7 +83,7 @@ Preferred behavior:
 
 GitHub Actions and npm dependencies are managed through Dependabot.
 
-Direct dependencies are pinned. A committed npm lockfile and migration of CI installation to `npm ci --ignore-scripts` remain release gates for the hardened collector. Dependency Review and the production dependency audit must stay green.
+Direct dependencies are pinned. The repository has a committed npm lockfile and CI installs from it with `npm ci --ignore-scripts --no-audit --no-fund` before running a separate production dependency audit. Dependency Review and the production dependency audit must stay green.
 
 ## Review cadence
 
