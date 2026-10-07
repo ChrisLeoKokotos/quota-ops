@@ -95,25 +95,27 @@ a {
 }
 
 .sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
   min-height: 44px;
   padding: 0 10px;
-  font-size: 0.95rem;
-  font-weight: 650;
 }
 
-.brand-mark {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  background: var(--surface);
-  font-size: 0.78rem;
-  font-weight: 750;
+.sidebar-brand strong {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 680;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.sidebar-brand span {
+  color: var(--subtle);
+  font-size: 0.58rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
 }
 
 .sidebar-nav {
@@ -777,9 +779,14 @@ input:focus {
   .sidebar-brand {
     justify-content: center;
     padding: 0;
+    text-align: center;
   }
 
-  .sidebar-brand > span:last-child,
+  .sidebar-brand strong {
+    font-size: 0.82rem;
+  }
+
+  .sidebar-brand span,
   .collector-status div,
   .theme-button span {
     display: none;
@@ -819,10 +826,16 @@ input:focus {
   .sidebar-brand {
     justify-content: flex-start;
     min-height: 38px;
+    text-align: left;
   }
 
-  .sidebar-brand > span:last-child {
-    display: inline;
+  .sidebar-brand strong {
+    font-size: 0.92rem;
+  }
+
+  .sidebar-brand span {
+    display: block;
+    font-size: 0.52rem;
   }
 
   .sidebar-nav {
