@@ -26,6 +26,12 @@ import {
   parseVoiceUsageCommand,
   voiceWindowLabel,
 } from "@/lib/voice-command";
+import {
+  formatTokenCount,
+  summarizeTokenRange,
+  type TokenAnalyticsSnapshot,
+  type TokenRange,
+} from "@/lib/token-analytics";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
@@ -757,6 +763,122 @@ function AddAccountDialog({
   );
 }
 
+function TokenAnalyticsPanel({
+  analytics,
+  range,
+  nowMs,
+  onRangeChange,
+}: {
+  analytics: TokenAnalyticsSnapshot | null;
+  range: TokenRange;
+  nowMs: number;
+  onRangeChange: (range: TokenRange) => void;
+}) {
+  const summary = analytics
+    ? summarizeTokenRange(analytics, range, nowMs)
+    : null;
+  const ranges: Array<{ id: TokenRange; label: string }> = [
+    { id: "today", label: "Today" },
+    { id: "7d", label: "7 days" },
+    { id: "30d", label: "30 days" },
+    { id: "all", label: "All time" },
+  ];
+
+  return (
+    <section className="token-panel" aria-labelledby="token-analytics-title">
+      <div className="token-panel-heading">
+        <div>
+          <span className="page-kicker">Token analytics</span>
+          <h2 id="token-analytics-title">Locally observed work</h2>
+          <p>
+            Numeric usage only from local Claude Code and Codex session logs.
+            Prompts and responses are not included in the snapshot.
+          </p>
+        </div>
+        <div className="token-range" aria-label="Token analytics range">
+          {ranges.map((option) => (
+            <button
+              className="token-range-button"
+              data-active={range === option.id ? "true" : "false"}
+              key={option.id}
+              type="button"
+              onClick={() => onRangeChange(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {summary ? (
+        <>
+          <div className="token-total-row">
+            <div className="token-total">
+              <span>Total tokens processed</span>
+              <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
+              <small>Locally observed</small>
+            </div>
+            <div className="token-breakdown">
+              <div>
+                <span>Input</span>
+                <strong>{formatTokenCount(summary.totals.inputTokens)}</strong>
+              </div>
+              <div>
+                <span>Output</span>
+                <strong>{formatTokenCount(summary.totals.outputTokens)}</strong>
+              </div>
+              <div>
+                <span>Cache read</span>
+                <strong>{formatTokenCount(summary.totals.cacheReadTokens)}</strong>
+              </div>
+              <div>
+                <span>Cache write</span>
+                <strong>{formatTokenCount(summary.totals.cacheWriteTokens)}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="token-provider-row">
+            {summary.providers.length > 0 ? (
+              summary.providers.map((item) => (
+                <div className="token-provider" key={item.provider}>
+                  <span>{providerLabel(item.provider)}</span>
+                  <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
+                </div>
+              ))
+            ) : (
+              <span className="token-empty">No observed token usage in this range.</span>
+            )}
+          </div>
+
+          <div className="token-source-row">
+            {analytics?.sources.map((source) => (
+              <span
+                className="token-source"
+                data-state={source.state}
+                key={source.source}
+                title={source.message ?? undefined}
+              >
+                {source.source === "claude-code" ? "Claude Code" : "Codex"} ·{" "}
+                {source.state === "ok"
+                  ? `${source.files} file${source.files === 1 ? "" : "s"}`
+                  : source.state === "partial"
+                    ? "Partial"
+                    : "Not found"}
+              </span>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="token-empty-state">
+          Start the local collector to read numeric token usage from Claude Code
+          and Codex session logs on this PC.
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function QuotaDashboard() {
   const [accounts, setAccounts] = useState<QuotaAccount[]>([]);
   const [nowMs, setNowMs] = useState(0);
@@ -771,6 +893,9 @@ export function QuotaDashboard() {
   const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
   const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
   const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
+  const [tokenAnalytics, setTokenAnalytics] =
+    useState<TokenAnalyticsSnapshot | null>(null);
+  const [tokenRange, setTokenRange] = useState<TokenRange>("all");
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -824,6 +949,7 @@ export function QuotaDashboard() {
 
         setCollectorState("connected");
         setCollectorLastSync(snapshot.generatedAt);
+        setTokenAnalytics(snapshot.tokens);
         setCollectorIssues(
           snapshot.issues.map((issue) =>
             issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
@@ -1296,6 +1422,13 @@ export function QuotaDashboard() {
               <strong>{recommended?.label ?? "—"}</strong>
             </div>
           </section>
+
+          <TokenAnalyticsPanel
+            analytics={tokenAnalytics}
+            range={tokenRange}
+            nowMs={nowMs}
+            onRangeChange={setTokenRange}
+          />
 
           {collectorIssues.length > 0 ? (
             <div className="notice" role="status">

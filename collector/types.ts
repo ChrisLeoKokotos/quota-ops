@@ -1,4 +1,5 @@
 import type { Provider, QuotaAccount } from "../lib/quota.ts";
+import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 
 export type CollectorAccountStatus =
   | "ok"
@@ -34,4 +35,5 @@ export interface CollectorSnapshotResponse {
   version: 1;
   generatedAt: string;
   accounts: CollectorAccountResult[];
+  tokens: TokenAnalyticsSnapshot;
 }

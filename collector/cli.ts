@@ -1,4 +1,5 @@
 import { collectProviderUsage, openProviderLogin } from "./provider.ts";
+import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import {
   bootstrapFiveAccounts,
   createAccountConfig,
@@ -22,6 +23,7 @@ function usage(): never {
       "  add <provider> <id> <label>",
       "  login <id>",
       "  collect <id>",
+      "  tokens",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
       "  security-check",
@@ -118,6 +120,12 @@ async function main(): Promise<void> {
     process.stdout.write(
       `${enabled ? "Enabled" : "Disabled"}: ${args.join(", ")}.\n`,
     );
+    return;
+  }
+
+  if (command === "tokens") {
+    const analytics = await collectLocalTokenAnalytics();
+    process.stdout.write(JSON.stringify(analytics, null, 2) + "\n");
     return;
   }
 

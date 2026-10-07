@@ -1,4 +1,11 @@
 import type { QuotaAccount } from "./quota";
+import type {
+  DailyTokenBucket,
+  ProviderTokenTotals,
+  TokenAnalyticsSnapshot,
+  TokenSourceStatus,
+  TokenTotals,
+} from "./token-analytics";
 
 const COLLECTOR_URL = "/api/collector";
 
@@ -20,12 +27,14 @@ interface CollectorSnapshotResponse {
   version: 1;
   generatedAt: string;
   accounts: CollectorAccountResult[];
+  tokens?: unknown;
 }
 
 export interface CollectorSnapshot {
   generatedAt: string;
   accounts: QuotaAccount[];
   issues: CollectorAccountResult[];
+  tokens: TokenAnalyticsSnapshot | null;
 }
 
 function isQuotaAccount(value: unknown): value is QuotaAccount {
@@ -49,6 +58,85 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
         (typeof window.resetAt === "string" || window.resetAt === null),
     )
   );
+}
+
+function isTokenTotals(value: unknown): value is TokenTotals {
+  if (!value || typeof value !== "object") return false;
+  const totals = value as Partial<TokenTotals>;
+  return (
+    typeof totals.inputTokens === "number" &&
+    Number.isFinite(totals.inputTokens) &&
+    totals.inputTokens >= 0 &&
+    typeof totals.outputTokens === "number" &&
+    Number.isFinite(totals.outputTokens) &&
+    totals.outputTokens >= 0 &&
+    typeof totals.cacheReadTokens === "number" &&
+    Number.isFinite(totals.cacheReadTokens) &&
+    totals.cacheReadTokens >= 0 &&
+    typeof totals.cacheWriteTokens === "number" &&
+    Number.isFinite(totals.cacheWriteTokens) &&
+    totals.cacheWriteTokens >= 0 &&
+    typeof totals.totalTokens === "number" &&
+    Number.isFinite(totals.totalTokens) &&
+    totals.totalTokens >= 0
+  );
+}
+
+function isProviderTokenTotals(value: unknown): value is ProviderTokenTotals {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<ProviderTokenTotals>;
+  return (
+    (item.provider === "claude" || item.provider === "openai") &&
+    isTokenTotals(item.totals)
+  );
+}
+
+function isDailyTokenBucket(value: unknown): value is DailyTokenBucket {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<DailyTokenBucket>;
+  return (
+    typeof item.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(item.date) &&
+    (item.provider === "claude" || item.provider === "openai") &&
+    isTokenTotals(item)
+  );
+}
+
+function isTokenSourceStatus(value: unknown): value is TokenSourceStatus {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TokenSourceStatus>;
+  return (
+    (item.source === "claude-code" || item.source === "codex") &&
+    (item.provider === "claude" || item.provider === "openai") &&
+    (item.state === "ok" ||
+      item.state === "not_found" ||
+      item.state === "partial") &&
+    typeof item.files === "number" &&
+    Number.isFinite(item.files) &&
+    item.files >= 0 &&
+    (item.message === null || typeof item.message === "string")
+  );
+}
+
+function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<TokenAnalyticsSnapshot>;
+
+  if (
+    typeof item.generatedAt !== "string" ||
+    item.scope !== "locally_observed" ||
+    !isTokenTotals(item.totals) ||
+    !Array.isArray(item.providers) ||
+    !item.providers.every(isProviderTokenTotals) ||
+    !Array.isArray(item.daily) ||
+    !item.daily.every(isDailyTokenBucket) ||
+    !Array.isArray(item.sources) ||
+    !item.sources.every(isTokenSourceStatus)
+  ) {
+    return null;
+  }
+
+  return item as TokenAnalyticsSnapshot;
 }
 
 export async function fetchCollectorSnapshot(
@@ -83,5 +171,6 @@ export async function fetchCollectorSnapshot(
     generatedAt: payload.generatedAt,
     accounts,
     issues: payload.accounts.filter((result) => result.status !== "ok"),
+    tokens: parseTokenAnalytics(payload.tokens),
   };
 }
