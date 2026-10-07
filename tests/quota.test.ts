@@ -51,6 +51,23 @@ test("missing reset timestamps require setup instead of stale-refresh messaging"
   assert.equal(getAccountStatus(incomplete, NOW), "needs_setup");
 });
 
+test("collector zero-usage windows may omit a reset without requiring setup", () => {
+  const synced = account("dev-collector", 0, 10);
+  synced.source = "collector";
+  synced.fiveHour.resetAt = null;
+
+  assert.equal(getAccountStatus(synced, NOW), "available");
+  assert.ok(Number.isFinite(recommendationScore(synced, NOW)));
+});
+
+test("collector nonzero windows still require a reset timestamp", () => {
+  const incomplete = account("dev-collector-incomplete", 25, 10);
+  incomplete.source = "collector";
+  incomplete.fiveHour.resetAt = null;
+
+  assert.equal(getAccountStatus(incomplete, NOW), "needs_setup");
+});
+
 test("expired reset timestamps require refresh instead of inventing capacity", () => {
   const stale = account("dev-3", 60, 60);
   stale.fiveHour.resetAt = "2026-10-05T23:00:00.000Z";
