@@ -207,13 +207,13 @@ async function launchWindowsCollectionBrowser(
       "--no-default-browser-check",
       "--disable-extensions",
       "--disable-background-mode",
-      "--start-minimized",
+      "--headless=new",
       "about:blank",
     ],
     {
       detached: false,
       stdio: "ignore",
-      windowsHide: false,
+      windowsHide: true,
     },
   );
 
