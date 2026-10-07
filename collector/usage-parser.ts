@@ -53,51 +53,110 @@ function organizationId(value: unknown): string | null {
   return raw && /^[A-Za-z0-9_-]+$/.test(raw) ? raw : null;
 }
 
-function hasChatCapability(value: unknown): boolean {
+function organizationCapabilities(value: unknown): string[] {
   const record = asRecord(value);
-  if (!record || !Array.isArray(record.capabilities)) return false;
-  return record.capabilities.some(
-    (capability) => capability === "chat",
-  );
+  if (!record || !Array.isArray(record.capabilities)) return [];
+
+  return record.capabilities
+    .filter((capability): capability is string => typeof capability === "string")
+    .map((capability) => capability.toLowerCase());
 }
 
-export function resolveClaudeUsageOrganizationId(
+function organizationRows(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+
+  const root = asRecord(payload);
+  if (!root) return [];
+
+  if (Array.isArray(root.organizations)) return root.organizations;
+  if (Array.isArray(root.data)) return root.data;
+  if (root.organization) return [root.organization];
+
+  return [];
+}
+
+const CHAT_PLAN_CAPABILITIES = new Set([
+  "claude_team",
+  "claude_pro",
+  "claude_max",
+  "pro",
+  "max",
+  "raven",
+]);
+
+export function resolveClaudeUsageOrganizationIds(
   payload: unknown,
   preferredOrganizationId?: string | null,
-): string | null {
-  if (!Array.isArray(payload)) return null;
-
-  const organizations = payload
-    .map((value) => ({
-      id: organizationId(value),
-      chat: hasChatCapability(value),
-    }))
+): string[] {
+  const organizations = organizationRows(payload)
+    .map((value) => {
+      const id = organizationId(value);
+      const capabilities = organizationCapabilities(value);
+      return {
+        id,
+        capabilities,
+        chat: capabilities.includes("chat"),
+        paidChat: capabilities.some((capability) =>
+          CHAT_PLAN_CAPABILITIES.has(capability),
+        ),
+      };
+    })
     .filter(
-      (organization): organization is { id: string; chat: boolean } =>
-        organization.id !== null,
+      (
+        organization,
+      ): organization is {
+        id: string;
+        capabilities: string[];
+        chat: boolean;
+        paidChat: boolean;
+      } => organization.id !== null,
     );
 
-  if (organizations.length === 0) return null;
+  if (organizations.length === 0) return [];
 
-  const preferredChat = preferredOrganizationId
-    ? organizations.find(
-        (organization) =>
-          organization.id === preferredOrganizationId && organization.chat,
-      )
-    : null;
-  if (preferredChat) return preferredChat.id;
-
-  const chatOrganization = organizations.find((organization) => organization.chat);
-  if (chatOrganization) return chatOrganization.id;
+  const ordered: string[] = [];
+  const add = (id: string | null | undefined) => {
+    if (id && !ordered.includes(id)) ordered.push(id);
+  };
 
   if (preferredOrganizationId) {
     const preferred = organizations.find(
       (organization) => organization.id === preferredOrganizationId,
     );
-    if (preferred) return preferred.id;
+    if (preferred?.chat && preferred.paidChat) add(preferred.id);
   }
 
-  return organizations[0]?.id ?? null;
+  for (const organization of organizations) {
+    if (organization.chat && organization.paidChat) add(organization.id);
+  }
+
+  if (preferredOrganizationId) {
+    const preferred = organizations.find(
+      (organization) => organization.id === preferredOrganizationId,
+    );
+    if (preferred?.chat) add(preferred.id);
+  }
+
+  for (const organization of organizations) {
+    if (organization.chat) add(organization.id);
+  }
+
+  if (preferredOrganizationId) {
+    const preferred = organizations.find(
+      (organization) => organization.id === preferredOrganizationId,
+    );
+    add(preferred?.id);
+  }
+
+  for (const organization of organizations) {
+    if (organization.capabilities.length === 0) add(organization.id);
+  }
+
+  for (const organization of [...organizations].reverse()) {
+    add(organization.id);
+  }
+
+  return ordered;
 }
 
 function parseNamedLimit(
