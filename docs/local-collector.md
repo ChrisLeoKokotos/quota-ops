@@ -2,11 +2,11 @@
 
 QuotaOps is a product created by **SO HOMELY**.
 
-This document is the canonical setup and operations guide for the current same-PC Claude Team collector.
+This document is the canonical setup and operations guide for the current same-PC multi-provider collector.
 
 ## What the collector does
 
-QuotaOps can track several Claude accounts on one Windows PC without combining their browser sessions.
+QuotaOps can track several Claude and OpenAI accounts on one Windows PC without combining their browser sessions.
 
 Each account gets its own persistent Chrome / Edge profile under:
 
@@ -16,11 +16,9 @@ Each account gets its own persistent Chrome / Edge profile under:
 
 The collector keeps only normalized capacity metadata in its snapshot model:
 
-- account id and display label;
-- 5-hour usage percentage;
-- 5-hour reset timestamp when the provider supplies one;
-- weekly usage percentage;
-- weekly reset timestamp;
+- account id, display label, provider, and plan label;
+- one or more named quota windows;
+- usage percentage and reset timestamp for each quota window;
 - collection time and health state.
 
 Provider login state remains inside the isolated browser profile. QuotaOps does not copy provider passwords, cookies, or provider access credentials into collector snapshots.
@@ -32,7 +30,7 @@ Recommended environment:
 - Windows 11;
 - Node.js 22.21.0;
 - current Google Chrome or Microsoft Edge;
-- one or more Claude accounts that can open `Settings > Usage`.
+- one or more Claude accounts that can open `Settings > Usage`, and/or ChatGPT accounts with Codex quota available.
 
 Install the repository dependencies from the committed lockfile:
 
@@ -171,11 +169,9 @@ The collector refreshes enabled provider profiles every five minutes by default 
 
 Interactive login is intentionally visible because provider authentication and verification must remain user-controlled.
 
-Scheduled Windows collection is different: QuotaOps starts the locally installed Chrome / Edge against the isolated profile in hidden/headless mode, attaches through an ephemeral DevTools listener bound to `127.0.0.1`, reads the Usage response, then closes the browser process.
+Background collection is different: QuotaOps opens the isolated provider profile off-screen or minimized, reads only the quota metadata needed for the configured provider, then closes the browser process. Claude collection observes the real Usage-page API response. OpenAI collection obtains the current ChatGPT session inside the isolated browser context and requests Codex quota metadata without exporting the access token into the collector snapshot.
 
-Scheduled refresh should therefore not open five visible browser windows every cycle.
-
-If Claude requires a fresh login, run the explicit `login <id>` command again. QuotaOps does not bypass provider authentication.
+If a provider requires a fresh login, run the explicit `login <id>` command again. QuotaOps does not bypass provider authentication.
 
 ## Local account details
 
@@ -195,7 +191,7 @@ Custom display name and email are preserved across collector refreshes while usa
 ```text
 npm run collector:setup -- bootstrap-five
 npm run collector:setup -- list
-npm run collector:setup -- add <id> <label>
+npm run collector:setup -- add <provider> <id> <label>
 npm run collector:setup -- login <id>
 npm run collector:setup -- collect <id>
 npm run collector:setup -- enable <id> [id...]
@@ -209,8 +205,10 @@ Examples:
 
 ```powershell
 npm run collector:setup -- collect dev-3
-npm run collector:setup -- disable dev-4 dev-5
-npm run collector:setup -- enable dev-4 dev-5
+npm run collector:setup -- add openai openai-1 "OpenAI 1"
+npm run collector:setup -- login openai-1
+npm run collector:setup -- collect openai-1
+npm run collector:setup -- enable openai-1
 ```
 
 ## Collector health states
@@ -282,7 +280,7 @@ Restart both the collector and Next.js server after token rotation.
 
 If `collect <id>` returns `login_required`, run `login <id>` and complete normal provider authentication.
 
-If it returns `unsupported`, open that isolated profile with `login <id>` and confirm `Settings > Usage` is available. Provider response formats are not treated as a stable public API and can change.
+If it returns `unsupported`, open that isolated profile with `login <id>`. For Claude, confirm `Settings > Usage` is available. For OpenAI, confirm chatgpt.com is signed in and the account has Codex quota available. Provider response formats are not treated as stable public APIs and can change.
 
 If it returns `unavailable`, confirm Chrome or Edge is installed and current, close any stale isolated profile window, then retry.
 
@@ -294,13 +292,13 @@ Do not attempt to bypass provider verification or anti-bot checks.
 
 ## Current validation status
 
-The current Windows MVP has been exercised end to end with five isolated Claude profiles:
+The Claude collector path has been exercised end to end with five isolated Claude profiles. OpenAI / Codex support is newer and should be validated per account with `collect <id>` before enabling background refresh:
 
 - each account passed individual `collect <id>` validation;
 - all five accounts were enabled together;
 - all five appeared as auto-synced in the dashboard;
 - the collector remained local-first and returned normalized quota metadata.
 
-The collector remains experimental because the Claude web Usage response is not a documented public quota API. Session-expiry handling, token rotation, LAN-isolation verification, and hidden scheduled-refresh behavior remain release-gate checks before calling the collector fully production-ready.
+The collector remains experimental because the Claude web Usage response and ChatGPT/Codex quota surfaces are internal product APIs. Session-expiry handling, token rotation, LAN-isolation verification, and background-refresh behavior remain release-gate checks before calling the collector fully production-ready.
 
 See [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries and residual risks.
