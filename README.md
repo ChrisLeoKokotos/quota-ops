@@ -8,7 +8,7 @@ QuotaOps helps people and teams track AI-account usage limits, exact reset windo
 
 ## Current product state
 
-QuotaOps is currently an MVP focused on **Claude Team** accounts.
+QuotaOps is currently an MVP for **Claude** and **OpenAI / ChatGPT Codex** account capacity.
 
 Today it supports:
 
@@ -24,7 +24,7 @@ Today it supports:
 - keyboard shortcuts;
 - light and dark themes;
 - browser-local persistence;
-- experimental same-PC automatic collection for multiple Claude accounts through isolated local browser profiles.
+- experimental same-PC automatic collection for multiple Claude and OpenAI accounts through isolated local browser profiles;
 
 There is **no hosted QuotaOps backend, hosted database, account system, or cloud sync** in the current MVP. An optional local collector can run on the same PC and binds only to `127.0.0.1`.
 
@@ -32,7 +32,7 @@ There is **no hosted QuotaOps backend, hosted database, account system, or cloud
 
 Current application data is stored in browser local storage for the local QuotaOps origin. This includes account display names, optional locally entered email metadata, usage percentages, reset timestamps, notification state, reset-notification history, and theme preference.
 
-QuotaOps does not intentionally store Claude passwords, API keys, OAuth tokens, session cookies, provider authentication state, prompts, source code, or conversations.
+QuotaOps does not intentionally store provider passwords, API keys, OAuth tokens, session cookies, provider authentication state, prompts, source code, or conversations.
 
 Voice input uses the browser speech-recognition capability when available. Depending on the browser and operating system, speech recognition may use a remote service operated by the browser or platform vendor. QuotaOps does not send voice audio to a SO HOMELY backend.
 
@@ -92,13 +92,13 @@ npm run build
 
 ## Local collector
 
-QuotaOps includes an **experimental same-PC collector** for multiple Claude accounts. Each account uses its own persistent local Chrome / Edge profile. Interactive login is visible and provider-controlled; scheduled Windows refreshes run hidden/headless. The collector exposes only normalized snapshots on `127.0.0.1:4317`.
+QuotaOps includes an **experimental same-PC collector** for multiple Claude and OpenAI accounts. Each account uses its own persistent local Chrome / Edge profile. Interactive login is visible and provider-controlled; background collection uses those isolated local profiles and exposes only normalized snapshots on `127.0.0.1:4317`.
 
-The local API is authenticated with a random local token that stays server-side, browser-direct access is rejected, profile paths are constrained to the protected QuotaOps home, and the provider adapter accepts only the exact expected Claude Usage response before normalizing quota metadata. It deliberately does not export cookies, passwords, or provider tokens into QuotaOps data.
+The local API is authenticated with a random local token that stays server-side, browser-direct access is rejected, profile paths are constrained to the protected QuotaOps home, and provider adapters normalize only quota metadata. Claude collection observes the provider's own Usage-page responses. OpenAI collection uses the authenticated local ChatGPT browser session to read Codex quota metadata; access tokens remain inside that isolated browser execution and are not returned in QuotaOps snapshots.
 
 The full setup guide covers `bootstrap-five`, per-account login, one-account verification with `collect`, enable/disable controls, security checks, token rotation, troubleshooting, and the five-account workflow: [docs/local-collector.md](docs/local-collector.md).
 
-The collector adapter is considered experimental because the Claude Team usage response used by the web application is not a documented public quota API and may change.
+The provider adapters are considered experimental because the Claude web Usage response and ChatGPT/Codex usage surfaces are internal product endpoints rather than stable public quota APIs and may change.
 
 See [docs/mvp-architecture.md](docs/mvp-architecture.md) and [docs/security-architecture.md](docs/security-architecture.md).
 
@@ -125,4 +125,4 @@ QuotaOps was created by **SO HOMELY** and is maintained through this public repo
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Claude and Anthropic are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic.
+Claude, Anthropic, OpenAI, ChatGPT, and Codex are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic or OpenAI.
