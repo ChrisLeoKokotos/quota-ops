@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { collectProviderUsage } from "./provider.ts";
+import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -10,6 +11,7 @@ import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
 } from "./types.ts";
+import { emptyTokenTotals, type TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 
 const HOST = "127.0.0.1";
 const MAX_REQUESTS_PER_MINUTE = 120;
@@ -39,12 +41,21 @@ async function main(): Promise<void> {
   const config = await loadCollectorConfig();
   const collectorToken = await getOrCreateCollectorToken();
   let results: CollectorAccountResult[] = [];
+  let tokenAnalytics: TokenAnalyticsSnapshot = {
+    generatedAt: new Date(0).toISOString(),
+    scope: "locally_observed",
+    totals: emptyTokenTotals(),
+    providers: [],
+    daily: [],
+    sources: [],
+  };
   let collecting = false;
 
   const snapshot = (): CollectorSnapshotResponse => ({
     version: 1,
     generatedAt: new Date().toISOString(),
     accounts: results,
+    tokens: tokenAnalytics,
   });
 
   const refresh = async (): Promise<void> => {
@@ -61,6 +72,7 @@ async function main(): Promise<void> {
       }
 
       results = nextResults;
+      tokenAnalytics = await collectLocalTokenAnalytics();
     } finally {
       collecting = false;
     }
