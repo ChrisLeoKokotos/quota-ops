@@ -1034,8 +1034,8 @@ export function QuotaDashboard() {
       <div className="app-shell">
         <aside className="sidebar">
           <div className="sidebar-brand">
-            <span className="brand-mark">Q</span>
-            <span>QuotaOps</span>
+            <strong>QuotaOps</strong>
+            <span>by SO HOMELY</span>
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
