@@ -58,3 +58,9 @@ Pinned GitHub Actions, dependency review, CodeQL, repository guard and npm audit
 ## Verification and limitations
 
 This is a static review, **not** an exploit demonstration, live host audit, automated dependency audit or proof of absence of zero-days. The highest-priority verified design flaw is a missing independent authentication boundary at the Next.js proxy if network reachable. This PR mitigates the default host binding, but does not make remotely hosted QuotaOps safe. CI and runtime-network checks remain required.
+
+## Hardening work in PR #20 (not a closure statement)
+
+- Background scanning of Claude Code/Codex session histories is disabled by default, including configuration migrated from previous versions. Users may opt in explicitly via `tokens-auto enable` and disable future scanning via `tokens-auto disable`. One-shot `tokens` remains intentionally user-triggered. This limits unnecessary private-file access but **does not** sandbox a compromised same-user collector (QO-SEC-02 remains open).
+- Session scanning enforces a 512 MiB per-source aggregate file budget and rejects parsed JSONL lines larger than 2 MiB. **Important limitation:** Node's line reader may allocate a large buffer before a line-size check, so strict pre-allocation bounded streaming and adversarial end-to-end tests are still required (QO-SEC-04 remains open).
+- The review and merge hold remain active. No other finding is claimed closed by these partial mitigations.
