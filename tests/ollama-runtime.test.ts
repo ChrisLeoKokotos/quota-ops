@@ -5,7 +5,7 @@ import {
   parseOllamaModels,
   parseOllamaVersion,
 } from "../collector/ollama.ts";
-import { formatBytes } from "../lib/local-runtime.ts";
+import { formatBytes, totalLoadedVram } from "../lib/local-runtime.ts";
 
 test("merges installed and running Ollama models without inventing quota", () => {
   const models = parseOllamaModels(
@@ -92,4 +92,29 @@ test("formats runtime memory without fake precision", () => {
   assert.equal(formatBytes(0), "0 B");
   assert.equal(formatBytes(1024 ** 3), "1.0 GB");
   assert.equal(formatBytes(null), "—");
+});
+
+
+test("unavailable running model list never claims installed models are unloaded", () => {
+  const models = parseOllamaModels(
+    { models: [{ name: "qwen3:8b", details: { family: "qwen3" } }] },
+    null,
+  );
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.loaded, null);
+  assert.equal(models[0]?.vramBytes, null);
+});
+
+test("VRAM cannot be totaled when some loaded model VRAM is unavailable", () => {
+  const models = parseOllamaModels({ models: [] }, {
+    models: [
+      { name: "qwen3:8b", size_vram: 1_000 },
+      { name: "mistral:7b" },
+    ],
+  });
+  assert.equal(totalLoadedVram(models, 2), null);
+  assert.equal(totalLoadedVram(models, null), null);
+  assert.equal(totalLoadedVram(models, 3), null);
+  assert.equal(totalLoadedVram([], 0), 0);
+  assert.equal(totalLoadedVram(models.slice(0, 1), 1), 1_000);
 });
