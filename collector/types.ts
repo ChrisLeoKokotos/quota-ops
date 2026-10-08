@@ -19,6 +19,7 @@ export interface CollectorConfig {
   version: 1;
   port: number;
   pollIntervalSeconds: number;
+  tokenAnalyticsEnabled: boolean;
   accounts: CollectorAccountConfig[];
 }
 
@@ -35,5 +36,5 @@ export interface CollectorSnapshotResponse {
   version: 1;
   generatedAt: string;
   accounts: CollectorAccountResult[];
-  tokens: TokenAnalyticsSnapshot;
+  tokens: TokenAnalyticsSnapshot | null;
 }
