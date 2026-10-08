@@ -65,6 +65,7 @@ export function parseOllamaModels(
     runningPayload && typeof runningPayload === "object"
       ? (runningPayload as Record<string, unknown>)
       : {};
+  const runningKnown = Array.isArray(runningRecord.models);
 
   const installed = Array.isArray(installedRecord.models)
     ? installedRecord.models.map((item) => modelRecord(item, false)).filter(Boolean)
@@ -76,7 +77,7 @@ export function parseOllamaModels(
   const merged = new Map<string, LocalModelSnapshot>();
 
   for (const item of installed as OllamaModelRecord[]) {
-    merged.set(item.name, item);
+    merged.set(item.name, { ...item, loaded: runningKnown ? false : null });
   }
 
   for (const item of running as OllamaModelRecord[]) {
@@ -95,7 +96,10 @@ export function parseOllamaModels(
   }
 
   return [...merged.values()].sort((a, b) => {
-    if (a.loaded !== b.loaded) return a.loaded ? -1 : 1;
+    if (a.loaded !== b.loaded) {
+      const rank = (loaded: boolean | null) => loaded === true ? 0 : loaded === null ? 1 : 2;
+      return rank(a.loaded) - rank(b.loaded);
+    }
     return a.name.localeCompare(b.name);
   });
 }
@@ -134,6 +138,13 @@ async function fetchLocalJson(path: string): Promise<unknown> {
   }
 }
 
+function parsedModelCount(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const models = (payload as Record<string, unknown>).models;
+  if (!Array.isArray(models)) return null;
+  return models.filter((model) => modelRecord(model, false) !== null).length;
+}
+
 export function parseOllamaVersion(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   return textOrNull((payload as Record<string, unknown>).version);
@@ -161,6 +172,8 @@ export async function collectOllamaRuntime(): Promise<LocalRuntimeSnapshot> {
         version: null,
         checkedAt,
         models: [],
+        installedModelCount: null,
+        loadedModelCount: null,
         message: "Ollama was not reachable on 127.0.0.1:11434.",
       };
     }
@@ -169,10 +182,10 @@ export async function collectOllamaRuntime(): Promise<LocalRuntimeSnapshot> {
       versionResult.status === "fulfilled"
         ? parseOllamaVersion(versionResult.value)
         : null;
-    const installed =
-      tagsResult.status === "fulfilled" ? tagsResult.value : { models: [] };
-    const running =
-      psResult.status === "fulfilled" ? psResult.value : { models: [] };
+    const installed = tagsResult.status === "fulfilled" ? tagsResult.value : null;
+    const running = psResult.status === "fulfilled" ? psResult.value : null;
+    const installedModelCount = parsedModelCount(installed);
+    const loadedModelCount = parsedModelCount(running);
     const models = parseOllamaModels(installed, running);
 
     const failed = [versionResult, tagsResult, psResult].filter(
@@ -182,12 +195,16 @@ export async function collectOllamaRuntime(): Promise<LocalRuntimeSnapshot> {
     return {
       runtime: "ollama",
       label: "Ollama",
-      state: failed > 0 ? "partial" : "online",
+      state: failed > 0 || installedModelCount === null || loadedModelCount === null
+        ? "partial"
+        : "online",
       version,
       checkedAt,
       models,
+      installedModelCount,
+      loadedModelCount,
       message:
-        failed > 0
+        failed > 0 || installedModelCount === null || loadedModelCount === null
           ? "Ollama is reachable, but some runtime metadata could not be read."
           : null,
     };
@@ -199,6 +216,8 @@ export async function collectOllamaRuntime(): Promise<LocalRuntimeSnapshot> {
       version: null,
       checkedAt,
       models: [],
+      installedModelCount: null,
+      loadedModelCount: null,
       message: "Ollama was not reachable on 127.0.0.1:11434.",
     };
   }
