@@ -39,6 +39,24 @@ Install the repository dependencies from the committed lockfile:
 npm ci --ignore-scripts --no-audit --no-fund
 ```
 
+## Token Analytics privacy opt-in
+
+Background scans of local Claude Code and Codex session histories are **off by default**, including existing collector configurations migrated to this version. Session history can contain private prompts, responses and source code; only numeric usage aggregates belong in QuotaOps snapshots.
+
+To opt in locally:
+
+```powershell
+npm run collector:setup -- tokens-auto enable
+```
+
+To turn future background scanning off:
+
+```powershell
+npm run collector:setup -- tokens-auto disable
+```
+
+Check without changing configuration using `npm run collector:setup -- tokens-auto status`. The original `npm run collector:setup -- tokens` is a one-time, user-initiated session scan. An enabled collector changes behavior on the next polling cycle (or after restart).
+
 ## First-time setup
 
 Create the default five account profiles:
