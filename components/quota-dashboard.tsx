@@ -34,6 +34,7 @@ import {
 } from "@/lib/token-analytics";
 import {
   formatBytes,
+  totalLoadedVram,
   type LocalRuntimeSnapshot,
 } from "@/lib/local-runtime";
 
@@ -890,10 +891,7 @@ function LocalRuntimesPanel({
 }) {
   const ollama = runtimes.find((runtime) => runtime.runtime === "ollama") ?? null;
   const loaded = ollama?.models.filter((model) => model.loaded) ?? [];
-  const totalVram = loaded.reduce(
-    (total, model) => total + (model.vramBytes ?? 0),
-    0,
-  );
+  const totalVram = ollama ? totalLoadedVram(ollama.models, ollama.loadedModelCount) : null;
 
   return (
     <section
@@ -929,11 +927,11 @@ function LocalRuntimesPanel({
           <div className="runtime-metrics">
             <div>
               <span>Installed models</span>
-              <strong>{ollama.models.length}</strong>
+              <strong>{ollama.installedModelCount ?? "—"}</strong>
             </div>
             <div>
               <span>Loaded now</span>
-              <strong>{loaded.length}</strong>
+              <strong>{ollama.loadedModelCount ?? "—"}</strong>
             </div>
             <div>
               <span>VRAM loaded</span>
@@ -958,7 +956,7 @@ function LocalRuntimesPanel({
                     </span>
                   </div>
                   <div className="runtime-model-meta">
-                    <span>{model.loaded ? "Loaded" : "Installed"}</span>
+                    <span>{model.loaded === true ? "Loaded" : model.loaded === null ? "Load status unavailable" : "Installed"}</span>
                     {model.loaded && model.vramBytes !== null ? (
                       <span>{formatBytes(model.vramBytes)} VRAM</span>
                     ) : null}
@@ -1111,6 +1109,7 @@ export function QuotaDashboard() {
       } catch {
         if (cancelled) return;
         setCollectorState("offline");
+        setLocalRuntimes([]);
       }
     };
 
