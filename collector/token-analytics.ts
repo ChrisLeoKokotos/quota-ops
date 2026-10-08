@@ -1,10 +1,9 @@
-import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 
 import type { Provider } from "../lib/quota.ts";
+import { readBoundedJsonl } from "./bounded-jsonl.ts";
 import {
   addTokenTotals,
   emptyTokenTotals,
@@ -17,6 +16,7 @@ import {
 
 const MAX_FILES_PER_SOURCE = 20_000;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
+const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
 
 interface MutableDailyBucket extends TokenTotals {
   date: string;
@@ -121,40 +121,6 @@ async function findJsonlFiles(root: string): Promise<string[]> {
   return files;
 }
 
-async function readJsonl(
-  path: string,
-  onRecord: (record: Record<string, unknown>) => void,
-): Promise<boolean> {
-  try {
-    const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size > MAX_FILE_BYTES) return false;
-
-    const stream = createReadStream(path, {
-      encoding: "utf8",
-      highWaterMark: 64 * 1024,
-    });
-    const lines = createInterface({
-      input: stream,
-      crlfDelay: Infinity,
-    });
-
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const parsed: unknown = JSON.parse(line);
-        if (parsed && typeof parsed === "object") {
-          onRecord(parsed as Record<string, unknown>);
-        }
-      } catch {
-        // A concurrently written JSONL file can have one incomplete trailing line.
-      }
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function usageNumbers(value: unknown): {
   input: number;
@@ -460,9 +426,16 @@ async function scanClaudeCode(): Promise<ScanResult> {
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
+  let scanBytes = 0;
 
   for (const path of paths) {
-    const ok = await readJsonl(path, (record) => {
+    const size = await stat(path).then((info) => info.size).catch(() => null);
+    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+      readErrors += 1;
+      continue;
+    }
+    scanBytes += size;
+    const ok = await readBoundedJsonl(path, (record) => {
       const parsed = parseClaudeTokenRecord(record);
       if (!parsed) return;
 
@@ -504,10 +477,17 @@ async function scanCodex(): Promise<ScanResult> {
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
+  let scanBytes = 0;
 
   for (const path of paths) {
+    const size = await stat(path).then((info) => info.size).catch(() => null);
+    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+      readErrors += 1;
+      continue;
+    }
+    scanBytes += size;
     const state = createCodexTokenState();
-    const ok = await readJsonl(path, (record) => {
+    const ok = await readBoundedJsonl(path, (record) => {
       const parsed = parseCodexTokenRecord(record, state);
       if (!parsed || seen.has(parsed.id)) return;
       seen.add(parsed.id);

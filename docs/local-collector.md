@@ -39,6 +39,24 @@ Install the repository dependencies from the committed lockfile:
 npm ci --ignore-scripts --no-audit --no-fund
 ```
 
+## Token Analytics privacy opt-in
+
+Background scans of local Claude Code and Codex session histories are **off by default**, including existing collector configurations migrated to this version. Session history can contain private prompts, responses and source code; only numeric usage aggregates belong in QuotaOps snapshots.
+
+To opt in locally:
+
+```powershell
+npm run collector:setup -- tokens-auto enable
+```
+
+To turn future background scanning off:
+
+```powershell
+npm run collector:setup -- tokens-auto disable
+```
+
+Check without changing configuration using `npm run collector:setup -- tokens-auto status`. The original `npm run collector:setup -- tokens` is a one-time, user-initiated session scan. An enabled collector changes behavior on the next polling cycle (or after restart).
+
 ## First-time setup
 
 Create the default five account profiles:
@@ -242,7 +260,7 @@ It is not intended to be reachable from the LAN.
 
 The collector API requires a random local bearer token stored under the protected QuotaOps home directory. The token stays server-side. Browser JavaScript talks to the Next.js same-origin route, which proxies the normalized snapshot to the loopback collector.
 
-The temporary Windows DevTools listener used for scheduled collection is also bound to `127.0.0.1` and exists only for the lifetime of that collection browser.
+Scheduled Claude browser collection now uses Playwright's private browser transport instead of a Chrome DevTools TCP listener. This path still requires real Windows E2E validation before stable release.
 
 ## Local files
 

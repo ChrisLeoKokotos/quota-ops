@@ -24,6 +24,7 @@ function usage(): never {
       "  login <id>",
       "  collect <id>",
       "  tokens",
+      "  tokens-auto <enable|disable|status>",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
       "  security-check",
@@ -120,6 +121,19 @@ async function main(): Promise<void> {
     process.stdout.write(
       `${enabled ? "Enabled" : "Disabled"}: ${args.join(", ")}.\n`,
     );
+    return;
+  }
+
+  if (command === "tokens-auto") {
+    const [action] = args;
+    if (!action || !["enable", "disable", "status"].includes(action)) usage();
+    const config = await loadCollectorConfig();
+    if (action === "status") {
+      process.stdout.write(`Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\n`);
+      return;
+    }
+    await saveCollectorConfig({ ...config, tokenAnalyticsEnabled: action === "enable" });
+    process.stdout.write(`Background token scanning ${action === "enable" ? "enabled" : "disabled"}. Restart or wait for the next collector refresh.\n`);
     return;
   }
 

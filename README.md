@@ -70,6 +70,8 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run dev
 ```
 
+The standard `dev` and `start` scripts bind the dashboard to `127.0.0.1` only. Do not expose the dashboard through port forwarding, containers, reverse proxies, or public hosting: the snapshot route is not designed for multi-user remote authentication.
+
 Then open:
 
 ```text
@@ -93,6 +95,10 @@ The local API is authenticated with a random local token that stays server-side.
 Claude collection observes the provider's own Usage-page responses. OpenAI collection uses the authenticated local ChatGPT browser session to read Codex quota metadata; provider access tokens remain inside that isolated browser execution and are not returned in QuotaOps snapshots.
 
 Canonical setup and operations guide: [docs/local-collector.md](docs/local-collector.md).
+
+## Privacy-first Token Analytics opt-in
+
+The collector does not automatically read private Claude Code or Codex histories. To enable background Token Analytics locally after reviewing the [privacy policy](PRIVACY.md), run `npm run collector:setup -- tokens-auto enable`. To disable, run `npm run collector:setup -- tokens-auto disable`. The manual `tokens` command remains an explicit one-time scan. These histories may contain prompts, replies and project source code, even though snapshots contain only numeric aggregates.
 
 ## Token Analytics
 

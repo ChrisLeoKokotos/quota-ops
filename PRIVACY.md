@@ -12,6 +12,8 @@ The current MVP has no SO HOMELY-operated backend, hosted database, user account
 
 Manual quota data entered into the app is stored in browser local storage for the local QuotaOps origin. Auto-collected quota snapshots remain on the same PC and are exposed to the dashboard through a loopback-only local service. Provider authentication remains inside isolated local browser profiles.
 
+**Background Token Analytics session scanning is disabled by default.** After informed opt-in (`npm run collector:setup -- tokens-auto enable`), the collector reads supported Claude Code and Codex local session-history files to derive numeric token aggregates; these files can contain private prompts, responses, and code. The collector does not intentionally export their bodies. Use `tokens-auto disable` to stop future background scanning. The explicit one-off `tokens` CLI command still reads session files on demand.
+
 ## Data currently stored locally
 
 The MVP may store:

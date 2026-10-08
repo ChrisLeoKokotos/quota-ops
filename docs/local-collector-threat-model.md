@@ -98,7 +98,7 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 - Chromium sandbox is enabled for Playwright-launched non-Windows fallback collection;
 - extensions are disabled for collector profiles;
 - provider login remains interactive and provider-controlled;
-- scheduled Windows collection uses the installed Chrome / Edge browser in hidden/headless mode with an ephemeral DevTools endpoint bound only to `127.0.0.1`.
+- scheduled Claude collection uses Playwright private browser transport without a remote-debugging TCP listener. Real Windows E2E verification is still required.
 
 Users should keep Windows and Chrome / Edge fully updated.
 
