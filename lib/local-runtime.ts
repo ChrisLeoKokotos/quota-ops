@@ -7,7 +7,7 @@ export interface LocalModelSnapshot {
   parameterSize: string | null;
   quantization: string | null;
   sizeBytes: number | null;
-  loaded: boolean;
+  loaded: boolean | null;
   vramBytes: number | null;
   contextLength: number | null;
   expiresAt: string | null;
@@ -20,6 +20,8 @@ export interface LocalRuntimeSnapshot {
   version: string | null;
   checkedAt: string;
   models: LocalModelSnapshot[];
+  installedModelCount: number | null;
+  loadedModelCount: number | null;
   message: string | null;
 }
 
@@ -35,4 +37,16 @@ export function formatBytes(value: number | null): string {
   const scaled = value / 1024 ** index;
 
   return `${scaled.toFixed(scaled >= 100 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+export function totalLoadedVram(
+  models: LocalModelSnapshot[],
+  loadedModelCount: number | null,
+): number | null {
+  if (loadedModelCount === null) return null;
+  const loaded = models.filter((model) => model.loaded === true);
+  if (loaded.length !== loadedModelCount || loaded.some((model) => model.vramBytes === null)) {
+    return null;
+  }
+  return loaded.reduce((sum, model) => sum + (model.vramBytes ?? 0), 0);
 }
