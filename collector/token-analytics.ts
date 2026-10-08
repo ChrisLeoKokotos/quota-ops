@@ -17,6 +17,8 @@ import {
 
 const MAX_FILES_PER_SOURCE = 20_000;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
+const MAX_LINE_BYTES = 2 * 1024 * 1024;
+const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
 
 interface MutableDailyBucket extends TokenTotals {
   date: string;
@@ -139,6 +141,7 @@ async function readJsonl(
     });
 
     for await (const line of lines) {
+      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) return false;
       if (!line.trim()) continue;
       try {
         const parsed: unknown = JSON.parse(line);
@@ -460,8 +463,15 @@ async function scanClaudeCode(): Promise<ScanResult> {
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
+  let scanBytes = 0;
 
   for (const path of paths) {
+    const size = await stat(path).then((info) => info.size).catch(() => null);
+    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+      readErrors += 1;
+      continue;
+    }
+    scanBytes += size;
     const ok = await readJsonl(path, (record) => {
       const parsed = parseClaudeTokenRecord(record);
       if (!parsed) return;
@@ -504,8 +514,15 @@ async function scanCodex(): Promise<ScanResult> {
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
+  let scanBytes = 0;
 
   for (const path of paths) {
+    const size = await stat(path).then((info) => info.size).catch(() => null);
+    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+      readErrors += 1;
+      continue;
+    }
+    scanBytes += size;
     const state = createCodexTokenState();
     const ok = await readJsonl(path, (record) => {
       const parsed = parseCodexTokenRecord(record, state);
