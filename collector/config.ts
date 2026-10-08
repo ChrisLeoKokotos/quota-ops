@@ -22,6 +22,7 @@ export function createDefaultCollectorConfig(): CollectorConfig {
     version: 1,
     port: 4317,
     pollIntervalSeconds: 300,
+    tokenAnalyticsEnabled: false,
     accounts: [],
   };
 }
@@ -52,6 +53,7 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
     typeof candidate.pollIntervalSeconds === "number" &&
     Number.isFinite(candidate.pollIntervalSeconds) &&
     candidate.pollIntervalSeconds >= 30 &&
+    typeof candidate.tokenAnalyticsEnabled === "boolean" &&
     Array.isArray(candidate.accounts) &&
     candidate.accounts.every(isAccountConfig)
   );
@@ -99,7 +101,12 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
         })
       : parsedRecord?.accounts;
     const parsed = parsedRecord
-      ? { ...parsedRecord, accounts: accountsRaw }
+      ? {
+          ...parsedRecord,
+          accounts: accountsRaw,
+          // Existing installations migrate safely: history scanning becomes opt-in.
+          tokenAnalyticsEnabled: parsedRecord.tokenAnalyticsEnabled ?? false,
+        }
       : parsedRaw;
 
     if (!isCollectorConfig(parsed)) {
