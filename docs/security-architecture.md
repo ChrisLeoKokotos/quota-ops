@@ -185,3 +185,11 @@ Five isolated Claude profiles have passed individual real-account collection and
 Any pull request that changes authentication, networking, telemetry, persistence, speech processing, browser permissions, background execution, or provider credential access must explicitly describe its security impact.
 
 Update this document whenever the trust model materially changes.
+
+## Security review: local dashboard exposure (2026-10-08)
+
+The Next.js snapshot proxy has no user authentication. It relies on local-only deployment, a same-origin browser request header, and a server-side collector token. Its client marker and Host header are not cryptographic authentication and can be forged by non-browser HTTP clients. Standard `npm run dev` and `npm start` now explicitly bind to `127.0.0.1`.
+
+**Invariant:** do not expose the Next.js process using `--hostname 0.0.0.0`, network proxies, containers with public port bindings, or public hosting. A future remotely accessible dashboard requires proper authorization, authenticated sessions, and a revised threat model. Reverse-proxy forwarding is outside the supported security boundary.
+
+This restriction does not prevent malicious local processes, dependencies, or other code running with the user's privileges from reading accessible provider profiles. These are residual risks, not claims of full sandboxing.
