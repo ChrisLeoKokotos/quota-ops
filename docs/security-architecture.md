@@ -169,7 +169,7 @@ Security rules:
 - Windows ACLs or Unix file modes restrict collector state and browser profiles;
 - configured browser profiles must remain inside the protected QuotaOps profile root;
 - interactive provider login is visible and user-controlled;
-- background collection uses isolated provider profiles and keeps provider credentials inside the local browser execution;
+- background collection uses isolated provider profiles and keeps provider credentials inside the local browser execution; scheduled Claude collection does not expose a DevTools TCP port;
 - the Claude adapter observes only expected Usage-page responses;
 - the OpenAI adapter obtains the current ChatGPT access token only inside the isolated browser context, uses it to request Codex quota metadata, and does not return it to Node snapshots or browser storage;
 - provider responses are size-limited and parsed into a narrow normalized quota schema;
