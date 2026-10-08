@@ -70,6 +70,8 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run dev
 ```
 
+The standard `dev` and `start` scripts bind the dashboard to `127.0.0.1` only. Do not expose the dashboard through port forwarding, containers, reverse proxies, or public hosting: the snapshot route is not designed for multi-user remote authentication.
+
 Then open:
 
 ```text
