@@ -1,10 +1,9 @@
-import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 
 import type { Provider } from "../lib/quota.ts";
+import { readBoundedJsonl } from "./bounded-jsonl.ts";
 import {
   addTokenTotals,
   emptyTokenTotals,
@@ -17,7 +16,6 @@ import {
 
 const MAX_FILES_PER_SOURCE = 20_000;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
-const MAX_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
 
 interface MutableDailyBucket extends TokenTotals {
@@ -123,41 +121,6 @@ async function findJsonlFiles(root: string): Promise<string[]> {
   return files;
 }
 
-async function readJsonl(
-  path: string,
-  onRecord: (record: Record<string, unknown>) => void,
-): Promise<boolean> {
-  try {
-    const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size > MAX_FILE_BYTES) return false;
-
-    const stream = createReadStream(path, {
-      encoding: "utf8",
-      highWaterMark: 64 * 1024,
-    });
-    const lines = createInterface({
-      input: stream,
-      crlfDelay: Infinity,
-    });
-
-    for await (const line of lines) {
-      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) return false;
-      if (!line.trim()) continue;
-      try {
-        const parsed: unknown = JSON.parse(line);
-        if (parsed && typeof parsed === "object") {
-          onRecord(parsed as Record<string, unknown>);
-        }
-      } catch {
-        // A concurrently written JSONL file can have one incomplete trailing line.
-      }
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function usageNumbers(value: unknown): {
   input: number;
@@ -472,7 +435,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
       continue;
     }
     scanBytes += size;
-    const ok = await readJsonl(path, (record) => {
+    const ok = await readBoundedJsonl(path, (record) => {
       const parsed = parseClaudeTokenRecord(record);
       if (!parsed) return;
 
@@ -524,7 +487,7 @@ async function scanCodex(): Promise<ScanResult> {
     }
     scanBytes += size;
     const state = createCodexTokenState();
-    const ok = await readJsonl(path, (record) => {
+    const ok = await readBoundedJsonl(path, (record) => {
       const parsed = parseCodexTokenRecord(record, state);
       if (!parsed || seen.has(parsed.id)) return;
       seen.add(parsed.id);
