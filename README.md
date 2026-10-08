@@ -96,6 +96,10 @@ Claude collection observes the provider's own Usage-page responses. OpenAI colle
 
 Canonical setup and operations guide: [docs/local-collector.md](docs/local-collector.md).
 
+## Privacy-first Token Analytics opt-in
+
+The collector does not automatically read private Claude Code or Codex histories. To enable background Token Analytics locally after reviewing the [privacy policy](PRIVACY.md), run `npm run collector:setup -- tokens-auto enable`. To disable, run `npm run collector:setup -- tokens-auto disable`. The manual `tokens` command remains an explicit one-time scan. These histories may contain prompts, replies and project source code, even though snapshots contain only numeric aggregates.
+
 ## Token Analytics
 
 To inspect the locally observed token aggregate directly:
