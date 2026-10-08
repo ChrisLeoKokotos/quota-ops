@@ -260,7 +260,7 @@ It is not intended to be reachable from the LAN.
 
 The collector API requires a random local bearer token stored under the protected QuotaOps home directory. The token stays server-side. Browser JavaScript talks to the Next.js same-origin route, which proxies the normalized snapshot to the loopback collector.
 
-The temporary Windows DevTools listener used for scheduled collection is also bound to `127.0.0.1` and exists only for the lifetime of that collection browser.
+Scheduled Claude browser collection now uses Playwright's private browser transport instead of a Chrome DevTools TCP listener. This path still requires real Windows E2E validation before stable release.
 
 ## Local files
 
