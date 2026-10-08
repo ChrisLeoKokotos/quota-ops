@@ -32,6 +32,11 @@ import {
   type TokenAnalyticsSnapshot,
   type TokenRange,
 } from "@/lib/token-analytics";
+import {
+  formatBytes,
+  totalLoadedVram,
+  type LocalRuntimeSnapshot,
+} from "@/lib/local-runtime";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
 const THEME_KEY = "quotaops:theme";
@@ -879,6 +884,112 @@ function TokenAnalyticsPanel({
   );
 }
 
+function LocalRuntimesPanel({
+  runtimes,
+}: {
+  runtimes: LocalRuntimeSnapshot[];
+}) {
+  const ollama = runtimes.find((runtime) => runtime.runtime === "ollama") ?? null;
+  const loaded = ollama?.models.filter((model) => model.loaded) ?? [];
+  const totalVram = ollama ? totalLoadedVram(ollama.models, ollama.loadedModelCount) : null;
+
+  return (
+    <section
+      id="local-runtimes"
+      className="runtime-panel"
+      aria-labelledby="local-runtimes-title"
+    >
+      <div className="runtime-heading">
+        <div>
+          <span className="page-kicker">Local / self-hosted</span>
+          <h2 id="local-runtimes-title">Compute capacity without fake quotas</h2>
+          <p>
+            Local runtimes do not get artificial provider limits. QuotaOps shows
+            what the runtime can verify: availability, installed models, loaded
+            models, VRAM, and context capacity.
+          </p>
+        </div>
+        <span
+          className="runtime-state"
+          data-state={ollama?.state ?? "offline"}
+        >
+          <span className="status-dot" aria-hidden="true" />
+          {ollama?.state === "online"
+            ? "Ollama online"
+            : ollama?.state === "partial"
+              ? "Ollama partial"
+              : "Ollama offline"}
+        </span>
+      </div>
+
+      {ollama ? (
+        <>
+          <div className="runtime-metrics">
+            <div>
+              <span>Installed models</span>
+              <strong>{ollama.installedModelCount ?? "—"}</strong>
+            </div>
+            <div>
+              <span>Loaded now</span>
+              <strong>{ollama.loadedModelCount ?? "—"}</strong>
+            </div>
+            <div>
+              <span>VRAM loaded</span>
+              <strong>{formatBytes(totalVram)}</strong>
+            </div>
+            <div>
+              <span>Runtime version</span>
+              <strong>{ollama.version ?? "—"}</strong>
+            </div>
+          </div>
+
+          {ollama.models.length > 0 ? (
+            <div className="runtime-models">
+              {ollama.models.map((model) => (
+                <div className="runtime-model" key={model.name}>
+                  <div className="runtime-model-name">
+                    <strong>{model.name}</strong>
+                    <span>
+                      {[model.parameterSize, model.quantization, model.family]
+                        .filter(Boolean)
+                        .join(" · ") || "Local model"}
+                    </span>
+                  </div>
+                  <div className="runtime-model-meta">
+                    <span>{model.loaded === true ? "Loaded" : model.loaded === null ? "Load status unavailable" : "Installed"}</span>
+                    {model.loaded && model.vramBytes !== null ? (
+                      <span>{formatBytes(model.vramBytes)} VRAM</span>
+                    ) : null}
+                    {model.loaded && model.contextLength !== null ? (
+                      <span>{model.contextLength.toLocaleString()} ctx</span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="runtime-empty">
+              {ollama.state === "offline"
+                ? ollama.message
+                : "Ollama is reachable, but no local models were reported."}
+            </div>
+          )}
+
+          <p className="runtime-note">
+            Ollama exposes token counts on individual generation responses, but
+            it does not expose a built-in account-wide historical quota. QuotaOps
+            therefore does not invent one.
+          </p>
+        </>
+      ) : (
+        <div className="runtime-empty">
+          Start the local collector to discover Ollama on 127.0.0.1:11434.
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function QuotaDashboard() {
   const [accounts, setAccounts] = useState<QuotaAccount[]>([]);
   const [nowMs, setNowMs] = useState(0);
@@ -896,6 +1007,7 @@ export function QuotaDashboard() {
   const [tokenAnalytics, setTokenAnalytics] =
     useState<TokenAnalyticsSnapshot | null>(null);
   const [tokenRange, setTokenRange] = useState<TokenRange>("all");
+  const [localRuntimes, setLocalRuntimes] = useState<LocalRuntimeSnapshot[]>([]);
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -950,6 +1062,7 @@ export function QuotaDashboard() {
         setCollectorState("connected");
         setCollectorLastSync(snapshot.generatedAt);
         setTokenAnalytics(snapshot.tokens);
+        setLocalRuntimes(snapshot.runtimes);
         setCollectorIssues(
           snapshot.issues.map((issue) =>
             issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
@@ -996,6 +1109,7 @@ export function QuotaDashboard() {
       } catch {
         if (cancelled) return;
         setCollectorState("offline");
+        setLocalRuntimes([]);
       }
     };
 
@@ -1315,6 +1429,10 @@ export function QuotaDashboard() {
               <AccountsIcon />
               Accounts
             </a>
+            <a className="nav-item" href="#local-runtimes">
+              <OverviewIcon />
+              Local runtimes
+            </a>
           </nav>
 
           <div className="sidebar-footer">
@@ -1382,8 +1500,8 @@ export function QuotaDashboard() {
               <span className="page-kicker">Capacity overview</span>
               <h1>Keep every account ready for the next task.</h1>
               <p>
-                Track Claude and OpenAI accounts, quota windows, and exact
-                reset times from one local workspace.
+                Track provider quotas, locally observed token work, and
+                self-hosted runtime capacity from one local workspace.
               </p>
             </div>
 
@@ -1429,6 +1547,8 @@ export function QuotaDashboard() {
             nowMs={nowMs}
             onRangeChange={setTokenRange}
           />
+
+          <LocalRuntimesPanel runtimes={localRuntimes} />
 
           {collectorIssues.length > 0 ? (
             <div className="notice" role="status">

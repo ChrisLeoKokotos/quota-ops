@@ -1,5 +1,6 @@
 import { collectProviderUsage, openProviderLogin } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { collectOllamaRuntime } from "./ollama.ts";
 import {
   bootstrapFiveAccounts,
   createAccountConfig,
@@ -24,6 +25,7 @@ function usage(): never {
       "  login <id>",
       "  collect <id>",
       "  tokens",
+      "  runtimes",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
       "  security-check",
@@ -120,6 +122,12 @@ async function main(): Promise<void> {
     process.stdout.write(
       `${enabled ? "Enabled" : "Disabled"}: ${args.join(", ")}.\n`,
     );
+    return;
+  }
+
+  if (command === "runtimes") {
+    const runtime = await collectOllamaRuntime();
+    process.stdout.write(JSON.stringify([runtime], null, 2) + "\n");
     return;
   }
 
