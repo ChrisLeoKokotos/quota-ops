@@ -158,7 +158,7 @@ function isLocalModelSnapshot(value: unknown): value is LocalModelSnapshot {
       (typeof item.sizeBytes === "number" &&
         Number.isFinite(item.sizeBytes) &&
         item.sizeBytes >= 0)) &&
-    typeof item.loaded === "boolean" &&
+    (typeof item.loaded === "boolean" || item.loaded === null) &&
     (item.vramBytes === null ||
       (typeof item.vramBytes === "number" &&
         Number.isFinite(item.vramBytes) &&
@@ -184,6 +184,10 @@ function isLocalRuntimeSnapshot(value: unknown): value is LocalRuntimeSnapshot {
     typeof item.checkedAt === "string" &&
     Array.isArray(item.models) &&
     item.models.every(isLocalModelSnapshot) &&
+    (item.installedModelCount === null ||
+      (typeof item.installedModelCount === "number" && Number.isSafeInteger(item.installedModelCount) && item.installedModelCount >= 0)) &&
+    (item.loadedModelCount === null ||
+      (typeof item.loadedModelCount === "number" && Number.isSafeInteger(item.loadedModelCount) && item.loadedModelCount >= 0)) &&
     (item.message === null || typeof item.message === "string")
   );
 }
