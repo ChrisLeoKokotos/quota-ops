@@ -68,3 +68,7 @@ This is a static review, **not** an exploit demonstration, live host audit, auto
 ### 2026-10-08 — bounded JSONL parser follow-up
 
 The scanner now uses a chunked Buffer parser (`collector/bounded-jsonl.ts`) instead of `readline`: each line is rejected before allocation above 2 MiB, and per-file reads are capped at 256 MiB. Added synthetic tests for malformed and oversized records. Remaining verification for QO-SEC-04: CI results, Windows smoke test, cancellation behavior, and full adversarial resource profiling. The finding stays open until those gates pass.
+
+### Browser transport mitigation (pending Windows E2E)
+
+The Claude scheduled collection path now uses Playwright `launchPersistentContext` with private process transport instead of exposing a loopback Chrome DevTools HTTP/TCP port. Browser contexts are closed in a `finally` block. This removes the previous unauthenticated DevTools listener from the supported collection code path, but does not protect against same-user malware or compromised dependencies. **QO-SEC-03 remains open** pending real Chrome/Edge Windows collection, session expiration, teardown checks and OS privilege validation. The standard login flow is unchanged.
