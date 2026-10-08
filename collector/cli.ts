@@ -129,11 +129,11 @@ async function main(): Promise<void> {
     if (!action || !["enable", "disable", "status"].includes(action)) usage();
     const config = await loadCollectorConfig();
     if (action === "status") {
-      process.stdout.write(`Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\\n`);
+      process.stdout.write(`Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\n`);
       return;
     }
     await saveCollectorConfig({ ...config, tokenAnalyticsEnabled: action === "enable" });
-    process.stdout.write(`Background token scanning ${action === "enable" ? "enabled" : "disabled"}. Restart or wait for the next collector refresh.\\n`);
+    process.stdout.write(`Background token scanning ${action === "enable" ? "enabled" : "disabled"}. Restart or wait for the next collector refresh.\n`);
     return;
   }
 
