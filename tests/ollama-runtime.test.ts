@@ -116,5 +116,7 @@ test("VRAM cannot be totaled when some loaded model VRAM is unavailable", () => 
   assert.equal(totalLoadedVram(models, null), null);
   assert.equal(totalLoadedVram(models, 3), null);
   assert.equal(totalLoadedVram([], 0), 0);
-  assert.equal(totalLoadedVram(models.slice(0, 1), 1), 1_000);
+  const knownVramModel = models.find((model) => model.name === "qwen3:8b");
+  assert.ok(knownVramModel);
+  assert.equal(totalLoadedVram([knownVramModel], 1), 1_000);
 });
