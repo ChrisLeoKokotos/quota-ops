@@ -79,6 +79,9 @@ jobs:
       - name: Build production dashboard
         run: npm run build
 
+      - name: Exercise synthetic browser profile lifecycle
+        run: node --experimental-strip-types scripts/windows-browser-smoke.ts
+
       - name: Verify loopback listener and unauthorized requests
         shell: pwsh
         run: ./scripts/windows-security-smoke.ps1
