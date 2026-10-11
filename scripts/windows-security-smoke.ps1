@@ -27,9 +27,8 @@ $stdout = Join-Path $env:TEMP ("quotaops-next-smoke-" + [guid]::NewGuid().ToStri
 $stderr = "$stdout.err"
 $process = $null
 try {
-  $process = Start-Process -FilePath (Get-Command node.exe).Source -ArgumentList @(
-    $next, "start", "--hostname", "127.0.0.1", "--port", "$Port"
-  ) -WorkingDirectory $repo -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  $arguments = ('"' + $next + '" start --hostname 127.0.0.1 --port ' + $Port)
+  $process = Start-Process -FilePath (Get-Command node.exe).Source -ArgumentList $arguments -WorkingDirectory $repo -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
   $ready = $false
   for ($attempt = 0; $attempt -lt 45; $attempt++) {
