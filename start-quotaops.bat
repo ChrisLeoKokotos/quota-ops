@@ -31,12 +31,19 @@ echo [QuotaOps] Starting local dashboard and collector...
 echo [QuotaOps] This launcher does not require administrator rights.
 
 rem Install only when needed, using the committed lockfile and no lifecycle scripts.
-if not exist "node_modules\.bin\next.cmd" (
-  echo [QuotaOps] Dependencies are missing. Running npm ci once...
+if not exist "node_modules\.bin\next.cmd" goto install_dependencies
+node -e "for(const p of ['next','react','react-dom','playwright-core'])require.resolve(p)" >nul 2>&1
+if errorlevel 1 goto install_dependencies
+goto dependencies_ready
+
+:install_dependencies
+(
+  echo [QuotaOps] Dependencies are missing or incomplete. Running npm ci...
   call npm ci --ignore-scripts --no-audit --no-fund
   if errorlevel 1 goto error_install
 )
 
+:dependencies_ready
 rem Refuse to start when either loopback port is already owned by a process.
 rem Never assume an unknown process on these ports belongs to QuotaOps.
 node -e "const s=require('node:net').createServer();s.once('error',()=>process.exitCode=1);s.listen(4317,'127.0.0.1',()=>s.close())" >nul 2>&1
