@@ -32,7 +32,9 @@ echo [QuotaOps] This launcher does not require administrator rights.
 
 rem Install only when needed, using the committed lockfile and no lifecycle scripts.
 if not exist "node_modules\.bin\next.cmd" goto install_dependencies
-node -e "for(const p of ['next','react','react-dom','playwright-core'])require.resolve(p)" >nul 2>&1
+rem Validate the complete production dependency tree against package.json.
+rem Presence of a single executable or resolved module is not sufficient.
+call npm ls --depth=0 --omit=dev >nul 2>&1
 if errorlevel 1 goto install_dependencies
 goto dependencies_ready
 
