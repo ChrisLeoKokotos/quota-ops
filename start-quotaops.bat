@@ -58,25 +58,27 @@ rem Two visible terminals make errors inspectable and allow Ctrl+C shutdown.
 start "QuotaOps - Collector" /D "%~dp0" cmd.exe /k "call npm run collector:start"
 if errorlevel 1 goto error_launch
 
-rem Explicit localhost binding, independent of npm dev defaults.
-start "QuotaOps - Dashboard" /D "%~dp0" cmd.exe /k "call node_modules\.bin\next.cmd dev --hostname 127.0.0.1"
+rem Always start through the package script. Invoking Next.js directly
+rem bypasses the trusted dashboard server that enforces the loopback peer
+rem boundary, which leaves the snapshot route correctly failing closed.
+start "QuotaOps - Dashboard" /D "%~dp0" cmd.exe /k "call npm run dev"
 if errorlevel 1 goto error_launch
 
-echo [QuotaOps] Checking dashboard readiness at 127.0.0.1:3000...
-for /L %%I in (1,1,45) do (
-  node -e "fetch('http://127.0.0.1:3000/',{signal:AbortSignal.timeout(1000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >nul 2>&1
-  if not errorlevel 1 goto dashboard_ready
-  timeout /t 1 /nobreak >nul
-)
+rem A 200 from the dashboard shell does not prove the collector started.
+rem This probe checks both services and names whichever one failed.
+echo [QuotaOps] Waiting for the dashboard and collector to come up...
+node --experimental-strip-types "%~dp0scripts\launcher-readiness.ts"
+if not errorlevel 1 goto services_ready
 
-echo [QuotaOps] Dashboard did not become ready. Check the two terminal windows.
+echo [QuotaOps] QuotaOps did not start completely. Read the reason above,
+echo [QuotaOps] then check the Collector and Dashboard terminal windows.
 echo [QuotaOps] No external website was opened.
 popd
 pause
 exit /b 1
 
-:dashboard_ready
-echo [QuotaOps] Dashboard is ready. Opening your browser...
+:services_ready
+echo [QuotaOps] Dashboard and collector are running. Opening your browser...
 start "" "http://127.0.0.1:3000/"
 echo [QuotaOps] Keep the Collector and Dashboard terminal windows open.
 echo [QuotaOps] Press Ctrl+C in each terminal to stop QuotaOps.
