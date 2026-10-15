@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1",
+    "dev": "node --experimental-strip-types server/dashboard-server.ts",
     "build": "next build",
-    "start": "next start --hostname 127.0.0.1",
+    "start": "node --experimental-strip-types server/dashboard-server.ts --production",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "collector:setup": "node --experimental-strip-types collector/cli.ts",

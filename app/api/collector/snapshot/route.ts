@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getOrCreateCollectorToken } from "@/collector/security";
+import {
+  PEER_ADDRESS_HEADER,
+  evaluateSnapshotRequest,
+} from "@/lib/dashboard-authorization";
+import { getDashboardRuntime } from "@/lib/dashboard-runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,35 +20,36 @@ function collectorToken(): Promise<string> {
   return tokenPromise;
 }
 
-function isAllowedRequest(request: NextRequest): boolean {
-  if (request.headers.get("x-quotaops-client") !== "dashboard") return false;
+function denied(reason: string): NextResponse {
+  // The reason names the failed control, never the expected secret value.
+  return NextResponse.json(
+    { error: "forbidden", reason },
+    { status: 403, headers: { "Cache-Control": "no-store" } },
+  );
+}
 
-  const host = request.headers.get("host") ?? "";
-  const hostMatch = /^(localhost|127\.0\.0\.1):(\d{2,5})$/.exec(host);
-  if (!hostMatch) return false;
+/**
+ * QO-SEC-01: authorization is decided from the TCP peer verified by the
+ * trusted dashboard server plus an HMAC capability, never from a client
+ * marker. Without the trusted server the route fails closed.
+ */
+function authorize(request: NextRequest): NextResponse | null {
+  const dashboardRuntime = getDashboardRuntime();
+  if (!dashboardRuntime) return denied("trusted_server_required");
 
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
+  const decision = evaluateSnapshotRequest({
+    remoteAddress: request.headers.get(PEER_ADDRESS_HEADER),
+    header: (name) => request.headers.get(name),
+    trustedPeerMarker: dashboardRuntime.trustedPeerMarker,
+    capabilitySecret: dashboardRuntime.capabilitySecret,
+  });
 
-  try {
-    const parsed = new URL(origin);
-    return (
-      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
-      parsed.port === hostMatch[2] &&
-      parsed.protocol === "http:"
-    );
-  } catch {
-    return false;
-  }
+  return decision.allowed ? null : denied(decision.reason);
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  if (!isAllowedRequest(request)) {
-    return NextResponse.json(
-      { error: "forbidden" },
-      { status: 403, headers: { "Cache-Control": "no-store" } },
-    );
-  }
+  const rejection = authorize(request);
+  if (rejection) return rejection;
 
   try {
     const token = await collectorToken();
