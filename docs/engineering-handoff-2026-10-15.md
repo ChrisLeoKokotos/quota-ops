@@ -32,8 +32,8 @@ checks) requires a review, and nothing here bypasses it.
 | **#11** `@types/node` 26.6.4 | **Recommend close** | Clean typecheck and tests, but raises the compiler's assumed runtime two majors above the supported one (`.node-version` 22.21.0). No concrete break found — every post-22 API probed exists in 22.22.2 — so this is structural: the typings stop guarding against post-22 API use. | unchanged | typecheck PASS, 41 tests | not run (`BEHIND`) | Your call; the upgrade is clean today |
 | **#12** TypeScript 7.0.2 | **Compatible** | Zero diagnostics under the existing strict config. No `any` widening, no strictness relaxed. | unchanged | typecheck PASS, 41 tests, build PASS | not run (`BEHIND`) | Validated against `main` only — re-run after #20 |
 | **#19** Ollama | **Ready pending reconciliation** | All three review threads closed with executable evidence, not inspection. `runtimesForDisplay` makes the stale-runtime clearing a tested invariant rather than a catch-block side effect. | `5aa77bb` | `npm ci`, typecheck, 58 tests, build — all PASS | **4/4 PASS** | Behind `main`; needs reconciling with #20's snapshot route; never run against a real Ollama install |
-| **#20** Security | **Advanced; stays Draft** | QO-SEC-01 boundary rebuilt, QO-SEC-02 per-source consent, QO-SEC-04 scan budgets, plus eleven fixes from independent review. | `6a33c5c` | typecheck, **99 tests**, build, Windows smoke, browser smoke, audit 0 vulns — all PASS | **4/4 PASS** | QO-SEC-03 E2E; three residual-risk decisions; human review |
-| **#21** Windows launcher | **Integrated with #20** | Launcher now starts via `npm run dev`, inheriting the trusted server. Readiness probe replaced: verifies the collector's authenticated `/health`, not just a 200 on `/`. | `6860a0d` | typecheck, 41 tests, probe verified in 4 states | **4/4 PASS** | Real double-click, occupied ports, Ctrl+C, orphan cleanup |
+| **#20** Security | **Advanced; stays Draft** | QO-SEC-01 boundary rebuilt, QO-SEC-02 per-source consent, QO-SEC-04 scan budgets, eleven fixes from adversarial review, and Risk C option C2 (OS-allocated dashboard port). | `c1f256d` | typecheck, **114 tests**, build, Windows smoke, browser lifecycle, audit 0 vulns — all PASS | see table above | QO-SEC-03 E2E; independent **human** review |
+| **#21** Windows launcher | **Reconciled with #20** | Discovers the dynamic dashboard port through the runtime descriptor and confirms the listener's identity. Branch now contains #20, so it builds and was validated as a merged tree. | `44191c9` | typecheck, 114 tests, build, probe verified in 5 states | see table above | Real double-click, Ctrl+C, orphan cleanup |
 | **#22** Desktop EXE | **Architecture only — no EXE** | Design document. No shell, no packaging, no installer, no artifact. | unchanged | n/a | not run | Every packaging, testing and signing requirement unmet |
 | **#23** Next.js 16.4.0 | **Compatible** | Clean typecheck/test/build. Must carry the regenerated `next-env.d.ts` and `tsconfig.json`. | unchanged | typecheck, 41 tests, build PASS | not run | Snapshot-proxy retest must run against #20's head |
 | **#24** Playwright 1.64.0 | **Compatible** | Exercised the real launch path against real Chrome, not just types. No orphan processes, no debug listener. | unchanged | typecheck, 41 tests, browser smoke PASS | not run | Authenticated collection still unverified (QO-SEC-03) |
@@ -50,9 +50,9 @@ Full dispositions: `docs/security-closure-2026-10-15.md`.
 
 | Finding | Work | Disposition |
 |---|---|---|
-| **QO-SEC-01** Dashboard access | Forgeable marker removed. Trusted server owns the listener: binds loopback, destroys non-loopback peers before Next.js sees them, stamps a per-process marker. HMAC capability, constant-time verified, renewable. Route fails closed without the trusted server. | **Close with accepted residual risk** — Risks A **and C** |
-| **QO-SEC-02** History privacy | Per-source consent; unread sources report `disabled`, never `not_found`; migration preserves intent both ways; CLI exposes per-source control. | **Close with accepted residual risk** — Risk B |
-| **QO-SEC-03** Browser isolation | 0 orphan processes, 0 listeners on 9222–9322, under both Playwright 1.63 and 1.64. | **OPEN — release blocker.** Synthetic test only; see `docs/qo-sec-03-windows-e2e-procedure.md` |
+| **QO-SEC-01** Dashboard access | Forgeable marker removed. Trusted server owns the listener: binds loopback, destroys non-loopback peers before Next.js sees them, stamps a per-process marker. HMAC capability, constant-time verified, renewable. Port now OS-allocated per launch with identity-verified discovery. | **Closed** — Risk A accepted (A1), Risk C mitigated by C2, both recorded 2026-10-15 |
+| **QO-SEC-02** History privacy | Per-source consent; unread sources report `disabled`, never `not_found`; migration preserves intent both ways; CLI exposes per-source control. | **Closed** — Risk B accepted (B1), recorded 2026-10-15 |
+| **QO-SEC-03** Browser isolation | **The previous cleanup evidence was worthless** — it matched Chrome's executable path and always returned 0. Replaced with a detector that identifies QuotaOps browsers by `--user-data-dir` and reads launch arguments for a debugging port, plus a regression test that proves the detector sees a running browser. | **OPEN — release blocker.** Authenticated E2E still not run |
 | **QO-SEC-04** Resource exhaustion | Time deadline, record ceiling, key-size cap, directory ceiling, daily-bucket cap. Exhausting any reports `partial`, never complete. | **Close**; worst-case profiling outstanding |
 | **QO-SEC-05** Remote runtime | No remote collector. Ollama is loopback-fixed and test-asserted to contact only `127.0.0.1:11434`. | **Close as not applicable**; gate stands |
 | **QO-SEC-06** Supply chain | 4 production dependencies, 0 vulnerabilities, all actions pinned to 40-char SHAs with verified provenance, pinning guard test. | **Close for source**; SBOM, checksums, signing remain blockers for a desktop release |
@@ -127,11 +127,14 @@ argument for the desktop edition.
    resolved. It unblocks CodeQL for everything else. Then #25 and #26 close as
    superseded.
 2. **QO-SEC-03 E2E** — `docs/qo-sec-03-windows-e2e-procedure.md`. ~45 minutes,
-   disposable account, PASS/FAIL and counts only. The last functional blocker.
-3. **Three residual-risk decisions** — `docs/residual-risk-decision.md`.
-   Risk C is new, rated HIGH, and my recommendation (C2, ephemeral port) costs
-   you a working `http://127.0.0.1:3000` bookmark.
-4. **Human security review** of the capability design and the six dispositions.
+   disposable account, PASS/FAIL and counts only. Step 3 can now actually fail.
+   The last functional blocker.
+3. **Independent human security review** — `docs/independent-review-package.md`
+   is ready and asks specific questions. The earlier adversarial review was
+   another model instance; it is not human sign-off.
+
+Risks A, B and C were decided on 15 October 2026 (A1, B1, C2). C2 is
+implemented. No further decision is needed on those.
 5. **Code-signing certificate** — blocking for any published desktop build.
 6. **Decision on #11** — Node 26 typings now, or typings aligned to the
    supported runtime.
