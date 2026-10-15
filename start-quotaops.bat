@@ -46,13 +46,13 @@ goto dependencies_ready
 )
 
 :dependencies_ready
-rem Refuse to start when either loopback port is already owned by a process.
-rem Never assume an unknown process on these ports belongs to QuotaOps.
+rem The collector still uses a fixed port, so refuse to start when it is
+rem already owned. Never assume an unknown process on it belongs to QuotaOps.
 node -e "const s=require('node:net').createServer();s.once('error',()=>process.exitCode=1);s.listen(4317,'127.0.0.1',()=>s.close())" >nul 2>&1
 if errorlevel 1 goto error_collector_port
 
-node -e "const s=require('node:net').createServer();s.once('error',()=>process.exitCode=1);s.listen(3000,'127.0.0.1',()=>s.close())" >nul 2>&1
-if errorlevel 1 goto error_dashboard_port
+rem The dashboard takes an OS-allocated port, so there is no fixed port to
+rem pre-check. The server itself refuses to start beside a live instance.
 
 rem Two visible terminals make errors inspectable and allow Ctrl+C shutdown.
 start "QuotaOps - Collector" /D "%~dp0" cmd.exe /k "call npm run collector:start"
@@ -64,12 +64,36 @@ rem boundary, which leaves the snapshot route correctly failing closed.
 start "QuotaOps - Dashboard" /D "%~dp0" cmd.exe /k "call npm run dev"
 if errorlevel 1 goto error_launch
 
-rem A 200 from the dashboard shell does not prove the collector started.
-rem This probe checks both services and names whichever one failed.
+rem A 200 from the dashboard shell does not prove the collector started, and
+rem the dashboard port is allocated at launch. The probe confirms the listener
+rem is this QuotaOps instance, checks the collector separately, and prints the
+rem dashboard URL on its last line.
 echo [QuotaOps] Waiting for the dashboard and collector to come up...
-node --experimental-strip-types "%~dp0scripts\launcher-readiness.ts"
-if not errorlevel 1 goto services_ready
+set "QUOTAOPS_URL="
+set "QUOTAOPS_OUT=%TEMP%\quotaops-readiness-%RANDOM%%RANDOM%.txt"
 
+rem Redirect rather than pipe: `for /f` would mask the probe's exit code.
+node --experimental-strip-types "%~dp0scripts\launcher-readiness.ts" > "%QUOTAOPS_OUT%" 2>&1
+set "QUOTAOPS_RC=%ERRORLEVEL%"
+if exist "%QUOTAOPS_OUT%" type "%QUOTAOPS_OUT%"
+if not "%QUOTAOPS_RC%"=="0" goto error_not_ready
+
+rem The probe prints the dashboard URL as its last line.
+for /f "usebackq delims=" %%U in ("%QUOTAOPS_OUT%") do set "QUOTAOPS_LAST=%%U"
+del "%QUOTAOPS_OUT%" >nul 2>&1
+
+rem Only accept a loopback http:// address as the URL to open.
+echo %QUOTAOPS_LAST%| findstr /b /c:"http://127.0.0.1:" >nul 2>&1
+if errorlevel 1 goto error_no_url
+set "QUOTAOPS_URL=%QUOTAOPS_LAST%"
+goto services_ready
+
+:error_no_url
+echo [QuotaOps] The readiness probe did not report a dashboard address.
+goto error_not_ready
+
+:error_not_ready
+if exist "%QUOTAOPS_OUT%" del "%QUOTAOPS_OUT%" >nul 2>&1
 echo [QuotaOps] QuotaOps did not start completely. Read the reason above,
 echo [QuotaOps] then check the Collector and Dashboard terminal windows.
 echo [QuotaOps] No external website was opened.
@@ -79,7 +103,7 @@ exit /b 1
 
 :services_ready
 echo [QuotaOps] Dashboard and collector are running. Opening your browser...
-start "" "http://127.0.0.1:3000/"
+start "" "%QUOTAOPS_URL%"
 echo [QuotaOps] Keep the Collector and Dashboard terminal windows open.
 echo [QuotaOps] Press Ctrl+C in each terminal to stop QuotaOps.
 popd
@@ -119,10 +143,6 @@ goto fail
 
 :error_collector_port
 echo [QuotaOps] Port 4317 is already in use. Inspect the existing process first.
-goto fail
-
-:error_dashboard_port
-echo [QuotaOps] Port 3000 is already in use. Inspect the existing process first.
 goto fail
 
 :error_launch
