@@ -221,16 +221,60 @@ distribution controls remain blocking for a desktop release.
 
 | Finding | Disposition | Blocking? |
 |---|---|---|
-| QO-SEC-01 | Close with accepted same-account residual risk | Needs owner acceptance |
+| QO-SEC-01 | Close with accepted same-account residual risk **and Risk C** | Needs owner acceptance; Risk C is new and rated HIGH |
 | QO-SEC-02 | Close with accepted same-account residual risk | Needs owner acceptance |
 | QO-SEC-03 | **OPEN** | **Yes** — real-account Windows E2E outstanding |
 | QO-SEC-04 | Close; profiling outstanding | Owner's call |
 | QO-SEC-05 | Close as not applicable; gate stands | No |
 | QO-SEC-06 | Close for source; distribution controls outstanding | Yes, for a desktop release |
 
-**Independent security re-review: not performed.** This document was written by
-the same party that implemented the changes. PR #20 must remain Draft until a
-reviewer other than the implementer has reviewed these dispositions.
+## Independent security review — performed 2026-10-15
+
+An adversarial review was carried out by a reviewer with no knowledge of the
+implementation decisions, given the code and the threat model but not this
+document or any of its conclusions. It found eleven confirmed defects and five
+plausible ones. It did not rubber-stamp the design.
+
+**The headline finding is QO-SEC-01 related and rated HIGH:** a transparent
+loopback relay defeats the peer check, and the proxy control only catches a
+proxy that identifies itself. There is no header-based fix. The overclaim in
+the code and tests is corrected; the risk itself is now Risk C in
+`docs/residual-risk-decision.md` and needs an owner decision.
+
+Fixed in `2b8921e` and the commit that follows it:
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| Loopback classifier accepted `::127.0.0.1` and `::ffff:0:127.0.0.1` — **and the test suite asserted this was correct** | MEDIUM | Structural eight-group expansion; 34 cases verified; the wrong assertions replaced |
+| Aggregation keys bounded by count but not size — 200k keys of up to 2 MiB each | MEDIUM | Ids over 200 chars replaced by a digest |
+| Directory walk unbounded and running before the deadline was created | MEDIUM | Own directory ceiling, and the deadline now starts before the walk |
+| Daily buckets unbounded and serialised into every snapshot past the proxy's 256 KiB cap | MEDIUM | Most recent 800 kept; source reports partial |
+| One malformed timestamp blanked the whole analytics panel | MEDIUM | Year padded, out-of-range dates rejected at the producer |
+| Runtime secrets accepted without validation; `Buffer.from` yields an empty HMAC key for junk | LOW | Shape and length checked; fails closed |
+| Collector token cached for the process lifetime; rotation broke both sides | LOW | A 401 drops the cache and retries once |
+| `HOSTNAME` check protected nothing and broke startup in POSIX shells | LOW | Replaced by an assertion on the address actually bound |
+| Named controls in `dashboard-listen-security.test.ts` were source-text greps | MEDIUM | Replaced by `tests/dashboard-boundary.test.ts`, which drives real TCP connections; mutation-checked |
+
+Accepted as correct without change, with reasons recorded:
+
+- Collector rate limiter counts only authenticated requests (a 256-bit token
+  makes brute force irrelevant; the limiter is not the control).
+- Windows ACL inheritance is not read back after `icacls`. Genuine gap, but it
+  needs a second local user to test properly — folded into the QO-SEC-03
+  owner procedure rather than guessed at here.
+- `rawHeaders` retains inbound marker copies. Confirmed not reachable in Next
+  16.3.8, which reads `req.headers`; recorded as latent.
+
+**The review also judged several controls sound** on inspection, including the
+capability HMAC construction and canonicalisation, the collector's bearer
+token handling, the snapshot proxy's size and redirect limits, and — the
+strongest finding in the implementation's favour — that no prompt text, file
+path, token or cookie reaches a snapshot, log, error message or browser
+storage. That last one was traced through every producer.
+
+**This does not substitute for human review.** The reviewer was another model
+instance with fresh context, which removes the anchoring problem but not the
+shared blind spots. A human security reviewer has still not looked at this.
 
 **Hosted checks: not run.** No CodeQL, Dependency Review or Repository Guard
 result exists for `ec223ff`. Local tests are not a substitute, and no check

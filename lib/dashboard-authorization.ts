@@ -34,11 +34,15 @@ export const FORWARDING_HEADERS = [
 ] as const;
 
 /**
- * Detects a proxied request. This check belongs to the trusted server, where
- * headers are still exactly what the client sent: Next.js synthesizes its own
- * `x-forwarded-*` headers downstream, so a route handler cannot distinguish
- * them from client input. The trusted server refuses proxied requests before
- * stamping its marker, so a request reaching the route has already passed it.
+ * Detects a proxy that identifies itself. This check belongs to the trusted
+ * server, where headers are still exactly what the client sent: Next.js
+ * synthesizes its own `x-forwarded-*` headers downstream, so a route handler
+ * cannot distinguish them from client input.
+ *
+ * It is a hygiene control, not a boundary. A transparent relay — `netsh
+ * interface portproxy`, a default nginx `proxy_pass`, `ssh -R` — adds none of
+ * these headers and is indistinguishable from a local client at the HTTP
+ * layer. See docs/residual-risk-decision.md, Risk C.
  */
 export function hasForwardingHeader(
   header: (name: string) => string | null | undefined,

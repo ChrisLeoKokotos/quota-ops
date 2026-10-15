@@ -11,6 +11,17 @@ import {
  * The QO-SEC-01 network boundary, separated from the Next.js server so it can
  * be driven by real HTTP requests in tests. Asserting that the server's source
  * text mentions a control is not evidence the control runs.
+ *
+ * **Known limit — a transparent loopback relay defeats this.** The peer check
+ * asks whether the TCP connection came from 127.0.0.0/8, and a relay such as
+ * `netsh interface portproxy`, an nginx `proxy_pass` with no `proxy_set_header`
+ * lines, `ssh -R`, or a tunnelling tool connects from loopback on the
+ * attacker's behalf. None of those add an `X-Forwarded-*` header by default,
+ * so `isProxiedRequest` does not see them: that check catches a *cooperative*
+ * proxy, not a transparent one, and there is no header-based way to catch the
+ * latter. Interposing such a relay is a deliberate local configuration change,
+ * and it takes the deployment outside the supported boundary — but nothing
+ * here detects or prevents it. See docs/residual-risk-decision.md, Risk C.
  */
 
 export function denyRequest(

@@ -130,7 +130,10 @@ test("mixed-case and repeated marker headers are all removed", async () => {
   }
 });
 
-test("a proxied request is refused before the handler runs", async () => {
+// Catches a proxy that announces itself. A transparent relay sends none of
+// these headers and is not detectable here; see Risk C in
+// docs/residual-risk-decision.md.
+test("a self-identifying proxy is refused before the handler runs", async () => {
   for (const header of [
     "x-forwarded-for",
     "x-forwarded-host",
@@ -158,7 +161,7 @@ test("a proxied request is refused before the handler runs", async () => {
   }
 });
 
-test("a capability header alone does not reach the handler when proxied", async () => {
+test("a capability header does not reach the handler behind a declared proxy", async () => {
   const harness = await startHarness();
   try {
     const response = await fetch(harness.url, {

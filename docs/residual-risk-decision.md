@@ -169,6 +169,102 @@ that changes substantially, B2 becomes worth its cost.
 
 ---
 
+---
+
+## Risk C — A transparent loopback relay defeats the peer check
+
+**Found by the independent review. Rated HIGH. This one is not a judgement
+call about threat model — it is a gap between what the code claims and what it
+does.**
+
+### What the risk is
+
+The QO-SEC-01 boundary asks one question: did this TCP connection come from
+`127.0.0.0/8`? Anything that relays a remote connection from loopback answers
+yes on the attacker's behalf:
+
+```
+netsh interface portproxy add v4tov4 listenport=8080 connectaddress=127.0.0.1 connectport=3000
+```
+
+or an nginx `location / { proxy_pass http://127.0.0.1:3000; }` with no
+`proxy_set_header` lines, or `ssh -R`, `socat`, a Docker port mapping, or a VS
+Code / ngrok tunnel.
+
+**None of those add an `X-Forwarded-*` header by default.** So the sequence is:
+
+1. peer is `127.0.0.1` — passes;
+2. no forwarding headers — passes;
+3. the server stamps its real trusted marker;
+4. `Host: 127.0.0.1:3000` is what the relay sends — passes;
+5. no `Origin` header, so the same-origin check is skipped entirely;
+6. `GET /api/collector/capability` returns a valid ten-minute capability;
+7. replay it to `/api/collector/snapshot` and read the full snapshot.
+
+No header forgery is needed at any step.
+
+### Why the current wording is wrong
+
+`docs/security-architecture.md` already places reverse-proxy forwarding outside
+the supported boundary, which is the right call. But the code and the tests
+claimed an *enforced* control — "refuses proxied requests before Next.js sees
+them" — that does not hold for the default configuration of the most likely
+relays. That wording is now corrected in `lib/dashboard-boundary.ts`,
+`lib/dashboard-authorization.ts` and the boundary tests: the check catches a
+proxy that identifies itself, and is hygiene rather than a boundary.
+
+There is no header-based fix. A transparent relay is indistinguishable from a
+local client at the HTTP layer.
+
+### Options
+
+**C1 — Accept and document.** Interposing a relay is a deliberate local
+configuration change by someone who can already run code as you (Risk A). The
+documented boundary stands; only the overclaim was wrong, and that is fixed.
+
+- Cost: none.
+- What you give up: nothing you currently have.
+- Honest limit: it also covers the *accidental* case — a tunnel left running,
+  a Docker mapping, a VS Code port-forward someone enabled for another service
+  — where no attacker had to do anything deliberate at all. That case is not
+  rare, and "the user misconfigured it" is a weak answer to it.
+
+**C2 — Bind an ephemeral port per launch.** The dashboard picks a free port at
+startup instead of 3000, and the launcher and desktop shell open the right URL.
+A relay configured ahead of time points at 3000 and finds nothing.
+
+- Cost: moderate. `scripts/launcher-readiness.ts` and the BAT must discover the
+  port (a small file in `~/.quotaops` would do it); a bookmark to
+  `127.0.0.1:3000` stops working; the desktop shell needs the same discovery.
+- Benefit: closes the accidental and pre-configured cases, which are the
+  realistic ones.
+- Honest limit: does **not** stop an attacker who can observe the live port and
+  then set up a relay. That attacker is already running code as you.
+
+**C3 — Serve under a per-launch secret path.** `http://127.0.0.1:3000/<random>/`.
+A relay forwards whatever path is requested, so an attacker hitting `/` gets
+nothing, and they cannot guess the prefix.
+
+- Cost: high. Next's `basePath` is static configuration, not per-launch, so
+  this means a rewrite layer in the trusted server and touching every internal
+  URL.
+- Benefit: strictly stronger than C2 — it survives an attacker who knows the port.
+- Honest assessment: probably not worth it before the desktop edition, where
+  the HTTP hop may disappear entirely in favour of IPC.
+
+### Recommendation
+
+**C2.** It closes the realistic cases at a cost that is mostly one-off
+integration work, and it composes with the desktop IPC direction rather than
+fighting it. C1 alone leaves the accidental-tunnel case open, and I do not
+think "the user shouldn't have done that" carries it.
+
+This is still your decision — C2 does break a bookmarked
+`http://127.0.0.1:3000`, and that is a real usability cost you may weigh
+differently.
+
+---
+
 ## What I need from you
 
 Reply on PR #20 with a decision for each, in this form:
@@ -176,6 +272,7 @@ Reply on PR #20 with a decision for each, in this form:
 ```
 Risk A: A1 (accept) | A2 (separate account) | A3 (reduce surface) | other
 Risk B: B1 (accept) | B2 (isolate scanner) | B3 (drop the feature) | other
+Risk C: C1 (accept) | C2 (ephemeral port) | C3 (secret path) | other
 ```
 
 If you accept, I will record the acceptance against commit `0691acc` in
