@@ -864,7 +864,9 @@ function TokenAnalyticsPanel({
                   ? `${source.files} file${source.files === 1 ? "" : "s"}`
                   : source.state === "partial"
                     ? "Partial"
-                    : "Not found"}
+                    : source.state === "disabled"
+                      ? "Off"
+                      : "Not found"}
               </span>
             ))}
           </div>

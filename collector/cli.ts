@@ -24,6 +24,7 @@ function usage(): never {
       "  login <id>",
       "  collect <id>",
       "  tokens",
+      "  tokens-auto <enable|disable|status> [claude-code|codex|all]",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
       "  security-check",
@@ -123,8 +124,56 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "tokens-auto") {
+    const [action, scope = "all"] = args;
+    if (!action || !["enable", "disable", "status"].includes(action)) usage();
+    if (!["claude-code", "codex", "all"].includes(scope)) usage();
+
+    const config = await loadCollectorConfig();
+    const consent = config.tokenAnalyticsSources;
+
+    if (action === "status") {
+      process.stdout.write(
+        `Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\n` +
+          `  Claude Code history: ${consent.claudeCode ? "enabled" : "disabled"}.\n` +
+          `  Codex history: ${consent.codex ? "enabled" : "disabled"}.\n`,
+      );
+      return;
+    }
+
+    // Each source carries its own consent; enabling one never enables the other.
+    const value = action === "enable";
+    const next = {
+      claudeCode: scope === "codex" ? consent.claudeCode : value,
+      codex: scope === "claude-code" ? consent.codex : value,
+    };
+
+    await saveCollectorConfig({
+      ...config,
+      tokenAnalyticsEnabled: next.claudeCode || next.codex,
+      tokenAnalyticsSources: next,
+    });
+    process.stdout.write(
+      `Background token scanning updated. Claude Code: ${next.claudeCode ? "enabled" : "disabled"}; ` +
+        `Codex: ${next.codex ? "enabled" : "disabled"}. ` +
+        "Restart or wait for the next collector refresh.\n",
+    );
+    return;
+  }
+
   if (command === "tokens") {
-    const analytics = await collectLocalTokenAnalytics();
+    const config = await loadCollectorConfig();
+    const consent = config.tokenAnalyticsSources;
+
+    if (!consent.claudeCode && !consent.codex) {
+      process.stdout.write(
+        "No session history source is enabled, so nothing was read.\n" +
+          "Enable one explicitly, for example: collector:setup -- tokens-auto enable claude-code\n",
+      );
+      return;
+    }
+
+    const analytics = await collectLocalTokenAnalytics(consent);
     process.stdout.write(JSON.stringify(analytics, null, 2) + "\n");
     return;
   }

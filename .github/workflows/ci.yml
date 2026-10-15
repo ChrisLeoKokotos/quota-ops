@@ -47,3 +47,41 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+  windows-security:
+    name: Windows security smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.21.0"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build production dashboard
+        run: npm run build
+
+      - name: Exercise synthetic browser profile lifecycle
+        run: node --experimental-strip-types scripts/windows-browser-smoke.ts
+
+      - name: Verify loopback listener and unauthorized requests
+        shell: pwsh
+        run: ./scripts/windows-security-smoke.ps1
