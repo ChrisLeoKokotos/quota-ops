@@ -12,9 +12,9 @@ fabricated at any point, and no failing check was marked as passing.
 
 | Branch | Head | CI | CodeQL | Dependency review | Repository hygiene |
 |---|---|---|---|---|---|
-| `security/local-only-dashboard-review` (#20) | `6a33c5c` | PASS | PASS | PASS | PASS |
+| `security/local-only-dashboard-review` (#20) | `3c0368d` | PASS | PASS | PASS | PASS |
 | `ci/codeql-coordinated-upgrade` (#28) | `c182af7` | PASS | PASS | PASS | PASS |
-| `feat/windows-one-click-launcher` (#21) | `6860a0d` | PASS | PASS | PASS | PASS |
+| `feat/windows-one-click-launcher` (#21) | `44191c9` | PASS | PASS | PASS | PASS |
 | `feat/local-runtime-ollama` (#19) | `5aa77bb` | PASS | PASS | PASS | PASS |
 
 Every open PR is `BLOCKED` on `REVIEW_REQUIRED`. The "Protect main" ruleset
