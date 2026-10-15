@@ -103,24 +103,48 @@ npm run collector:setup -- collect <test-id>
 
 ## Step 3 — Process cleanup
 
-Immediately after a collection finishes:
+> **An earlier version of this step was wrong.** It matched Chrome's
+> *executable path* against `*quotaops*`. Chrome and Edge live in Program
+> Files, so that match never succeeded and the step reported `0` whether or
+> not processes were still running — a guaranteed pass. Measured directly:
+> with eight QuotaOps browser processes alive, the old check returned `0` and
+> the replacement returned `8`.
+
+**While a collection is still running**, in a second terminal:
 
 ```powershell
-Get-Process chrome,msedge -ErrorAction SilentlyContinue |
-  Where-Object { $_.Path -like "*quotaops*" } |
-  Measure-Object | Select-Object -ExpandProperty Count
-
-Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Where-Object { $_.LocalPort -ge 9222 -and $_.LocalPort -le 9322 } |
-  Measure-Object | Select-Object -ExpandProperty Count
+powershell -NoProfile -File .\scripts\windows-browser-processes.ps1
 ```
 
 | Check | Expected | Record |
 |---|---|---|
-| 3.1 QuotaOps browser processes remaining | `0` | PASS / FAIL |
-| 3.2 Listeners in the remote-debugging range | `0` | PASS / FAIL |
+| 3.0 `QuotaOps browser processes` during collection | **greater than 0** | PASS / FAIL |
 
-Report the two numbers. They are counts, not content, so they are safe to send.
+If this reports `0` *while a collection is running*, stop — the detector is
+not seeing the browser and nothing after this proves anything.
+
+**Immediately after the collection finishes**, run it again:
+
+| Check | Expected | Record |
+|---|---|---|
+| 3.1 `QuotaOps browser processes` | `0` | PASS / FAIL |
+| 3.2 `QuotaOps browsers launched with a debugging port` | `0` | PASS / FAIL |
+| 3.3 `Listeners on ports 9222-9322` | `0` | PASS / FAIL |
+| 3.4 `Browser processes not inspectable` | `0` | PASS / FAIL |
+
+Report the four numbers and the `Status:` line. They are counts, not content.
+
+**3.4 matters.** If any browser process could not be inspected, the script
+prints `INCONCLUSIVE` and exits 2. That is **not** a pass — record it as
+INCONCLUSIVE and say so, rather than reading the zero above it as clean.
+
+**3.2 matters independently of 3.3.** A debugging port outside 9222–9322 is
+invisible to a port scan; 3.2 reads the browser's actual launch arguments
+instead. Verified against a browser deliberately started with
+`--remote-debugging-port=9333`: 3.3 reported `0` while 3.2 reported `4`.
+
+The detector identifies QuotaOps browsers by the `--user-data-dir` they were
+launched with, so unrelated Chrome windows you have open are not counted.
 
 ---
 
@@ -137,7 +161,7 @@ npm run collector:setup -- collect <test-id>
 |---|---|---|
 | 4.1 The result is reported as `login_required` or a clear equivalent | not a fabricated zero or a stale figure | PASS / FAIL |
 | 4.2 The dashboard shows the account as needing attention, not as 0% used | | PASS / FAIL |
-| 4.3 Processes cleaned up as in Step 3 | `0` and `0` | PASS / FAIL |
+| 4.3 Processes cleaned up as in Step 3 | all four counts `0` | PASS / FAIL |
 
 **4.1 and 4.2 are the important ones.** A quota that cannot be read must stay
 unknown. If anything displays `0%`, "available", or the previous reading
@@ -179,7 +203,7 @@ npm run collector:setup -- collect <test-id>
 |---|---|---|
 | 6.1 The failure is reported clearly | not a crash, not a silent success | PASS / FAIL |
 | 6.2 No quota figure was invented | previous value marked stale or omitted | PASS / FAIL |
-| 6.3 Processes cleaned up | `0` and `0` | PASS / FAIL |
+| 6.3 Processes cleaned up | all four counts `0` | PASS / FAIL |
 
 Reconnect afterwards.
 
@@ -236,6 +260,7 @@ Application → Local Storage and Session Storage for that origin.
 ```powershell
 powershell -NoProfile -File .\scripts\windows-security-smoke.ps1
 node --experimental-strip-types scripts\windows-browser-smoke.ts
+node --experimental-strip-types scripts\windows-browser-lifecycle-check.ts
 npm run collector:setup -- security-check
 npm run collector:setup -- tokens-auto status
 ```
@@ -244,6 +269,7 @@ npm run collector:setup -- tokens-auto status
 |---|---|---|
 | 9.1 Security smoke | PASS, 7 refused requests | PASS / FAIL |
 | 9.2 Browser smoke | PASS | PASS / FAIL |
+| 9.5 Browser lifecycle detector check | PASS — sees the browser, then reports 0 | PASS / FAIL |
 | 9.3 `security-check` | passes for your configured profiles | PASS / FAIL |
 | 9.4 `tokens-auto status` | `disabled` for both sources unless you enabled them | PASS / FAIL |
 
@@ -277,13 +303,13 @@ QO-SEC-03 E2E — commit <sha>, Windows <version>, Node <version>
 
 1.1 PASS  1.2 PASS  1.3 PASS  1.4 PASS
 2.1 PASS  2.2 PASS
-3.1 PASS (0)  3.2 PASS (0)
+3.0 PASS (8)  3.1 PASS (0)  3.2 PASS (0)  3.3 PASS (0)  3.4 PASS (0)
 4.1 PASS  4.2 PASS  4.3 PASS
 5.1 PASS (2 directories)  5.2 PASS  5.3 PASS
 6.1 PASS  6.2 PASS  6.3 PASS
 7.1 PASS  7.2 PASS  7.3 PASS
 8.1 PASS  8.2 PASS  8.3 PASS
-9.1 PASS  9.2 PASS  9.3 PASS  9.4 PASS
+9.1 PASS  9.2 PASS  9.3 PASS  9.4 PASS  9.5 PASS
 10.1 PASS  10.2 PASS   (or: SKIPPED - no second device)
 
 Failures: <plain-language description, no raw output>
