@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, rename, rm, writeFile, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -30,7 +31,15 @@ export interface DashboardDescriptor {
   startedAt: string;
 }
 
+/**
+ * Overridable so tests do not write over a running instance's descriptor.
+ * The descriptor holds no secret and discovery verifies the listener's
+ * identity regardless of where the file came from, so relocating it cannot
+ * grant access — it only changes where discovery looks.
+ */
 export function getDescriptorPath(): string {
+  const override = process.env.QUOTAOPS_DESCRIPTOR_PATH?.trim();
+  if (override) return override;
   return join(homedir(), ".quotaops", "dashboard-runtime.json");
 }
 
@@ -93,6 +102,23 @@ export async function removeOwnDescriptor(instanceId: string): Promise<void> {
   const current = await readDescriptor();
   if (!current || current.instanceId !== instanceId) return;
   await rm(getDescriptorPath(), { force: true });
+}
+
+/**
+ * Synchronous variant for a `process.on("exit")` handler, where no promise
+ * can settle. Windows delivers nothing for `taskkill` without `/F`, so the
+ * async signal handlers alone would leave a descriptor behind on some exits.
+ * A leftover descriptor is safe — discovery reports it stale — but removing
+ * it keeps the common case clean.
+ */
+export function removeOwnDescriptorSync(instanceId: string): void {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(getDescriptorPath(), "utf8"));
+    if (!isDescriptor(parsed) || parsed.instanceId !== instanceId) return;
+    unlinkSync(getDescriptorPath());
+  } catch {
+    // Nothing to clean up, or the file is already gone.
+  }
 }
 
 export type LivenessResult =

@@ -13,6 +13,7 @@ import {
   probeDescriptor,
   readDescriptor,
   removeOwnDescriptor,
+  removeOwnDescriptorSync,
   writeDescriptor,
 } from "../lib/dashboard-descriptor.ts";
 import { initializeDashboardRuntime } from "../lib/dashboard-runtime.ts";
@@ -196,6 +197,10 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  // Backstop for exits that deliver no signal, which Windows does for some
+  // termination paths. A stale descriptor is handled correctly by discovery,
+  // so this is hygiene rather than a correctness requirement.
+  process.on("exit", () => removeOwnDescriptorSync(instanceId));
 
   try {
     const app = next({ dev, hostname: HOST, port });
