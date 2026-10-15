@@ -21,7 +21,12 @@ export interface DailyTokenBucket extends TokenTotals {
 }
 
 export type TokenSourceId = "claude-code" | "codex";
-export type TokenSourceState = "ok" | "not_found" | "partial";
+/**
+ * `disabled` means QuotaOps never opened the source because the user has not
+ * consented to it. It is deliberately distinct from `not_found`, which would
+ * claim a search happened and came back empty.
+ */
+export type TokenSourceState = "ok" | "not_found" | "partial" | "disabled";
 
 export interface TokenSourceStatus {
   source: TokenSourceId;
