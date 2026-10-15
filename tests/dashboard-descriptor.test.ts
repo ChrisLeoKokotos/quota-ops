@@ -3,12 +3,19 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import test, { afterEach } from "node:test";
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   DESCRIPTOR_VERSION,
   INSTANCE_PATH,
   createInstanceId,
   isDescriptor,
   probeDescriptor,
+  readDescriptor,
+  removeOwnDescriptorSync,
+  writeDescriptor,
   type DashboardDescriptor,
 } from "../lib/dashboard-descriptor.ts";
 
@@ -165,5 +172,44 @@ test("the descriptor carries no secret material", () => {
       false,
       `the descriptor must not contain ${forbidden}`,
     );
+  }
+});
+
+test("the exit backstop removes our descriptor and leaves another's alone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quotaops-descriptor-"));
+  const previous = process.env.QUOTAOPS_DESCRIPTOR_PATH;
+  process.env.QUOTAOPS_DESCRIPTOR_PATH = join(directory, "dashboard-runtime.json");
+
+  try {
+    const ours = createInstanceId();
+    await writeDescriptor(descriptorFor(12_345, ours));
+
+    // A restarted instance must never delete a live instance's record.
+    removeOwnDescriptorSync(createInstanceId());
+    assert.notEqual(await readDescriptor(), null);
+
+    removeOwnDescriptorSync(ours);
+    assert.equal(await readDescriptor(), null);
+  } finally {
+    if (previous === undefined) delete process.env.QUOTAOPS_DESCRIPTOR_PATH;
+    else process.env.QUOTAOPS_DESCRIPTOR_PATH = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a descriptor is written atomically and readable back", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quotaops-descriptor-"));
+  const previous = process.env.QUOTAOPS_DESCRIPTOR_PATH;
+  process.env.QUOTAOPS_DESCRIPTOR_PATH = join(directory, "dashboard-runtime.json");
+
+  try {
+    const descriptor = descriptorFor(45_678, createInstanceId());
+    await writeDescriptor(descriptor);
+
+    assert.deepEqual(await readDescriptor(), descriptor);
+  } finally {
+    if (previous === undefined) delete process.env.QUOTAOPS_DESCRIPTOR_PATH;
+    else process.env.QUOTAOPS_DESCRIPTOR_PATH = previous;
+    await rm(directory, { recursive: true, force: true });
   }
 });
