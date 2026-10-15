@@ -13,6 +13,7 @@ import type { Provider } from "../lib/quota.ts";
 import type {
   CollectorAccountConfig,
   CollectorConfig,
+  TokenAnalyticsConsent,
 } from "./types.ts";
 
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -22,8 +23,20 @@ export function createDefaultCollectorConfig(): CollectorConfig {
     version: 1,
     port: 4317,
     pollIntervalSeconds: 300,
+    tokenAnalyticsEnabled: false,
+    tokenAnalyticsSources: { claudeCode: false, codex: false },
     accounts: [],
   };
+}
+
+function isConsent(value: unknown): value is TokenAnalyticsConsent {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<TokenAnalyticsConsent>;
+
+  return (
+    typeof candidate.claudeCode === "boolean" &&
+    typeof candidate.codex === "boolean"
+  );
 }
 
 function isAccountConfig(value: unknown): value is CollectorAccountConfig {
@@ -52,9 +65,28 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
     typeof candidate.pollIntervalSeconds === "number" &&
     Number.isFinite(candidate.pollIntervalSeconds) &&
     candidate.pollIntervalSeconds >= 30 &&
+    typeof candidate.tokenAnalyticsEnabled === "boolean" &&
+    isConsent(candidate.tokenAnalyticsSources) &&
+    // The master switch may never imply consent the user has not given.
+    (!candidate.tokenAnalyticsEnabled ||
+      candidate.tokenAnalyticsSources.claudeCode ||
+      candidate.tokenAnalyticsSources.codex) &&
     Array.isArray(candidate.accounts) &&
     candidate.accounts.every(isAccountConfig)
   );
+}
+
+/**
+ * Converts a pre-consent configuration. A user who had already enabled
+ * scanning keeps it for both sources rather than silently losing data; a user
+ * who had not stays opted out of both.
+ */
+export function migrateConsent(record: Record<string, unknown>): TokenAnalyticsConsent {
+  const existing = record.tokenAnalyticsSources;
+  if (isConsent(existing)) return existing;
+
+  const legacy = record.tokenAnalyticsEnabled === true;
+  return { claudeCode: legacy, codex: legacy };
 }
 
 export async function saveCollectorConfig(
@@ -99,7 +131,13 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
         })
       : parsedRecord?.accounts;
     const parsed = parsedRecord
-      ? { ...parsedRecord, accounts: accountsRaw }
+      ? {
+          ...parsedRecord,
+          accounts: accountsRaw,
+          // Existing installations migrate safely: history scanning becomes opt-in.
+          tokenAnalyticsEnabled: parsedRecord.tokenAnalyticsEnabled ?? false,
+          tokenAnalyticsSources: migrateConsent(parsedRecord),
+        }
       : parsedRaw;
 
     if (!isCollectorConfig(parsed)) {

@@ -35,6 +35,9 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Next writes AGENTS.md and CLAUDE.md into the repository root on every dev
+  // run. They are untracked generated files and only add noise to git status.
+  agentRules: false,
   reactStrictMode: true,
   async headers() {
     return [
