@@ -7,6 +7,15 @@ export const MAX_JSONL_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_JSONL_RECORDS_PER_FILE = 250_000;
 const READ_CHUNK_BYTES = 64 * 1024;
 
+export interface BoundedJsonlOptions {
+  /**
+   * Checked between chunks and between records so a caller can stop a scan
+   * that has exhausted a time or aggregation budget. Returning true aborts
+   * the file and reports it as incomplete.
+   */
+  shouldStop?: () => boolean;
+}
+
 /**
  * Read only bounded JSONL records. Callbacks receive parsed objects, never raw
  * file contents; parse failures and I/O errors are intentionally not logged.
@@ -15,7 +24,9 @@ const READ_CHUNK_BYTES = 64 * 1024;
 export async function readBoundedJsonl(
   path: string,
   onRecord: (record: Record<string, unknown>) => void,
+  options: BoundedJsonlOptions = {},
 ): Promise<boolean> {
+  const shouldStop = options.shouldStop;
   let handle: FileHandle | null = null;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -34,6 +45,7 @@ export async function readBoundedJsonl(
     const finishLine = (): boolean => {
       linesSeen += 1;
       if (linesSeen > MAX_JSONL_RECORDS_PER_FILE) return false;
+      if (shouldStop?.()) return false;
 
       if (lineBytes > 0) {
         const line = Buffer.concat(pieces, lineBytes).toString("utf8").trim();
@@ -55,6 +67,7 @@ export async function readBoundedJsonl(
 
     try {
       for await (const chunk of stream) {
+        if (shouldStop?.()) return false;
         fileBytes += chunk.length;
         if (fileBytes > MAX_JSONL_FILE_BYTES) return false;
 

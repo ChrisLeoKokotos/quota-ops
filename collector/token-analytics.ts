@@ -17,6 +17,14 @@ import {
 const MAX_FILES_PER_SOURCE = 20_000;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
+/**
+ * Byte budgets alone do not bound a scan. A pathological-but-valid corpus can
+ * stay inside them while costing unbounded time, and distinct record ids can
+ * grow the aggregation map without limit. These two budgets close that gap;
+ * exhausting either reports the source as partial rather than complete.
+ */
+const MAX_SCAN_DURATION_MS = 20_000;
+const MAX_TRACKED_RECORDS_PER_SOURCE = 200_000;
 
 interface MutableDailyBucket extends TokenTotals {
   date: string;
@@ -28,6 +36,8 @@ interface ScanResult {
   source: TokenSourceStatus["source"];
   files: number;
   readErrors: number;
+  /** True when a time or aggregation budget stopped the scan early. */
+  truncated: boolean;
   totals: TokenTotals;
   daily: Map<string, MutableDailyBucket>;
 }
@@ -427,28 +437,48 @@ async function scanClaudeCode(): Promise<ScanResult> {
   let files = 0;
   let readErrors = 0;
   let scanBytes = 0;
+  let truncated = false;
+
+  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
+  const budgetExhausted = (): boolean =>
+    Date.now() > deadline || best.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
 
   for (const path of paths) {
+    if (budgetExhausted()) {
+      truncated = true;
+      break;
+    }
+
     const size = await stat(path).then((info) => info.size).catch(() => null);
     if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
       readErrors += 1;
       continue;
     }
     scanBytes += size;
-    const ok = await readBoundedJsonl(path, (record) => {
-      const parsed = parseClaudeTokenRecord(record);
-      if (!parsed) return;
+    const ok = await readBoundedJsonl(
+      path,
+      (record) => {
+        const parsed = parseClaudeTokenRecord(record);
+        if (!parsed) return;
 
-      const previous = best.get(parsed.id);
-      best.set(parsed.id, {
-        date: previous?.date ?? parsed.date,
-        totals: previous
-          ? maxTokenTotals(previous.totals, parsed.totals)
-          : parsed.totals,
-      });
-    });
+        const previous = best.get(parsed.id);
+        if (!previous && best.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
+
+        best.set(parsed.id, {
+          date: previous?.date ?? parsed.date,
+          totals: previous
+            ? maxTokenTotals(previous.totals, parsed.totals)
+            : parsed.totals,
+        });
+      },
+      { shouldStop: budgetExhausted },
+    );
+
     if (ok) files += 1;
-    else readErrors += 1;
+    else if (budgetExhausted()) {
+      truncated = true;
+      break;
+    } else readErrors += 1;
   }
 
   let totals = emptyTokenTotals();
@@ -462,6 +492,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
     source: "claude-code",
     files,
     readErrors,
+    truncated,
     totals,
     daily,
   };
@@ -478,8 +509,18 @@ async function scanCodex(): Promise<ScanResult> {
   let files = 0;
   let readErrors = 0;
   let scanBytes = 0;
+  let truncated = false;
+
+  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
+  const budgetExhausted = (): boolean =>
+    Date.now() > deadline || seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
 
   for (const path of paths) {
+    if (budgetExhausted()) {
+      truncated = true;
+      break;
+    }
+
     const size = await stat(path).then((info) => info.size).catch(() => null);
     if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
       readErrors += 1;
@@ -487,17 +528,25 @@ async function scanCodex(): Promise<ScanResult> {
     }
     scanBytes += size;
     const state = createCodexTokenState();
-    const ok = await readBoundedJsonl(path, (record) => {
-      const parsed = parseCodexTokenRecord(record, state);
-      if (!parsed || seen.has(parsed.id)) return;
-      seen.add(parsed.id);
+    const ok = await readBoundedJsonl(
+      path,
+      (record) => {
+        const parsed = parseCodexTokenRecord(record, state);
+        if (!parsed || seen.has(parsed.id)) return;
+        if (seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
+        seen.add(parsed.id);
 
-      totals = addTokenTotals(totals, parsed.totals);
-      addDaily(daily, "openai", parsed.date, parsed.totals);
-    });
+        totals = addTokenTotals(totals, parsed.totals);
+        addDaily(daily, "openai", parsed.date, parsed.totals);
+      },
+      { shouldStop: budgetExhausted },
+    );
 
     if (ok) files += 1;
-    else readErrors += 1;
+    else if (budgetExhausted()) {
+      truncated = true;
+      break;
+    } else readErrors += 1;
   }
 
   return {
@@ -505,23 +554,38 @@ async function scanCodex(): Promise<ScanResult> {
     source: "codex",
     files,
     readErrors,
+    truncated,
     totals,
     daily,
   };
 }
 
 function sourceStatus(result: ScanResult): TokenSourceStatus {
-  const missing = result.files === 0 && result.readErrors === 0;
+  const missing =
+    result.files === 0 && result.readErrors === 0 && !result.truncated;
+  const label = result.source === "claude-code" ? "Claude Code" : "Codex";
+
+  // Totals are never presented as complete once a file was rejected or a
+  // budget stopped the scan; counts stay numeric and name no file content.
+  let message: string | null = null;
+  if (missing) {
+    message = `No ${label} session logs found.`;
+  } else if (result.truncated) {
+    message = `${label} scan stopped at its time or record budget; totals are partial.`;
+  } else if (result.readErrors > 0) {
+    message = `${result.readErrors} session file(s) could not be read.`;
+  }
+
   return {
     source: result.source,
     provider: result.provider,
-    state: missing ? "not_found" : result.readErrors > 0 ? "partial" : "ok",
+    state: missing
+      ? "not_found"
+      : result.readErrors > 0 || result.truncated
+        ? "partial"
+        : "ok",
     files: result.files,
-    message: missing
-      ? `No ${result.source === "claude-code" ? "Claude Code" : "Codex"} session logs found.`
-      : result.readErrors > 0
-        ? `${result.readErrors} session file(s) could not be read.`
-        : null,
+    message,
   };
 }
 
