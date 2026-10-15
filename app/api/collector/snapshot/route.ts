@@ -20,6 +20,29 @@ function collectorToken(): Promise<string> {
   return tokenPromise;
 }
 
+/**
+ * Dropped after a 401 so `collector:setup -- rotate-token` does not leave the
+ * proxy authenticating with a token the collector no longer accepts. Without
+ * this the failure is cached for the process lifetime and surfaces as a
+ * permanent `collector_offline`, which names the wrong cause.
+ */
+function forgetCollectorToken(): void {
+  tokenPromise = null;
+}
+
+async function requestSnapshot(token: string): Promise<Response> {
+  return fetch(COLLECTOR_URL, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(3_000),
+  });
+}
+
 function denied(reason: string): NextResponse {
   // The reason names the failed control, never the expected secret value.
   return NextResponse.json(
@@ -52,17 +75,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   if (rejection) return rejection;
 
   try {
-    const token = await collectorToken();
-    const response = await fetch(COLLECTOR_URL, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-      redirect: "error",
-      signal: AbortSignal.timeout(3_000),
-    });
+    let response = await requestSnapshot(await collectorToken());
+
+    if (response.status === 401) {
+      // The token was rotated underneath us; re-read it and try once more.
+      forgetCollectorToken();
+      response = await requestSnapshot(await collectorToken());
+    }
 
     if (!response.ok) {
       return NextResponse.json(

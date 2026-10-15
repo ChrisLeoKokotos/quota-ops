@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+/**
+ * Configuration checks only. The boundary's *behaviour* is covered by
+ * `tests/dashboard-boundary.test.ts`, which drives real TCP connections.
+ *
+ * Earlier revisions of this file asserted the controls by regex-matching
+ * `server/dashboard-server.ts` as text. Each of those would have passed with
+ * the control it named fully removed, so they are gone rather than kept as
+ * reassurance.
+ */
+
 const pkg = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 ) as { scripts: Record<string, string> };
@@ -27,38 +37,24 @@ test("dashboard commands run through the trusted loopback server", () => {
   }
 });
 
-test("the trusted server binds loopback and has no configurable host", () => {
+test("the trusted server has no configurable listen address", () => {
+  // The host is a constant rather than an input: a configurable host would
+  // move the boundary decision out of the code and into deployment.
   assert.match(dashboardServer, /const HOST = "127\.0\.0\.1"/);
-  assert.match(dashboardServer, /server\.listen\(port, HOST/);
-  assert.equal(dashboardServer.includes("0.0.0.0"), false);
-});
 
-test("the trusted server refuses a non-loopback HOSTNAME override", () => {
-  assert.match(dashboardServer, /assertLoopbackOnlyConfiguration/);
-  assert.match(dashboardServer, /Refusing to start: HOSTNAME=/);
-});
-
-test("the trusted server refuses proxied requests before Next.js sees them", () => {
-  assert.match(dashboardServer, /isProxiedRequest\(request\)/);
-  assert.match(dashboardServer, /"forwarded_request"/);
-});
-
-test("the trusted server destroys non-loopback connections", () => {
-  assert.match(dashboardServer, /isLoopbackAddress\(socket\.remoteAddress\)/);
-  assert.match(dashboardServer, /socket\.destroy\(\)/);
-});
-
-test("the trusted server strips spoofable trust headers before stamping", () => {
-  const stripIndex = dashboardServer.indexOf("stripSpoofableHeaders(request)");
-  const stampIndex = dashboardServer.indexOf(
-    "request.headers[TRUSTED_PEER_HEADER] =",
+  const listenCalls = dashboardServer.match(/\.listen\([^)]*/g) ?? [];
+  assert.equal(listenCalls.length, 1, "expected exactly one listen call");
+  assert.match(
+    listenCalls[0] ?? "",
+    /\.listen\(port, HOST/,
+    "the listen call must bind the loopback constant",
   );
+});
 
-  assert.notEqual(stripIndex, -1);
-  assert.notEqual(stampIndex, -1);
-  assert.equal(
-    stripIndex < stampIndex,
-    true,
-    "inbound copies must be deleted before the trusted marker is applied",
-  );
+test("the server verifies the address it actually bound", () => {
+  // Checking configuration is not checking the socket. This assertion exists
+  // because the previous guard inspected HOSTNAME, which the server never
+  // reads, and so proved nothing about what was bound.
+  assert.match(dashboardServer, /assertBoundToLoopback\(server\)/);
+  assert.match(dashboardServer, /server\.address\(\)/);
 });

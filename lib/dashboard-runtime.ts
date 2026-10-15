@@ -33,16 +33,29 @@ export function initializeDashboardRuntime(): DashboardRuntimeSecrets {
   return { capabilitySecret, trustedPeerMarker };
 }
 
-/** Returns the running process secrets, or null when the trusted server is absent. */
+/** Both secrets are 32 bytes, so base64url is always 43 characters. */
+const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * Returns the running process secrets, or null when the trusted server is
+ * absent.
+ *
+ * The values are shape-checked rather than trusted. `Buffer.from(x,
+ * "base64url")` never throws: it silently yields a 0-byte buffer for input it
+ * cannot decode, and `createHmac` accepts an empty key. Without this check, a
+ * process started with these variables pre-set to junk would sign capabilities
+ * with an empty key instead of failing closed.
+ */
 export function getDashboardRuntime(): DashboardRuntimeSecrets | null {
   const secret = process.env[SECRET_ENV];
   const marker = process.env[MARKER_ENV];
   if (!secret || !marker) return null;
+  if (!SECRET_PATTERN.test(secret) || !SECRET_PATTERN.test(marker)) return null;
 
-  return {
-    capabilitySecret: Buffer.from(secret, "base64url"),
-    trustedPeerMarker: marker,
-  };
+  const capabilitySecret = Buffer.from(secret, "base64url");
+  if (capabilitySecret.length !== 32) return null;
+
+  return { capabilitySecret, trustedPeerMarker: marker };
 }
 
 /**

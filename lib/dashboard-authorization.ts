@@ -67,8 +67,14 @@ export type AuthorizationDecision =
   | { allowed: false; reason: AuthorizationDenialReason };
 
 /**
- * Loopback check covering IPv4 `127.0.0.0/8`, IPv6 `::1` and the
- * IPv4-mapped IPv6 forms Node reports on dual-stack sockets.
+ * Loopback check covering IPv4 `127.0.0.0/8`, IPv6 `::1` and IPv4-mapped
+ * IPv6 (`::ffff:127.0.0.1`, `::ffff:7f00:1`).
+ *
+ * The address is expanded to eight 16-bit groups rather than pattern-matched,
+ * because the near-miss forms matter here. `::127.0.0.1` (deprecated
+ * IPv4-compatible) and `::ffff:0:127.0.0.1` (RFC 2765 IPv4-translated) embed
+ * 127.0.0.1 but are **not** loopback addresses, and a regex that treats the
+ * `ffff:` and `0:` segments as optional accepts both.
  */
 export function isLoopbackAddress(address: string | undefined | null): boolean {
   if (!address) return false;
@@ -76,35 +82,98 @@ export function isLoopbackAddress(address: string | undefined | null): boolean {
   let value = address.trim().toLowerCase();
   if (value.length === 0) return false;
 
-  // Strip an RFC 6874 zone identifier (fe80::1%eth0) and bracket notation.
+  // Strip bracket notation and an RFC 6874 zone identifier (fe80::1%eth0).
   if (value.startsWith("[") && value.includes("]")) {
     value = value.slice(1, value.indexOf("]"));
   }
   const zoneIndex = value.indexOf("%");
   if (zoneIndex !== -1) value = value.slice(0, zoneIndex);
 
-  if (value === "::1" || value === "0:0:0:0:0:0:0:1") return true;
+  if (!value.includes(":")) return isLoopbackIpv4(value);
 
-  // IPv4-mapped (::ffff:127.0.0.1) and IPv4-compatible (::127.0.0.1) forms.
-  const mapped = /^::(?:ffff:(?:0{1,4}:)?)?(\d{1,3}(?:\.\d{1,3}){3})$/.exec(value);
-  if (mapped?.[1]) return isLoopbackIpv4(mapped[1]);
+  const groups = expandIpv6(value);
+  if (!groups) return false;
 
-  return isLoopbackIpv4(value);
+  // ::1 — the IPv6 loopback address itself.
+  if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) {
+    return true;
+  }
+
+  // ::ffff:a.b.c.d — an IPv4 address carried over an IPv6 socket.
+  const isIpv4Mapped =
+    groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+  if (!isIpv4Mapped) return false;
+
+  return ((groups[6] ?? 0) >>> 8) === 127;
 }
 
-function isLoopbackIpv4(value: string): boolean {
+/** Returns eight 16-bit groups, or null when the text is not a valid address. */
+function expandIpv6(value: string): number[] | null {
+  let head = value;
+  let embeddedIpv4: number[] | null = null;
+
+  // A trailing dotted quad occupies the final two groups.
+  const lastColon = head.lastIndexOf(":");
+  const tail = head.slice(lastColon + 1);
+  if (tail.includes(".")) {
+    const octets = parseIpv4Octets(tail);
+    if (!octets) return null;
+    embeddedIpv4 = octets;
+    // The quad stands in for the final two groups, not one.
+    head = head.slice(0, lastColon + 1) + "0:0";
+  }
+
+  const doubleColon = head.indexOf("::");
+  if (doubleColon !== head.lastIndexOf("::")) return null;
+
+  let parts: string[];
+  if (doubleColon === -1) {
+    parts = head.split(":");
+  } else {
+    const before = head.slice(0, doubleColon);
+    const after = head.slice(doubleColon + 2);
+    const left = before.length > 0 ? before.split(":") : [];
+    const right = after.length > 0 ? after.split(":") : [];
+    const missing = 8 - left.length - right.length;
+    if (missing < 1) return null;
+    parts = [...left, ...Array.from({ length: missing }, () => "0"), ...right];
+  }
+
+  if (parts.length !== 8) return null;
+
+  const groups: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+    groups.push(Number.parseInt(part, 16));
+  }
+
+  if (embeddedIpv4) {
+    groups[6] = ((embeddedIpv4[0] ?? 0) << 8) | (embeddedIpv4[1] ?? 0);
+    groups[7] = ((embeddedIpv4[2] ?? 0) << 8) | (embeddedIpv4[3] ?? 0);
+  }
+
+  return groups;
+}
+
+function parseIpv4Octets(value: string): number[] | null {
   const octets = value.split(".");
-  if (octets.length !== 4) return false;
+  if (octets.length !== 4) return null;
 
   const parsed: number[] = [];
   for (const octet of octets) {
-    if (!/^\d{1,3}$/.test(octet)) return false;
+    // Reject leading zeros: some resolvers read "0177" as octal.
+    if (!/^(0|[1-9]\d{0,2})$/.test(octet)) return null;
     const numeric = Number(octet);
-    if (numeric > 255) return false;
+    if (numeric > 255) return null;
     parsed.push(numeric);
   }
 
-  return parsed[0] === 127;
+  return parsed;
+}
+
+function isLoopbackIpv4(value: string): boolean {
+  const octets = parseIpv4Octets(value);
+  return octets !== null && octets[0] === 127;
 }
 
 /** A hostname is loopback-safe only when it resolves to this machine by definition. */

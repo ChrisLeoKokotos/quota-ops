@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,13 +20,43 @@ const MAX_FILES_PER_SOURCE = 20_000;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
 /**
- * Byte budgets alone do not bound a scan. A pathological-but-valid corpus can
- * stay inside them while costing unbounded time, and distinct record ids can
- * grow the aggregation map without limit. These two budgets close that gap;
- * exhausting either reports the source as partial rather than complete.
+ * Byte budgets alone do not bound a scan. Every budget below closes a
+ * different way a corpus can stay inside the documented size limits while
+ * still costing unbounded time or memory. Exhausting any of them reports the
+ * source as partial rather than complete.
+ *
+ * - duration: wall-clock ceiling for one source.
+ * - tracked records: how many distinct ids the de-duplication state holds.
+ * - key bytes: how large one of those ids may be. Ids come from the file, so
+ *   capping the count alone still allows 200k keys of 2 MiB each.
+ * - daily buckets: distinct dates, which are also file-controlled and are
+ *   serialised into every snapshot response.
+ * - directories: the tree walk runs before any record is read, so it needs
+ *   its own ceiling and its own view of the deadline.
  */
 const MAX_SCAN_DURATION_MS = 20_000;
 const MAX_TRACKED_RECORDS_PER_SOURCE = 200_000;
+const MAX_TRACKING_KEY_CHARS = 200;
+const MAX_DAILY_BUCKETS_PER_SOURCE = 2_000;
+/**
+ * The assembled snapshot is serialised into every collector response, and the
+ * dashboard proxy rejects a body over 256 KiB. Keeping the most recent days
+ * bounds that body while preserving the data a user actually looks at; a
+ * truncated snapshot reports its sources as partial.
+ */
+const MAX_DAILY_BUCKETS_IN_SNAPSHOT = 800;
+const MAX_DIRECTORIES_PER_SOURCE = 50_000;
+
+/**
+ * Keeps aggregation keys bounded. A record id is attacker-influenced text up
+ * to the 2 MiB per-record limit, and it is retained for the whole scan, so an
+ * oversized one is replaced by a digest of itself. Collisions are irrelevant
+ * here: the key only de-duplicates repeated reports of the same record.
+ */
+function boundedKey(value: string): string {
+  if (value.length <= MAX_TRACKING_KEY_CHARS) return value;
+  return "sha256:" + createHash("sha256").update(value).digest("base64url");
+}
 
 interface MutableDailyBucket extends TokenTotals {
   date: string;
@@ -59,9 +90,17 @@ function localDateKey(value: unknown): string | null {
 
   const date = new Date(time);
   const year = date.getFullYear();
+
+  // The dashboard validates each bucket against /^\d{4}-\d{2}-\d{2}$/ and
+  // discards the entire analytics snapshot if one fails. An unpadded year
+  // ("999-01-01") or an expanded one ("12345-06-07") would therefore let a
+  // single malformed record silently blank the whole panel, so reject the
+  // record here instead of emitting a key the consumer cannot accept.
+  if (year < 1 || year > 9999) return null;
+
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return `${String(year).padStart(4, "0")}-${month}-${day}`;
 }
 
 function timestampSeconds(value: unknown): number | null {
@@ -86,30 +125,62 @@ function tokenTotals(
   };
 }
 
+/** Returns false when the bucket was dropped because the date cap was reached. */
 function addDaily(
   daily: Map<string, MutableDailyBucket>,
   provider: Provider,
   date: string | null,
   value: TokenTotals,
-): void {
-  if (!date) return;
+): boolean {
+  if (!date) return true;
   const key = `${provider}:${date}`;
-  const current =
-    daily.get(key) ?? { date, provider, ...emptyTokenTotals() };
+  const existing = daily.get(key);
+  if (!existing && daily.size >= MAX_DAILY_BUCKETS_PER_SOURCE) return false;
+
+  const current = existing ?? { date, provider, ...emptyTokenTotals() };
   daily.set(key, {
     date,
     provider,
     ...addTokenTotals(current, value),
   });
+  return true;
 }
 
-async function findJsonlFiles(root: string): Promise<string[]> {
+interface FileWalk {
+  files: string[];
+  /** True when a ceiling stopped the walk before the tree was exhausted. */
+  truncated: boolean;
+}
+
+/**
+ * The walk runs before any record is read, so it needs its own ceilings: a
+ * tree of empty directories satisfies no file-count limit and would otherwise
+ * run unbounded, holding the collector's `collecting` flag and starving every
+ * later poll. `withFileTypes` reports a symlinked directory as a symlink
+ * rather than a directory, so links are not followed and cannot form a cycle.
+ */
+async function findJsonlFiles(
+  root: string,
+  deadline: number,
+): Promise<FileWalk> {
   const files: string[] = [];
   const pending = [root];
+  let directories = 0;
+  let truncated = false;
 
-  while (pending.length > 0 && files.length < MAX_FILES_PER_SOURCE) {
+  while (pending.length > 0) {
+    if (files.length >= MAX_FILES_PER_SOURCE) {
+      truncated = true;
+      break;
+    }
+    if (directories >= MAX_DIRECTORIES_PER_SOURCE || Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
+
     const dir = pending.pop();
     if (!dir) break;
+    directories += 1;
 
     let entries;
     try {
@@ -119,9 +190,16 @@ async function findJsonlFiles(root: string): Promise<string[]> {
     }
 
     for (const entry of entries) {
-      if (files.length >= MAX_FILES_PER_SOURCE) break;
+      if (files.length >= MAX_FILES_PER_SOURCE) {
+        truncated = true;
+        break;
+      }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (pending.length + directories >= MAX_DIRECTORIES_PER_SOURCE) {
+          truncated = true;
+          continue;
+        }
         pending.push(full);
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         files.push(full);
@@ -129,7 +207,7 @@ async function findJsonlFiles(root: string): Promise<string[]> {
     }
   }
 
-  return files;
+  return { files, truncated };
 }
 
 
@@ -428,8 +506,11 @@ export function parseCodexTokenRecord(
 }
 
 async function scanClaudeCode(): Promise<ScanResult> {
+  // The deadline starts before the walk, which is part of the scan's cost.
+  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const root = join(homedir(), ".claude", "projects");
-  const paths = await findJsonlFiles(root);
+  const walk = await findJsonlFiles(root, deadline);
+  const paths = walk.files;
   const best = new Map<
     string,
     { date: string | null; totals: TokenTotals }
@@ -438,9 +519,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
   let files = 0;
   let readErrors = 0;
   let scanBytes = 0;
-  let truncated = false;
-
-  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
+  let truncated = walk.truncated;
   const budgetExhausted = (): boolean =>
     Date.now() > deadline || best.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
 
@@ -462,10 +541,11 @@ async function scanClaudeCode(): Promise<ScanResult> {
         const parsed = parseClaudeTokenRecord(record);
         if (!parsed) return;
 
-        const previous = best.get(parsed.id);
+        const key = boundedKey(parsed.id);
+        const previous = best.get(key);
         if (!previous && best.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
 
-        best.set(parsed.id, {
+        best.set(key, {
           date: previous?.date ?? parsed.date,
           totals: previous
             ? maxTokenTotals(previous.totals, parsed.totals)
@@ -485,7 +565,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
   let totals = emptyTokenTotals();
   for (const item of best.values()) {
     totals = addTokenTotals(totals, item.totals);
-    addDaily(daily, "claude", item.date, item.totals);
+    if (!addDaily(daily, "claude", item.date, item.totals)) truncated = true;
   }
 
   return {
@@ -500,19 +580,23 @@ async function scanClaudeCode(): Promise<ScanResult> {
 }
 
 async function scanCodex(): Promise<ScanResult> {
+  // The deadline starts before the walk, which is part of the scan's cost.
+  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const codexHome = join(homedir(), ".codex");
-  const active = await findJsonlFiles(join(codexHome, "sessions"));
-  const archived = await findJsonlFiles(join(codexHome, "archived_sessions"));
-  const paths = [...new Set([...active, ...archived])];
+  const active = await findJsonlFiles(join(codexHome, "sessions"), deadline);
+  const archived = await findJsonlFiles(
+    join(codexHome, "archived_sessions"),
+    deadline,
+  );
+  const paths = [...new Set([...active.files, ...archived.files])];
   const seen = new Set<string>();
   let totals = emptyTokenTotals();
   const daily = new Map<string, MutableDailyBucket>();
   let files = 0;
   let readErrors = 0;
   let scanBytes = 0;
-  let truncated = false;
+  let truncated = active.truncated || archived.truncated;
 
-  const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const budgetExhausted = (): boolean =>
     Date.now() > deadline || seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
 
@@ -533,12 +617,17 @@ async function scanCodex(): Promise<ScanResult> {
       path,
       (record) => {
         const parsed = parseCodexTokenRecord(record, state);
-        if (!parsed || seen.has(parsed.id)) return;
+        if (!parsed) return;
+
+        const key = boundedKey(parsed.id);
+        if (seen.has(key)) return;
         if (seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
-        seen.add(parsed.id);
+        seen.add(key);
 
         totals = addTokenTotals(totals, parsed.totals);
-        addDaily(daily, "openai", parsed.date, parsed.totals);
+        if (!addDaily(daily, "openai", parsed.date, parsed.totals)) {
+          truncated = true;
+        }
       },
       { shouldStop: budgetExhausted },
     );
@@ -647,13 +736,21 @@ export async function collectLocalTokenAnalytics(
     }
   }
 
-  const dailyBuckets: DailyTokenBucket[] = [...daily.values()].sort((a, b) =>
+  const allBuckets: DailyTokenBucket[] = [...daily.values()].sort((a, b) =>
     a.date.localeCompare(b.date) || a.provider.localeCompare(b.provider),
   );
+  const dailyTruncated = allBuckets.length > MAX_DAILY_BUCKETS_IN_SNAPSHOT;
+  const dailyBuckets = dailyTruncated
+    ? allBuckets.slice(allBuckets.length - MAX_DAILY_BUCKETS_IN_SNAPSHOT)
+    : allBuckets;
 
   const sources: TokenSourceStatus[] = [
-    claudeScan ? sourceStatus(claudeScan) : disabledSource("claude-code", "claude"),
-    codexScan ? sourceStatus(codexScan) : disabledSource("codex", "openai"),
+    claudeScan
+      ? sourceStatus({ ...claudeScan, truncated: claudeScan.truncated || dailyTruncated })
+      : disabledSource("claude-code", "claude"),
+    codexScan
+      ? sourceStatus({ ...codexScan, truncated: codexScan.truncated || dailyTruncated })
+      : disabledSource("codex", "openai"),
   ];
 
   return {

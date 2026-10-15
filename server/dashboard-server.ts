@@ -1,14 +1,10 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
 import { parse } from "node:url";
 
 import next from "next";
 
-import {
-  PEER_ADDRESS_HEADER,
-  TRUSTED_PEER_HEADER,
-  hasForwardingHeader,
-  isLoopbackAddress,
-} from "../lib/dashboard-authorization.ts";
+import { isLoopbackAddress } from "../lib/dashboard-authorization.ts";
+import { applyDashboardBoundary } from "../lib/dashboard-boundary.ts";
 import { initializeDashboardRuntime } from "../lib/dashboard-runtime.ts";
 
 /**
@@ -36,50 +32,27 @@ function readPort(): number {
 }
 
 /**
- * The host is not configurable. An operator who wants remote access must go
- * through the QO-SEC-05 remote-access review, not an environment variable.
+ * Verifies what the socket actually bound, rather than what configuration
+ * asked for. An earlier version rejected a non-loopback `HOSTNAME`, which
+ * protected nothing — the host is a constant and `HOSTNAME` is never read —
+ * while falsely refusing to start in POSIX shells, where `HOSTNAME` normally
+ * holds the machine name.
  */
-function assertLoopbackOnlyConfiguration(): void {
-  const requested = process.env.HOSTNAME?.trim();
-  if (requested && !isLoopbackAddress(requested) && requested !== "localhost") {
+function assertBoundToLoopback(server: Server): void {
+  const address = server.address();
+  const bound =
+    address && typeof address !== "string" ? address.address : String(address);
+
+  if (!isLoopbackAddress(bound)) {
+    server.close();
     throw new Error(
-      `Refusing to start: HOSTNAME="${requested}" would expose the dashboard beyond loopback. ` +
+      `Refusing to serve: the dashboard bound ${String(bound)}, which is not loopback. ` +
         "Remote access is an unsupported deployment (QO-SEC-01).",
     );
   }
 }
 
-function denyRequest(
-  response: ServerResponse,
-  status: number,
-  reason: string,
-): void {
-  response.statusCode = status;
-  response.setHeader("Content-Type", "application/json; charset=utf-8");
-  response.setHeader("Cache-Control", "no-store");
-  response.setHeader("X-Content-Type-Options", "nosniff");
-  response.end(JSON.stringify({ error: reason }));
-}
-
-/**
- * Removes every header a client could use to impersonate the trusted layer.
- * Runs before any marker is applied, so an inbound copy can never survive.
- */
-export function stripSpoofableHeaders(request: IncomingMessage): void {
-  delete request.headers[TRUSTED_PEER_HEADER];
-  delete request.headers[PEER_ADDRESS_HEADER];
-}
-
-export function isProxiedRequest(request: IncomingMessage): boolean {
-  return hasForwardingHeader((name) => {
-    const value = request.headers[name];
-    return Array.isArray(value) ? value[0] ?? null : value ?? null;
-  });
-}
-
 async function main(): Promise<void> {
-  assertLoopbackOnlyConfiguration();
-
   // `--production` keeps the npm scripts free of shell-specific env syntax,
   // which differs between PowerShell and POSIX shells.
   // `NODE_ENV` is typed read-only by the Next.js ambient types.
@@ -96,23 +69,7 @@ async function main(): Promise<void> {
   const handle = app.getRequestHandler();
 
   const server = createServer((request, response) => {
-    const peer = request.socket.remoteAddress;
-
-    if (!isLoopbackAddress(peer)) {
-      denyRequest(response, 403, "non_loopback_peer");
-      request.socket.destroy();
-      return;
-    }
-
-    if (isProxiedRequest(request)) {
-      denyRequest(response, 403, "forwarded_request");
-      return;
-    }
-
-    stripSpoofableHeaders(request);
-    request.headers[TRUSTED_PEER_HEADER] = trustedPeerMarker;
-    request.headers[PEER_ADDRESS_HEADER] = peer ?? "";
-
+    if (!applyDashboardBoundary(request, response, trustedPeerMarker)) return;
     void handle(request, response, parse(request.url ?? "/", true));
   });
 
@@ -123,6 +80,7 @@ async function main(): Promise<void> {
   });
 
   server.listen(port, HOST, () => {
+    assertBoundToLoopback(server);
     process.stdout.write(
       `QuotaOps dashboard listening on http://${HOST}:${port} (loopback only)\n`,
     );

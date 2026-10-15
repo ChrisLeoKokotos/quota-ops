@@ -277,14 +277,56 @@ test("classifies loopback peer addresses across IPv4 and IPv6 forms", () => {
     "127.255.255.255",
     "::1",
     "0:0:0:0:0:0:0:1",
+    "0:0:0:0:0:0:0:01",
     "::ffff:127.0.0.1",
-    "::ffff:0:127.0.0.1",
-    "::127.0.0.1",
+    "::FFFF:127.0.0.1",
+    "::ffff:7f00:1",
+    "0:0:0:0:0:ffff:127.0.0.1",
     "[::1]",
     "::1%lo0",
     " 127.0.0.1 ",
   ]) {
     assert.equal(isLoopbackAddress(address), true, `${address} should be loopback`);
+  }
+});
+
+test("refuses IPv6 forms that embed 127.0.0.1 but are not loopback", () => {
+  // ::127.0.0.1 is the deprecated IPv4-compatible form and ::ffff:0:127.0.0.1
+  // is RFC 2765 IPv4-translated. Both carry the octets of a loopback address
+  // without being one, and a regex treating `ffff:` and `0:` as optional
+  // segments accepts both. An earlier revision of this test asserted they
+  // were loopback, which locked the defect in.
+  assert.equal(isLoopbackAddress("::127.0.0.1"), false);
+  assert.equal(isLoopbackAddress("::ffff:0:127.0.0.1"), false);
+  assert.equal(isLoopbackAddress("::ffff:0:7f00:1"), false);
+});
+
+test("refuses malformed IPv6 text rather than guessing", () => {
+  for (const address of [
+    "::1::2",
+    "1:2:3:4:5:6:7:8:9",
+    "::ffff:7f00:1:2",
+    "::ffff:127.0.0",
+    "::gggg:1",
+    ":::1",
+  ]) {
+    assert.equal(
+      isLoopbackAddress(address),
+      false,
+      `${address} should not be loopback`,
+    );
+  }
+});
+
+test("refuses alternative IPv4 encodings of the loopback address", () => {
+  // Some resolvers read these as 127.0.0.1; this classifier must not, because
+  // accepting a form the OS does not produce only widens what is trusted.
+  for (const address of ["0177.0.0.1", "2130706433", "0x7f000001", "127.1"]) {
+    assert.equal(
+      isLoopbackAddress(address),
+      false,
+      `${address} should not be loopback`,
+    );
   }
 });
 
@@ -295,6 +337,7 @@ test("refuses non-loopback and malformed peer addresses", () => {
     "10.0.0.8",
     "203.0.113.9",
     "::ffff:192.168.1.40",
+    "::ffff:c0a8:128",
     "fe80::1",
     "2001:db8::1",
     "127.0.0.1.evil.test",
