@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { collectOllamaRuntime } from "./ollama.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -12,6 +13,7 @@ import type {
   CollectorSnapshotResponse,
 } from "./types.ts";
 import { emptyTokenTotals, type TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
+import type { LocalRuntimeSnapshot } from "../lib/local-runtime.ts";
 
 const HOST = "127.0.0.1";
 const MAX_REQUESTS_PER_MINUTE = 120;
@@ -49,6 +51,7 @@ async function main(): Promise<void> {
     daily: [],
     sources: [],
   };
+  let runtimes: LocalRuntimeSnapshot[] = [];
   let collecting = false;
 
   const snapshot = (): CollectorSnapshotResponse => ({
@@ -56,6 +59,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     accounts: results,
     tokens: tokenAnalytics,
+    runtimes,
   });
 
   const refresh = async (): Promise<void> => {
@@ -72,7 +76,10 @@ async function main(): Promise<void> {
       }
 
       results = nextResults;
-      tokenAnalytics = await collectLocalTokenAnalytics();
+      [tokenAnalytics, runtimes] = await Promise.all([
+        collectLocalTokenAnalytics(),
+        collectOllamaRuntime().then((runtime) => [runtime]),
+      ]);
     } finally {
       collecting = false;
     }

@@ -572,6 +572,160 @@ a {
   line-height: 1.55;
 }
 
+
+.runtime-panel {
+  margin: 0 0 30px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.runtime-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.runtime-heading .page-kicker {
+  margin-bottom: 4px;
+}
+
+.runtime-heading h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 620;
+}
+
+.runtime-heading p {
+  max-width: 680px;
+  margin: 7px 0 0;
+  color: var(--subtle);
+  font-size: 0.73rem;
+  line-height: 1.5;
+}
+
+.runtime-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.69rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.runtime-state[data-state="online"] {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.runtime-state[data-state="online"] .status-dot {
+  background: var(--success);
+}
+
+.runtime-state[data-state="partial"] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.runtime-state[data-state="partial"] .status-dot {
+  background: var(--warn);
+}
+
+.runtime-state[data-state="offline"] .status-dot {
+  background: var(--subtle);
+}
+
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-block: 1px solid var(--border);
+}
+
+.runtime-metrics > div {
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid var(--border);
+}
+
+.runtime-metrics > div:first-child {
+  padding-left: 0;
+}
+
+.runtime-metrics > div:last-child {
+  border-right: 0;
+}
+
+.runtime-metrics span,
+.runtime-model-name span,
+.runtime-model-meta span {
+  color: var(--subtle);
+  font-size: 0.69rem;
+}
+
+.runtime-metrics strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 1rem;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-models {
+  display: grid;
+}
+
+.runtime-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 58px;
+  border-bottom: 1px solid var(--border);
+}
+
+.runtime-model-name {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.runtime-model-name strong {
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 610;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-model-meta {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.runtime-note,
+.runtime-empty {
+  margin: 14px 0 0;
+  color: var(--subtle);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.runtime-empty {
+  padding: 16px 0 2px;
+  border-top: 1px solid var(--border);
+}
+
 .notice {
   display: flex;
   gap: 8px;
@@ -1162,6 +1316,34 @@ select:focus {
     padding-top: 10px;
   }
 
+  .runtime-heading {
+    display: grid;
+  }
+
+  .runtime-state {
+    justify-self: start;
+  }
+
+  .runtime-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .runtime-metrics > div {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .runtime-metrics > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .runtime-metrics > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .runtime-metrics > div:nth-child(3) {
+    padding-left: 0;
+  }
+
   .metric {
     border-bottom: 1px solid var(--border);
   }
@@ -1208,6 +1390,37 @@ select:focus {
 
   .token-panel {
     padding: 16px;
+  }
+
+  .runtime-panel {
+    padding: 16px;
+  }
+
+  .runtime-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-metrics > div,
+  .runtime-metrics > div:first-child,
+  .runtime-metrics > div:nth-child(3) {
+    padding: 12px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .runtime-metrics > div:last-child {
+    border-bottom: 0;
+  }
+
+  .runtime-model {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+    padding: 12px 0;
+  }
+
+  .runtime-model-meta {
+    flex-wrap: wrap;
   }
 
   .token-range {

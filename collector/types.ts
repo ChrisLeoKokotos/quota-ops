@@ -1,5 +1,6 @@
 import type { Provider, QuotaAccount } from "../lib/quota.ts";
 import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
+import type { LocalRuntimeSnapshot } from "../lib/local-runtime.ts";
 
 export type CollectorAccountStatus =
   | "ok"
@@ -36,4 +37,5 @@ export interface CollectorSnapshotResponse {
   generatedAt: string;
   accounts: CollectorAccountResult[];
   tokens: TokenAnalyticsSnapshot;
+  runtimes: LocalRuntimeSnapshot[];
 }

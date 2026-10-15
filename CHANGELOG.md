@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 
 ### Added
 
+- Local runtime capacity layer that stays separate from provider quota.
+- Ollama runtime discovery over the fixed local loopback API, including version, installed models, loaded models, VRAM, and context metadata when reported.
+- Local runtime CLI command: `npm run collector:setup -- runtimes`.
+- Dashboard panel for local / self-hosted models without synthetic quota percentages or reset windows.
 - Multi-provider quota architecture for Claude and OpenAI / ChatGPT Codex.
 - Provider-neutral quota windows instead of Claude-specific hardcoded fields.
 - Experimental same-PC multi-account collector with isolated Chrome / Edge profiles and loopback-only snapshot service.
