@@ -218,7 +218,9 @@ In a second terminal, start the dashboard and open it:
 npm start
 ```
 
-Open `http://127.0.0.1:3000`, let it load, then in the browser press F12 →
+Open the URL `npm start` printed — the dashboard now takes an OS-allocated
+port, so it is different each launch. `type %USERPROFILE%\.quotaops\dashboard-runtime.json`
+also shows the current port. Let it load, then in the browser press F12 →
 Application → Local Storage and Session Storage for that origin.
 
 | Check | Expected | Record |
@@ -253,11 +255,12 @@ Only if you have a second device on the same network and can do this without
 disabling any firewall.
 
 From the second device, with the dashboard and collector running on the test
-machine, attempt to reach `http://<test-machine-LAN-IP>:3000` and `:4317`.
+machine, attempt to reach `http://<test-machine-LAN-IP>:<dashboard-port>` and `:4317`,
+using the port from the runtime descriptor.
 
 | Check | Expected | Record |
 |---|---|---|
-| 10.1 Port 3000 from another device | refused or times out | PASS / FAIL |
+| 10.1 Dashboard port from another device | refused or times out | PASS / FAIL |
 | 10.2 Port 4317 from another device | refused or times out | PASS / FAIL |
 
 **Do not disable the Windows firewall to make this test "work".** If a port is

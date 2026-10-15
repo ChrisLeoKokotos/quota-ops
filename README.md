@@ -75,7 +75,7 @@ The standard `dev` and `start` scripts bind the dashboard to `127.0.0.1` only. D
 Then open:
 
 ```text
-http://localhost:3000
+the URL the start command prints (an OS-allocated loopback port)
 ```
 
 Validation:

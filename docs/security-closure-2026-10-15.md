@@ -68,8 +68,16 @@ enforce.
 **Not established.** A LAN scan from separate hardware (case 11 probes the
 host's own interface, which is weaker evidence) and any hosted CodeQL result.
 
-**Proposed disposition.** Close, with the same-account residual risk accepted.
-**Requires:** owner acceptance of that residual risk; independent re-review.
+**Disposition — closed 2026-10-15.** The owner accepted Risk A (A1) and
+authorized C2, which is implemented in `c9f8193`: the dashboard takes an
+OS-allocated loopback port, discovered through a runtime descriptor that is
+confirmed by asking the listener to echo its instance id rather than trusted
+on its own.
+
+**C2 mitigates; it does not eliminate.** A relay aimed at the port currently
+in use is still served, and that is asserted as a passing test so a green
+suite cannot be misread. Independent **human** review of this design is still
+outstanding.
 
 ---
 
@@ -108,9 +116,11 @@ these histories, regardless of QuotaOps consent settings. Consent controls what
 was listed as "where feasible"; it is not done, and the alternative offered
 here is consent granularity plus content-free output, not isolation.
 
-**Proposed disposition.** Close with accepted residual risk.
-**Requires:** owner's explicit acceptance of the same-account risk, or a
-decision to fund process isolation before release.
+**Disposition — closed 2026-10-15.** The owner accepted Risk B (B1): consent
+stays per-source and default-off, and `PRIVACY.md` now states plainly that
+consent governs QuotaOps behaviour and not the files' Windows permissions.
+Process isolation (B2) was not funded and remains available if the dependency
+surface grows.
 
 ---
 
@@ -221,7 +231,7 @@ distribution controls remain blocking for a desktop release.
 
 | Finding | Disposition | Blocking? |
 |---|---|---|
-| QO-SEC-01 | Close with accepted same-account residual risk **and Risk C** | Needs owner acceptance; Risk C is new and rated HIGH |
+| QO-SEC-01 | **Closed** with Risk A accepted and Risk C mitigated by C2 | Owner accepted A1 and C2 on 2026-10-15; Risk C remains a documented residual risk, not eliminated |
 | QO-SEC-02 | Close with accepted same-account residual risk | Needs owner acceptance |
 | QO-SEC-03 | **OPEN** | **Yes** — real-account Windows E2E outstanding |
 | QO-SEC-04 | Close; profiling outstanding | Owner's call |

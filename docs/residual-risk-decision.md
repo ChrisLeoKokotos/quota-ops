@@ -1,14 +1,33 @@
-# Residual risk — decision required from the owner
+# Residual risk — decisions and their limits
 
-**Status:** awaiting owner decision. Nothing here is accepted.
-**Blocks:** PR #20 leaving Draft.
+**Status:** decided 15 October 2026 — A1, B1 and C2 accepted by the owner.
+**Blocks:** PR #20 still requires QO-SEC-03 E2E and independent human review.
 **Context:** `docs/security-closure-2026-10-15.md`
+---
 
-Two residual risks survive the QO-SEC-01 and QO-SEC-02 work. Both are real,
-both are documented, and neither can be accepted by the implementer on the
-owner's behalf. This document states each risk, what the current code does and
-does not do about it, and the options with their actual costs — so the decision
-is made with the trade-off visible rather than by signing off a summary.
+## Owner decisions — recorded 15 October 2026
+
+| Risk | Decision | Status |
+|---|---|---|
+| **A** — a local process running as the same Windows user | **A1 — accepted** | Recorded; documentation updated |
+| **B** — session-history files readable by anything running as you | **B1 — accepted** | Recorded; consent remains per-source and default-off |
+| **C** — a transparent loopback relay defeats the peer check | **C2 — authorized** | **Implemented** in `c9f8193`; see below |
+
+These are final for the current local-only scope and are not reopened here.
+
+**C2 is a mitigation, not a fix.** The dashboard now takes an OS-allocated
+port, so a relay configured in advance against 3000 reaches nothing. A relay
+aimed at the *currently active* port is still served. That is asserted as a
+passing test in `tests/dashboard-relay-exposure.test.ts`, deliberately, so a
+green suite can never be read as "transparent relays are blocked". The
+transparent-relay finding remains open as a residual risk pending independent
+human review.
+
+Three residual risks survive the QO-SEC-01 and QO-SEC-02 work. The sections
+below record each one as it was presented for decision: the risk, what the code
+does and does not do about it, and the options with their real costs. They are
+kept in that form on purpose, so the basis of each decision stays visible
+rather than collapsing into a summary after the fact.
 
 ---
 
@@ -16,7 +35,7 @@ is made with the trade-off visible rather than by signing off a summary.
 
 ### What the risk is
 
-The dashboard listens on `127.0.0.1:3000`. The collector listens on
+The dashboard listens on an OS-allocated loopback port. The collector listens on
 `127.0.0.1:4317`. Any process running under the same Windows account can:
 
 - call `GET /api/collector/capability`, receive a valid capability, and then
@@ -229,9 +248,10 @@ documented boundary stands; only the overclaim was wrong, and that is fixed.
   — where no attacker had to do anything deliberate at all. That case is not
   rare, and "the user misconfigured it" is a weak answer to it.
 
-**C2 — Bind an ephemeral port per launch.** The dashboard picks a free port at
-startup instead of 3000, and the launcher and desktop shell open the right URL.
-A relay configured ahead of time points at 3000 and finds nothing.
+**C2 — Bind an ephemeral port per launch.** *(Chosen and implemented.)* The
+dashboard picks a free port at startup instead of 3000, and the launcher and
+desktop shell discover it through `~/.quotaops/dashboard-runtime.json`. A relay
+configured ahead of time points at 3000 and finds nothing.
 
 - Cost: moderate. `scripts/launcher-readiness.ts` and the BAT must discover the
   port (a small file in `~/.quotaops` would do it); a bookmark to
@@ -252,36 +272,35 @@ nothing, and they cannot guess the prefix.
 - Honest assessment: probably not worth it before the desktop edition, where
   the HTTP hop may disappear entirely in favour of IPC.
 
-### Recommendation
+### Outcome
 
-**C2.** It closes the realistic cases at a cost that is mostly one-off
-integration work, and it composes with the desktop IPC direction rather than
-fighting it. C1 alone leaves the accidental-tunnel case open, and I do not
-think "the user shouldn't have done that" carries it.
+**C2 chosen, implemented in `c9f8193`.** A bookmarked `http://127.0.0.1:3000`
+no longer works; that cost was accepted.
 
-This is still your decision — C2 does break a bookmarked
-`http://127.0.0.1:3000`, and that is a real usability cost you may weigh
-differently.
+What C2 did **not** do, stated plainly because it would be easy to lose:
+
+- A relay aimed at the port currently in use is still served. The dashboard
+  cannot tell a relayed remote caller from a local one, and the port is not a
+  secret — a process that can list listening sockets can find it.
+- `tests/dashboard-relay-exposure.test.ts` asserts both halves. The test named
+  "C2 limit: a relay aimed at the active port is still served" passes on
+  purpose. If it ever fails, the relay path changed and this section is stale.
+- The HIGH transparent-relay finding is **mitigated, not eliminated**, and
+  remains open pending independent human review.
 
 ---
 
-## What I need from you
+## Decisions recorded
 
-Reply on PR #20 with a decision for each, in this form:
+**A1, B1 and C2, accepted by the owner on 15 October 2026.**
 
-```
-Risk A: A1 (accept) | A2 (separate account) | A3 (reduce surface) | other
-Risk B: B1 (accept) | B2 (isolate scanner) | B3 (drop the feature) | other
-Risk C: C1 (accept) | C2 (ephemeral port) | C3 (secret path) | other
-```
+A1 and B1 narrow what QuotaOps claims to protect against, and that claim is now
+reflected in `PRIVACY.md` and `SECURITY.md` rather than left implied.
 
-If you accept, I will record the acceptance against commit `0691acc` in
-`docs/security-closure-2026-10-15.md`, with your decision and the date, and
-update `PRIVACY.md` and `SECURITY.md` so the published wording matches what the
-code actually protects.
+What these decisions did **not** settle, and what still blocks PR #20:
 
-If you choose a mitigation instead, that work lands before PR #20 leaves Draft.
-
-**Accepting these risks is not a formality.** A1 and B1 both narrow what
-QuotaOps claims to protect against. That claim ends up in `PRIVACY.md`, which
-users read. It should be one you are willing to stand behind.
+- **QO-SEC-03** — authenticated Windows E2E has not been run. See
+  `docs/qo-sec-03-windows-e2e-procedure.md`.
+- **Independent human security review** — the earlier adversarial review was
+  another model instance. It found real defects, but it is not human sign-off.
+- **The transparent-relay residual risk** — mitigated by C2, not closed.

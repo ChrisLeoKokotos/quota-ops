@@ -183,7 +183,7 @@ npm run dev
 Open:
 
 ```text
-http://localhost:3000
+the URL the start command prints (an OS-allocated loopback port)
 ```
 
 The dashboard polls the local collector every 30 seconds.

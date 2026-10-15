@@ -21,7 +21,7 @@ and sanitized diagnostic reason. Use a non-production test account for browser E
    locked dependencies: `npm ci --ignore-scripts --no-audit --no-fund`.
 2. Run `npm run typecheck`, `npm test`, then `npm run build`.
 3. Run `pwsh -NoProfile -File scripts/windows-security-smoke.ps1` on a PC
-   where no unrelated process occupies port 3000. Expected: a PASS message
+   passing an explicit `-Port` that nothing else occupies. Expected: a PASS message
    for a `127.0.0.1` listener and three rejected unauthorized HTTP requests.
    Never expose the app through a reverse proxy/port-forwarding to make this work.
 4. Run `npm run collector:setup -- security-check`; confirm it reports a
@@ -40,7 +40,7 @@ and sanitized diagnostic reason. Use a non-production test account for browser E
    -State Listen` reports only `127.0.0.1` for the collector. Verify a
    request without its private bearer token is rejected; never print the token.
 8. On a separate LAN client, the Windows test PC's private LAN IP should not
-   serve port 3000 or 4317. Do not temporarily disable the firewall to test.
+   serve the dashboard port or 4317. Do not temporarily disable the firewall to test.
 9. Record explicit PASS/FAIL for each item and repeat the automated suite
    after any security-relevant changes.
 
