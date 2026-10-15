@@ -2,7 +2,23 @@
 
 **Session scope:** repository audit, security remediation, PR backlog resolution, local validation.
 **Environment:** Windows 11 Home 26200, Node v22.22.2, npm 10.9.7, PowerShell, real Chrome.
-**Hosted CI:** unavailable for the whole session. No check status was fabricated, and no failing check was marked as passing.
+**Hosted CI:** unavailable for the first part of the session, then **restored**. All four workflows now pass on every branch produced here. No check status was fabricated at any point, and no failing check was marked as passing.
+
+> **Update — hosted checks restored.** An earlier revision of this document
+> said hosted CI was unavailable for the whole session. That was true when
+> written and is now wrong. Actions came back partway through, and the real
+> results are recorded in the table below — including the CodeQL run that
+> #25 and #26 could never produce individually.
+
+| Branch | Head | CI | CodeQL | Dependency review | Repository hygiene |
+|---|---|---|---|---|---|
+| `security/local-only-dashboard-review` (#20) | `fc6e4ad` | PASS | **PASS** | PASS | PASS |
+| `ci/codeql-coordinated-upgrade` (#28) | `c182af7` | PASS | **PASS** | PASS | PASS |
+| `feat/windows-one-click-launcher` (#21) | `6860a0d` | PASS | **PASS** | PASS | PASS |
+| `feat/local-runtime-ollama` (#19) | `5aa77bb` | PASS | **PASS** | PASS | PASS |
+
+Every open PR is now `BLOCKED` on `REVIEW_REQUIRED`. The "Protect main"
+ruleset requires a pull request review, and nothing here bypasses it.
 
 This is an engineering record, not a release approval. Nothing was merged.
 
