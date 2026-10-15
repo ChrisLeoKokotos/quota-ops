@@ -56,6 +56,7 @@ async function startHarness(host = "127.0.0.1"): Promise<Harness> {
     lanUrl: lan ? `http://${lan.address}:${address.port}` : null,
     seen,
     close: async () => {
+      server.closeAllConnections();
       server.close();
       await once(server, "close");
     },
@@ -134,30 +135,33 @@ test("mixed-case and repeated marker headers are all removed", async () => {
 // these headers and is not detectable here; see Risk C in
 // docs/residual-risk-decision.md.
 test("a self-identifying proxy is refused before the handler runs", async () => {
-  for (const header of [
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-real-ip",
-    "forwarded",
-  ]) {
-    const harness = await startHarness();
-    try {
+  // One harness for all six headers: a server per header burns ephemeral
+  // ports for no extra coverage, since the handler must stay untouched.
+  const harness = await startHarness();
+  try {
+    for (const header of [
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-proto",
+      "x-forwarded-port",
+      "x-real-ip",
+      "forwarded",
+    ]) {
       const response = await fetch(harness.url, {
         headers: { [header]: "203.0.113.9" },
       });
 
       assert.equal(response.status, 403, `${header} should be refused`);
       assert.deepEqual(await response.json(), { error: "forwarded_request" });
-      assert.equal(
-        harness.seen.length,
-        0,
-        `${header} must not reach the handler`,
-      );
-    } finally {
-      await harness.close();
     }
+
+    assert.equal(
+      harness.seen.length,
+      0,
+      "no proxied request may reach the handler",
+    );
+  } finally {
+    await harness.close();
   }
 });
 
