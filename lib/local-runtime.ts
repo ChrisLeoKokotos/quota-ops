@@ -50,3 +50,16 @@ export function totalLoadedVram(
   }
   return loaded.reduce((sum, model) => sum + (model.vramBytes ?? 0), 0);
 }
+
+/**
+ * Runtime availability is only as fresh as the collector connection that
+ * reported it. When the collector is unreachable or still being checked,
+ * current availability cannot be verified, so a previously online snapshot
+ * must not keep claiming the runtime is up.
+ */
+export function runtimesForDisplay(
+  snapshots: LocalRuntimeSnapshot[],
+  collectorState: "checking" | "connected" | "offline",
+): LocalRuntimeSnapshot[] {
+  return collectorState === "connected" ? snapshots : [];
+}

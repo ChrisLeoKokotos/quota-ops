@@ -34,6 +34,7 @@ import {
 } from "@/lib/token-analytics";
 import {
   formatBytes,
+  runtimesForDisplay,
   totalLoadedVram,
   type LocalRuntimeSnapshot,
 } from "@/lib/local-runtime";
@@ -1548,7 +1549,9 @@ export function QuotaDashboard() {
             onRangeChange={setTokenRange}
           />
 
-          <LocalRuntimesPanel runtimes={localRuntimes} />
+          <LocalRuntimesPanel
+            runtimes={runtimesForDisplay(localRuntimes, collectorState)}
+          />
 
           {collectorIssues.length > 0 ? (
             <div className="notice" role="status">

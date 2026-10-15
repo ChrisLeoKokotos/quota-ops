@@ -5,7 +5,12 @@ import {
   parseOllamaModels,
   parseOllamaVersion,
 } from "../collector/ollama.ts";
-import { formatBytes, totalLoadedVram } from "../lib/local-runtime.ts";
+import {
+  formatBytes,
+  runtimesForDisplay,
+  totalLoadedVram,
+  type LocalRuntimeSnapshot,
+} from "../lib/local-runtime.ts";
 
 test("merges installed and running Ollama models without inventing quota", () => {
   const models = parseOllamaModels(
@@ -119,4 +124,23 @@ test("VRAM cannot be totaled when some loaded model VRAM is unavailable", () => 
   const knownVramModel = models.find((model) => model.name === "qwen3:8b");
   assert.ok(knownVramModel);
   assert.equal(totalLoadedVram([knownVramModel], 1), 1_000);
+});
+
+test("a disconnected collector stops the runtime panel claiming availability", () => {
+  const online: LocalRuntimeSnapshot = {
+    runtime: "ollama",
+    label: "Ollama",
+    state: "online",
+    version: "0.6.2",
+    checkedAt: "2026-10-15T09:00:00.000Z",
+    models: [],
+    installedModelCount: 3,
+    loadedModelCount: 1,
+    message: null,
+  };
+
+  assert.deepEqual(runtimesForDisplay([online], "connected"), [online]);
+  // Availability cannot be verified without the collector that reported it.
+  assert.deepEqual(runtimesForDisplay([online], "offline"), []);
+  assert.deepEqual(runtimesForDisplay([online], "checking"), []);
 });
