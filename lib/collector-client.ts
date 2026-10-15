@@ -110,7 +110,8 @@ function isTokenSourceStatus(value: unknown): value is TokenSourceStatus {
     (item.provider === "claude" || item.provider === "openai") &&
     (item.state === "ok" ||
       item.state === "not_found" ||
-      item.state === "partial") &&
+      item.state === "partial" ||
+      item.state === "disabled") &&
     typeof item.files === "number" &&
     Number.isFinite(item.files) &&
     item.files >= 0 &&

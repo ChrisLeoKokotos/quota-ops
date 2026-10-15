@@ -68,7 +68,7 @@ async function main(): Promise<void> {
       // Session history may contain private prompts and source code.
       // Never read it in the background without local opt-in.
       tokenAnalytics = current.tokenAnalyticsEnabled
-        ? await collectLocalTokenAnalytics()
+        ? await collectLocalTokenAnalytics(current.tokenAnalyticsSources)
         : null;
     } finally {
       collecting = false;

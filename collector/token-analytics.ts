@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { Provider } from "../lib/quota.ts";
+import type { TokenAnalyticsConsent } from "./types.ts";
 import { readBoundedJsonl } from "./bounded-jsonl.ts";
 import {
   addTokenTotals,
@@ -589,8 +590,37 @@ function sourceStatus(result: ScanResult): TokenSourceStatus {
   };
 }
 
-export async function collectLocalTokenAnalytics(): Promise<TokenAnalyticsSnapshot> {
-  const scans = await Promise.all([scanClaudeCode(), scanCodex()]);
+/**
+ * Each source is read only with its own recorded consent. A source the user
+ * has not consented to is reported `disabled`, never `not_found`: QuotaOps
+ * did not look, so it must not imply it looked and found nothing.
+ */
+function disabledSource(
+  source: TokenSourceStatus["source"],
+  provider: Provider,
+): TokenSourceStatus {
+  const label = source === "claude-code" ? "Claude Code" : "Codex";
+  return {
+    source,
+    provider,
+    state: "disabled",
+    files: 0,
+    message: `${label} history scanning is turned off. QuotaOps did not read these files.`,
+  };
+}
+
+export async function collectLocalTokenAnalytics(
+  consent: TokenAnalyticsConsent,
+): Promise<TokenAnalyticsSnapshot> {
+  const [claudeScan, codexScan] = await Promise.all([
+    consent.claudeCode ? scanClaudeCode() : null,
+    consent.codex ? scanCodex() : null,
+  ]);
+
+  const scans = [claudeScan, codexScan].filter(
+    (scan): scan is ScanResult => scan !== null,
+  );
+
   let totals = emptyTokenTotals();
   const providers: ProviderTokenTotals[] = [];
   const daily = new Map<string, MutableDailyBucket>();
@@ -621,6 +651,11 @@ export async function collectLocalTokenAnalytics(): Promise<TokenAnalyticsSnapsh
     a.date.localeCompare(b.date) || a.provider.localeCompare(b.provider),
   );
 
+  const sources: TokenSourceStatus[] = [
+    claudeScan ? sourceStatus(claudeScan) : disabledSource("claude-code", "claude"),
+    codexScan ? sourceStatus(codexScan) : disabledSource("codex", "openai"),
+  ];
+
   return {
     generatedAt: new Date().toISOString(),
     scope: "locally_observed",
@@ -629,6 +664,6 @@ export async function collectLocalTokenAnalytics(): Promise<TokenAnalyticsSnapsh
       (a, b) => b.totals.totalTokens - a.totals.totalTokens,
     ),
     daily: dailyBuckets,
-    sources: scans.map(sourceStatus),
+    sources,
   };
 }
