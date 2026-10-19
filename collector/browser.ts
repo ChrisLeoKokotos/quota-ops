@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import { parseVisibleClaudeUsagePanel } from "./visible-usage.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -244,7 +245,10 @@ async function collectUsageFromRealPageRequests(
     if (parsed) usageByOrganization.set(organizationId, parsed);
   };
 
-  page.on("response", onResponse);
+  // Context-level responses include requests driven by service workers or other
+  // frames which a page-only listener can miss. Still filter by exact Claude
+  // origin and organization endpoint before parsing.
+  page.context().on("response", onResponse);
 
   try {
     await page.goto(CLAUDE_USAGE_URL, {
@@ -327,7 +331,31 @@ async function collectUsageFromRealPageRequests(
       reason: "claude_page_api_not_observed",
     };
   } finally {
-    page.off("response", onResponse);
+    page.context().off("response", onResponse);
+  }
+}
+
+/**
+ * Fallback for a real, visibly rendered Settings > Usage panel when the page's
+ * API response was not observable. Read only the bounded quota panel into the
+ * local process; do not serialize whole-page text, cookies or browser state.
+ * A changed/ambiguous UI returns null instead of invented quota values.
+ */
+async function readVisibleUsagePanel(
+  page: Page,
+): Promise<ReturnType<typeof parseVisibleClaudeUsagePanel>> {
+  try {
+    const panel = await page.evaluate(() => {
+      const text = document.body?.innerText ?? "";
+      const start = text.indexOf("Your usage limits");
+      if (start < 0) return null;
+      const end = text.indexOf("Limit resets", start);
+      if (end < 0 || end + "Limit resets".length - start > 4096) return null;
+      return text.slice(start, end + "Limit resets".length);
+    });
+    return parseVisibleClaudeUsagePanel(panel);
+  } catch {
+    return null;
   }
 }
 
@@ -385,7 +413,23 @@ async function collectFromContext(
     );
   }
 
-  if (!collected.parsed) {
+  let usage = collected.parsed;
+  let sourceMessage: string | null = null;
+  if (
+    !usage &&
+    (collected.reason === "claude_page_api_not_observed" ||
+      collected.reason === "usage_response_not_observed")
+  ) {
+    // Only accept both percentages from the authenticated Usage panel itself.
+    // No relative reset strings are converted to absolute timestamps.
+    usage = await readVisibleUsagePanel(page);
+    if (usage) {
+      sourceMessage =
+        "Usage percentages read from the visible Claude page; precise reset timestamps unavailable.";
+    }
+  }
+
+  if (!usage) {
     return result(
       account,
       "unsupported",
@@ -394,7 +438,7 @@ async function collectFromContext(
   }
 
   const checkedAt = new Date().toISOString();
-  return result(account, "ok", null, checkedAt, {
+  return result(account, "ok", sourceMessage, checkedAt, {
     id: account.id,
     label: account.label,
     provider: "claude",
@@ -403,12 +447,12 @@ async function collectFromContext(
       {
         id: "five-hour",
         label: "5-hour",
-        ...collected.parsed.fiveHour,
+        ...usage.fiveHour,
       },
       {
         id: "weekly",
         label: "Weekly",
-        ...collected.parsed.weekly,
+        ...usage.weekly,
       },
     ],
     updatedAt: checkedAt,
@@ -457,10 +501,13 @@ export async function openClaudeLogin(
  */
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
+  options: { visible?: boolean } = {},
 ): Promise<CollectorAccountResult> {
   let context: BrowserContext | null = null;
   try {
-    context = await launchProfile(account, true);
+    // Only a user-invoked diagnostic run uses visible mode. Never pop up
+    // login windows automatically during background collection.
+    context = await launchProfile(account, !options.visible);
     return await collectFromContext(account, context);
   } catch {
     return result(
