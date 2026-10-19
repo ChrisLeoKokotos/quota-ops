@@ -9,6 +9,13 @@ shows real quotas in Settings > Usage.
 - Claude response interception is attached to the Playwright **browser context**
   rather than only one page. The parser still accepts only the exact
   `claude.ai` organization/usage endpoint.
+- **Owner E2E evidence:** Windows `collect dev-1` in headless mode still
+  returned `unsupported`, while `collect dev-1 --visible` returned `ok`,
+  both values at 100%, with real reset timestamps. Therefore regular Windows
+  collection now uses headed Chrome/Edge with minimized/offscreen window flags,
+  as a testable hypothesis, rather than the failing headless launch. This is
+  normal authenticated page loading, **not** a challenge or auth bypass.
+  Offscreen behavior still requires real-world confirmation.
 - If that response is not observable, the collector checks the freshly rendered
   Settings > Usage panel, within the *same authenticated browser profile*.
   Only a complete, labelled **Current session** and **All models** percentage
@@ -23,6 +30,10 @@ shows real quotas in Settings > Usage.
 
 First, close any QuotaOps-owned browser window opened by `login` and stop the
 background collector temporarily so the same Chrome profile is not in use.
+After updating the branch, run `npm run typecheck` and `npm test` before E2E.
+On Windows the default command now launches normal Chrome/Edge in a minimized,
+offscreen mode. A brief window flash may still occur; do not assume invisible
+collection is guaranteed on all machines.
 
 In the VS Code terminal:
 
