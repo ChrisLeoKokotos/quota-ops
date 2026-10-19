@@ -1,3 +1,5 @@
+import type { ParsedUsage } from "./usage-parser.ts";
+
 /**
  * Conservative last-resort parser for the visible Claude Settings > Usage panel.
  *
@@ -75,10 +77,10 @@ export type ClaudeUsageSource = "api" | "visible" | null;
  * the expected API response was absent. Tests inject the panel reader.
  */
 export async function selectClaudeUsageSource(
-  apiUsage: VisibleClaudeUsage | null,
+  apiUsage: ParsedUsage | null,
   reason: string | null,
   readVisiblePanel: () => Promise<VisibleClaudeUsage | null>,
-): Promise<{ usage: VisibleClaudeUsage | null; source: ClaudeUsageSource }> {
+): Promise<{ usage: ParsedUsage | null; source: ClaudeUsageSource }> {
   if (apiUsage) return { usage: apiUsage, source: "api" };
 
   if (reason !== "claude_page_api_not_observed" &&
