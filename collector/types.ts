@@ -15,10 +15,18 @@ export interface CollectorAccountConfig {
   enabled: boolean;
 }
 
+export interface TokenAnalyticsConsent {
+  claudeCode: boolean;
+  codex: boolean;
+}
+
 export interface CollectorConfig {
   version: 1;
   port: number;
   pollIntervalSeconds: number;
+  tokenAnalyticsEnabled: boolean;
+  /** Per-source consent. Reading either source exposes private history. */
+  tokenAnalyticsSources: TokenAnalyticsConsent;
   accounts: CollectorAccountConfig[];
 }
 
@@ -35,5 +43,5 @@ export interface CollectorSnapshotResponse {
   version: 1;
   generatedAt: string;
   accounts: CollectorAccountResult[];
-  tokens: TokenAnalyticsSnapshot;
+  tokens: TokenAnalyticsSnapshot | null;
 }

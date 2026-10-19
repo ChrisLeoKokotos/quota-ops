@@ -1,3 +1,4 @@
+import { getDesktopBridge } from "./collector-transport.ts";
 import type { QuotaAccount } from "./quota";
 import type {
   DailyTokenBucket,
@@ -110,7 +111,8 @@ function isTokenSourceStatus(value: unknown): value is TokenSourceStatus {
     (item.provider === "claude" || item.provider === "openai") &&
     (item.state === "ok" ||
       item.state === "not_found" ||
-      item.state === "partial") &&
+      item.state === "partial" ||
+      item.state === "disabled") &&
     typeof item.files === "number" &&
     Number.isFinite(item.files) &&
     item.files >= 0 &&
@@ -139,26 +141,82 @@ function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
   return item as TokenAnalyticsSnapshot;
 }
 
-export async function fetchCollectorSnapshot(
+/**
+ * QO-SEC-01: the dashboard presents a server-minted capability rather than a
+ * static client marker. The capability is only obtainable through the trusted
+ * loopback server, and it is refreshed once when it expires so a long-running
+ * tab does not silently fall back to an unauthorized state.
+ */
+let cachedCapability: string | null = null;
+
+async function requestCapability(signal?: AbortSignal): Promise<string> {
+  const init: RequestInit = { method: "GET", cache: "no-store" };
+  if (signal) init.signal = signal;
+
+  const response = await fetch(`${COLLECTOR_URL}/capability`, init);
+  if (!response.ok) {
+    throw new Error(`Dashboard capability unavailable (HTTP ${response.status})`);
+  }
+
+  const payload = (await response.json()) as { capability?: unknown };
+  if (typeof payload.capability !== "string" || payload.capability.length === 0) {
+    throw new Error("Dashboard capability response was malformed.");
+  }
+
+  cachedCapability = payload.capability;
+  return payload.capability;
+}
+
+async function requestSnapshot(
+  capability: string,
   signal?: AbortSignal,
-): Promise<CollectorSnapshot> {
+): Promise<Response> {
   const init: RequestInit = {
     method: "GET",
     cache: "no-store",
-    headers: {
-      "X-QuotaOps-Client": "dashboard",
-    },
+    headers: { "X-QuotaOps-Capability": capability },
   };
   if (signal) init.signal = signal;
 
-  const response = await fetch(`${COLLECTOR_URL}/snapshot`, init);
+  return fetch(`${COLLECTOR_URL}/snapshot`, init);
+}
+
+/**
+ * Fetches the raw snapshot payload over whichever transport is available.
+ *
+ * On the desktop the preload bridge answers and no HTTP request is made: the
+ * renderer never holds the collector's bearer token and there is no dashboard
+ * listener to reach. In the browser the existing capability-gated loopback
+ * path runs unchanged.
+ */
+async function fetchSnapshotPayload(signal?: AbortSignal): Promise<unknown> {
+  const bridge = getDesktopBridge();
+  if (bridge) return bridge.getSnapshot();
+
+  const capability = cachedCapability ?? (await requestCapability(signal));
+  let response = await requestSnapshot(capability, signal);
+
+  if (response.status === 403) {
+    // The capability expired or the process restarted; mint exactly one more.
+    cachedCapability = null;
+    response = await requestSnapshot(await requestCapability(signal), signal);
+  }
 
   if (!response.ok) {
     throw new Error(`Collector returned HTTP ${response.status}`);
   }
 
-  const payload = (await response.json()) as CollectorSnapshotResponse;
-  if (payload.version !== 1 || !Array.isArray(payload.accounts)) {
+  return response.json();
+}
+
+export async function fetchCollectorSnapshot(
+  signal?: AbortSignal,
+): Promise<CollectorSnapshot> {
+  const payload = (await fetchSnapshotPayload(signal)) as CollectorSnapshotResponse;
+
+  // The payload is validated identically on both transports: the desktop
+  // bridge is trusted to deliver it, not to have checked it.
+  if (!payload || payload.version !== 1 || !Array.isArray(payload.accounts)) {
     throw new Error("Collector returned an unsupported response.");
   }
 
