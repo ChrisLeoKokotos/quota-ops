@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseVisibleClaudeUsagePanel } from "../collector/visible-usage.ts";
+import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "../collector/visible-usage.ts";
 
 const observedPanel = `Your usage limits Team
 Current session
@@ -54,4 +54,57 @@ test("does not borrow a percentage from a different weekly model or reset panel"
 
 test("rejects excessive input rather than scanning arbitrary private page text", () => {
   assert.equal(parseVisibleClaudeUsagePanel(observedPanel + "x".repeat(4096)), null);
+});
+
+test("uses API data without attempting a DOM fallback", async () => {
+  const api = parseVisibleClaudeUsagePanel(observedPanel);
+  assert.ok(api);
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(api, null, async () => {
+    reads++;
+    return null;
+  });
+  assert.equal(selected.source, "api");
+  assert.deepEqual(selected.usage, api);
+  assert.equal(reads, 0);
+});
+
+test("uses a strict visible panel only if the expected API was not observed", async () => {
+  const panel = parseVisibleClaudeUsagePanel(observedPanel);
+  assert.ok(panel);
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(
+    null, "claude_page_api_not_observed", async () => {
+      reads++;
+      return panel;
+    },
+  );
+  assert.equal(selected.source, "visible");
+  assert.deepEqual(selected.usage, panel);
+  assert.equal(reads, 1);
+});
+
+test("an ambiguous API organization never triggers a fallback to possibly wrong quota", async () => {
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(
+    null, "usage_org_ambiguous", async () => {
+      reads++;
+      return parseVisibleClaudeUsagePanel(observedPanel);
+    },
+  );
+  assert.deepEqual(selected, { usage: null, source: null });
+  assert.equal(reads, 0);
+});
+
+test("an invalid or failed visible page remains unknown, never 0%", async () => {
+  const invalid = await selectClaudeUsageSource(
+    null, "claude_page_api_not_observed", async () => null,
+  );
+  assert.deepEqual(invalid, { usage: null, source: null });
+  const failed = await selectClaudeUsageSource(
+    null, "usage_response_not_observed", async () => {
+      throw new Error("simulated browser failure");
+    },
+  );
+  assert.deepEqual(failed, { usage: null, source: null });
 });
