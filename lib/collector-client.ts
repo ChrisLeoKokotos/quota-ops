@@ -1,3 +1,4 @@
+import { getDesktopBridge } from "./collector-transport.ts";
 import type { QuotaAccount } from "./quota";
 import type {
   DailyTokenBucket,
@@ -180,9 +181,18 @@ async function requestSnapshot(
   return fetch(`${COLLECTOR_URL}/snapshot`, init);
 }
 
-export async function fetchCollectorSnapshot(
-  signal?: AbortSignal,
-): Promise<CollectorSnapshot> {
+/**
+ * Fetches the raw snapshot payload over whichever transport is available.
+ *
+ * On the desktop the preload bridge answers and no HTTP request is made: the
+ * renderer never holds the collector's bearer token and there is no dashboard
+ * listener to reach. In the browser the existing capability-gated loopback
+ * path runs unchanged.
+ */
+async function fetchSnapshotPayload(signal?: AbortSignal): Promise<unknown> {
+  const bridge = getDesktopBridge();
+  if (bridge) return bridge.getSnapshot();
+
   const capability = cachedCapability ?? (await requestCapability(signal));
   let response = await requestSnapshot(capability, signal);
 
@@ -196,8 +206,17 @@ export async function fetchCollectorSnapshot(
     throw new Error(`Collector returned HTTP ${response.status}`);
   }
 
-  const payload = (await response.json()) as CollectorSnapshotResponse;
-  if (payload.version !== 1 || !Array.isArray(payload.accounts)) {
+  return response.json();
+}
+
+export async function fetchCollectorSnapshot(
+  signal?: AbortSignal,
+): Promise<CollectorSnapshot> {
+  const payload = (await fetchSnapshotPayload(signal)) as CollectorSnapshotResponse;
+
+  // The payload is validated identically on both transports: the desktop
+  // bridge is trusted to deliver it, not to have checked it.
+  if (!payload || payload.version !== 1 || !Array.isArray(payload.accounts)) {
     throw new Error("Collector returned an unsupported response.");
   }
 

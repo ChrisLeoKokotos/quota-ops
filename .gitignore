@@ -71,3 +71,7 @@ Thumbs.db
 
 # Rust build output for the desktop proof of concept
 desktop/tauri/target/
+
+# Desktop static export output
+desktop/static-dist/
+.next-static/
