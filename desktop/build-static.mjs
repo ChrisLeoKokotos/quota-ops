@@ -9,7 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,15 +18,58 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const apiDir = join(repo, "app", "api");
 const parked = join(repo, "app", "_api_excluded_from_static_build");
 
+/**
+ * Moves the API routes aside for the duration of the export, and always puts
+ * them back.
+ *
+ * The restore is gated on the parked directory existing, **not** on whether
+ * this run parked it. An earlier version gated on the latter, which made the
+ * mutation unrecoverable: if a run was interrupted after the rename — Ctrl-C
+ * during `next build`, a crash, an antivirus hold — the next run saw no
+ * `app/api`, parked nothing, succeeded, and restored nothing. `app/api` was
+ * then gone for good, and because `_`-prefixed folders are App Router private
+ * folders the web build kept succeeding while silently shipping without
+ * `/api/collector/snapshot` and `/api/collector/capability`.
+ *
+ * It also refuses to start when both directories exist, rather than failing
+ * mid-build: `rename` onto an existing directory is `EPERM` on Windows.
+ */
 async function withApiRoutesParked(run) {
-  const hadApi = existsSync(apiDir);
-  if (hadApi) await rename(apiDir, parked);
+  const apiExists = existsSync(apiDir);
+  const parkedExists = existsSync(parked);
+
+  if (apiExists && parkedExists) {
+    throw new Error(
+      `Both ${apiDir} and ${parked} exist. A previous build was interrupted. ` +
+        "Inspect them, keep the correct one, remove the other, then re-run.",
+    );
+  }
+
+  if (apiExists) await rename(apiDir, parked);
+
+  // A signal would otherwise skip the `finally` and leave the tree mutated.
+  const restoreSync = () => {
+    try {
+      if (existsSync(parked) && !existsSync(apiDir)) renameSync(parked, apiDir);
+    } catch {
+      process.stderr.write(`[static] could not restore ${apiDir}; restore it from git\n`);
+    }
+  };
+  const onSignal = (signal) => {
+    restoreSync();
+    process.exit(signal === "SIGINT" ? 130 : 1);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("exit", restoreSync);
+
   try {
-    return run();
+    return await run();
   } finally {
-    // Always restore, including on failure: leaving the tree mutated would
-    // silently break the web build and every test that imports those routes.
-    if (hadApi && existsSync(parked)) await rename(parked, apiDir);
+    if (existsSync(parked) && !existsSync(apiDir)) await rename(parked, apiDir);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.off("exit", restoreSync);
   }
 }
 

@@ -23,10 +23,12 @@ const { homedir } = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
+  MAX_ACCOUNTS,
   buildContentSecurityPolicy,
-  isAllowedExternalUrl,
   isTrustedIpcSender,
+  projectSnapshot,
   readBoundedBody,
+  resolveExternalUrl,
   resolveStaticAsset,
 } = require("./security.js");
 
@@ -74,9 +76,9 @@ async function collectorToken() {
 /**
  * The only privileged operation the renderer can trigger.
  *
- * Returns the collector's snapshot payload, or a shaped error. The token
- * stays in the main process; the renderer sees metrics and nothing else, and
- * no collector error text is reflected back to it.
+ * Returns a projected snapshot or a fixed error enum. The token stays in the
+ * main process, and the renderer receives only fields this module rebuilds —
+ * never the collector's own error text and never an unknown key.
  */
 async function readSnapshot() {
   let token;
@@ -138,15 +140,17 @@ async function readSnapshot() {
     return { error: "collector_invalid_response" };
   }
 
-  // The renderer is handed a shape it can rely on, not whatever arrived.
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { error: "collector_invalid_response" };
   }
   if (parsed.version !== 1 || !Array.isArray(parsed.accounts)) {
     return { error: "collector_invalid_response" };
   }
+  if (parsed.accounts.length > MAX_ACCOUNTS) {
+    return { error: "collector_invalid_response" };
+  }
 
-  return parsed;
+  return projectSnapshot(parsed);
 }
 
 /**
@@ -260,7 +264,11 @@ function createWindow() {
   // an unfiltered call lets the renderer invoke arbitrary protocol handlers.
   // Only https destinations are passed on; everything else is dropped.
   const openExternalIfAllowed = (target) => {
-    if (isAllowedExternalUrl(target)) void shell.openExternal(target);
+    // Pass the parsed form: `new URL()` strips tabs and leading whitespace and
+    // rewrites backslashes, so validating one spelling and handing ShellExecute
+    // another means the string checked is not the string executed.
+    const safe = resolveExternalUrl(target);
+    if (safe) void shell.openExternal(safe);
   };
 
   mainWindow.webContents.on("will-navigate", (event, target) => {
@@ -282,6 +290,32 @@ function createWindow() {
     event.preventDefault();
     mainWindow.hide();
   });
+
+  if (process.env.QUOTAOPS_CSP_PROBE) {
+    mainWindow.webContents.once("did-finish-load", async () => {
+      const probe = `(async () => {
+        const out = {};
+        try { await fetch("https://example.com", { signal: AbortSignal.timeout(2500) }); out.connect = "ALLOWED"; }
+        catch (error) { out.connect = "BLOCKED:" + String(error).slice(0, 60); }
+        try {
+          const el = document.createElement("script");
+          el.text = "window.__cspProbe = 1;";
+          document.body.appendChild(el);
+          out.inlineScript = window.__cspProbe === 1 ? "ALLOWED" : "BLOCKED";
+        } catch (error) { out.inlineScript = "THREW:" + String(error).slice(0, 40); }
+        out.metaCsp = document.querySelector('meta[http-equiv="Content-Security-Policy"]') ? "present" : "absent";
+        return JSON.stringify(out);
+      })()`;
+      try {
+        const result = await mainWindow.webContents.executeJavaScript(probe, true);
+        process.stdout.write(`[csp-probe] ${result}
+`);
+      } catch (error) {
+        process.stdout.write(`[csp-probe] failed: ${String(error).slice(0, 120)}
+`);
+      }
+    });
+  }
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();

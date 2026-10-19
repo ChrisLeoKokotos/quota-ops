@@ -13,6 +13,23 @@ const path = require("node:path");
 const ALLOWED_EXTERNAL_SCHEMES = new Set(["https:"]);
 
 /**
+ * Hosts the dashboard is allowed to open in the user's browser.
+ *
+ * **Currently empty, deliberately.** The dashboard contains no external links
+ * today, so nothing should ever reach `shell.openExternal`. An allowlist with
+ * no entries is the correct expression of that, and it closes a real hole: a
+ * scheme-only filter let a compromised renderer exfiltrate a snapshot by
+ * navigating to `https://attacker.test/?d=<data>`, which `will-navigate`
+ * would hand straight to ShellExecute. A top-level navigation needs no popup
+ * permission and no user gesture, so that was unlimited egress past
+ * `connect-src 'none'` — and it drove the user's own browser, where the
+ * provider sessions live.
+ *
+ * Add a host here only when the UI actually links to it.
+ */
+const ALLOWED_EXTERNAL_HOSTS = new Set([]);
+
+/**
  * Resolves a request path inside the packaged bundle, or refuses.
  *
  * `candidate.startsWith(root)` is **not** sufficient containment:
@@ -37,6 +54,13 @@ function resolveStaticAsset(root, pathname, options = {}) {
 
   // A NUL can truncate a path inside a native call.
   if (decoded.includes("\0")) return { ok: false, reason: "null_byte" };
+
+  // NTFS alternate data streams. "index.html:hidden" and "index.html::$DATA"
+  // both resolve to a real file inside the bundle, so containment still
+  // holds — but the stream spelling defeats any check keyed on the file name,
+  // and `realpath` preserves the suffix so the escape check cannot see past
+  // it. A colon has no legitimate use in a request path here.
+  if (decoded.includes(":")) return { ok: false, reason: "stream_suffix" };
 
   const trimmed = decoded.replace(/^[/\\]+/, "");
   const requested = trimmed === "" ? "index.html" : trimmed;
@@ -85,30 +109,40 @@ function isInside(root, candidate) {
 }
 
 /**
- * Decides whether a URL may be handed to the operating system.
+ * Decides whether a URL may be handed to the operating system, and returns
+ * the exact string to pass on.
  *
- * `shell.openExternal` launches whatever handler Windows has registered, so
- * an unfiltered call lets a compromised renderer invoke arbitrary protocol
- * handlers. Only https is allowed: the dashboard has no reason to open
- * anything else, and a narrow list is the only kind that stays correct.
+ * Returning the parsed form matters: `new URL()` strips ASCII tabs and
+ * leading whitespace and rewrites backslashes, so validating one spelling and
+ * then passing the raw one to ShellExecute means the thing checked is not the
+ * thing executed. `"ht<tab>tps://evil.test/"` parses as https but is not what
+ * the caller held.
  */
-function isAllowedExternalUrl(value) {
-  if (typeof value !== "string" || value.length === 0) return false;
-  if (value.length > 2048) return false;
-  if (/[\0\r\n]/.test(value)) return false;
+function resolveExternalUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  if (value.length > 2048) return null;
+  if (/[\0\r\n\t\u0000-\u0020]/.test(value)) return null;
 
   let parsed;
   try {
     parsed = new URL(value);
   } catch {
-    return false;
+    return null;
   }
 
-  if (!ALLOWED_EXTERNAL_SCHEMES.has(parsed.protocol)) return false;
-  // A credentialed URL in a link is far more likely to be an attack than a
+  if (!ALLOWED_EXTERNAL_SCHEMES.has(parsed.protocol)) return null;
+  // A credentialed URL in a link is far likelier to be an attack than a
   // legitimate destination.
-  if (parsed.username !== "" || parsed.password !== "") return false;
-  return parsed.hostname.length > 0;
+  if (parsed.username !== "" || parsed.password !== "") return null;
+  if (parsed.hostname.length === 0) return null;
+  if (!ALLOWED_EXTERNAL_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+
+  return parsed.href;
+}
+
+/** Back-compat predicate; prefer `resolveExternalUrl`, which returns the URL. */
+function isAllowedExternalUrl(value) {
+  return resolveExternalUrl(value) !== null;
 }
 
 /**
@@ -126,11 +160,19 @@ function isTrustedIpcSender(event, expected) {
   if (sender.id !== expected.webContentsId) return false;
   if (typeof sender.isDestroyed === "function" && sender.isDestroyed()) return false;
 
-  // Only the main frame may call. A subframe has a parent.
+  // Only the main frame may call. Electron documents `senderFrame` as
+  // possibly null once a frame has navigated or been destroyed, so an absent
+  // frame must be refused outright: treating it as "no frame to object to"
+  // skips the parent and origin checks and leaves only the WebContents id,
+  // which every frame in the window shares.
   const frame = event.senderFrame;
-  if (frame) {
+  if (!frame) return false;
+  {
     if (frame.parent) return false;
-    if (typeof frame.url === "string" && frame.url.length > 0) {
+    // An empty URL cannot be matched against the expected origin, so it is
+    // refused rather than waved through.
+    if (typeof frame.url !== "string" || frame.url.length === 0) return false;
+    {
       // `URL.origin` is the string "null" for a non-special scheme such as
       // app:, so comparing origins would reject the application's own frame
       // and accept any other custom-scheme frame. Compare the parts instead.
@@ -212,12 +254,87 @@ function buildContentSecurityPolicy(scriptHashes = []) {
   ].join("; ");
 }
 
+const MAX_ACCOUNTS = 64;
+const MAX_WINDOWS_PER_ACCOUNT = 16;
+
+/** Truncates a collector-supplied string, or drops it if it is not one. */
+function boundedText(value, maxLength) {
+  if (typeof value !== "string") return null;
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
+}
+
+/**
+ * Rebuilds the snapshot field by field before it crosses IPC.
+ *
+ * An earlier version returned `parsed` whole while a comment claimed the
+ * renderer was handed "a shape it can rely on". It was not: every
+ * collector-controlled string and any extra key travelled verbatim. Nothing
+ * authenticates the peer on 127.0.0.1:4317, so a local process that binds the
+ * port first controls the renderer's entire input.
+ *
+ * React escapes text, so this is not an XSS fix. It bounds what an
+ * impersonating peer can put in front of the user, and keeps unknown keys out
+ * of the renderer entirely.
+ */
+function projectSnapshot(parsed) {
+  return {
+    version: 1,
+    generatedAt: boundedText(parsed.generatedAt, 64),
+    accounts: parsed.accounts.slice(0, MAX_ACCOUNTS).map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const account =
+        source.account && typeof source.account === "object" ? source.account : null;
+
+      return {
+        id: boundedText(source.id, 64),
+        label: boundedText(source.label, 128),
+        status: boundedText(source.status, 32),
+        checkedAt: boundedText(source.checkedAt, 64),
+        message: boundedText(source.message, 512),
+        account: account
+          ? {
+              id: boundedText(account.id, 64),
+              label: boundedText(account.label, 128),
+              provider: boundedText(account.provider, 32),
+              plan: boundedText(account.plan, 64),
+              email: boundedText(account.email, 128),
+              updatedAt: boundedText(account.updatedAt, 64),
+              windows: Array.isArray(account.windows)
+                ? account.windows.slice(0, MAX_WINDOWS_PER_ACCOUNT).map((candidate) => {
+                    const window =
+                      candidate && typeof candidate === "object" ? candidate : {};
+                    return {
+                      id: boundedText(window.id, 64),
+                      label: boundedText(window.label, 128),
+                      usedPercent:
+                        typeof window.usedPercent === "number" &&
+                        Number.isFinite(window.usedPercent)
+                          ? window.usedPercent
+                          : null,
+                      resetAt: boundedText(window.resetAt, 64),
+                    };
+                  })
+                : [],
+            }
+          : null,
+      };
+    }),
+    // Token analytics are numeric aggregates, and the client's own parser
+    // drops the whole block if any field is wrong.
+    tokens: parsed.tokens && typeof parsed.tokens === "object" ? parsed.tokens : null,
+  };
+}
+
 module.exports = {
+  MAX_ACCOUNTS,
+  projectSnapshot,
+  ALLOWED_EXTERNAL_HOSTS,
   buildContentSecurityPolicy,
   ALLOWED_EXTERNAL_SCHEMES,
   isAllowedExternalUrl,
   isInside,
   isTrustedIpcSender,
   readBoundedBody,
+  resolveExternalUrl,
   resolveStaticAsset,
 };
