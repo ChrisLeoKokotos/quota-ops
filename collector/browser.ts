@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import { claudeLaunchMode } from "./claude-launch-mode.ts";
 import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
@@ -99,16 +100,17 @@ async function openInteractiveWindowsLogin(
 
 async function launchProfile(
   account: CollectorAccountConfig,
-  headless: boolean,
+  visible: boolean,
 ): Promise<BrowserContext> {
   await assertSafeProfileDirectory(account.profileDir);
+  const mode = claudeLaunchMode(process.platform, visible);
 
   const options = {
-    headless,
+    headless: mode.headless,
     viewport: { width: 1280, height: 900 },
     acceptDownloads: false,
     chromiumSandbox: true,
-    args: ["--disable-extensions"],
+    args: mode.args,
   };
 
   try {
@@ -461,7 +463,7 @@ export async function openClaudeLogin(
     return;
   }
 
-  const context = await launchProfile(account, false);
+  const context = await launchProfile(account, true);
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(CLAUDE_USAGE_URL, {
@@ -490,8 +492,10 @@ export async function openClaudeLogin(
  * unauthenticated loopback DevTools HTTP port. The authenticated profile stays
  * on this machine and is always closed after each collection.
  *
- * The Windows headless path requires real-account E2E validation before
- * considering this a production release.
+ * Real-account E2E showed Claude Usage working with headed Chromium while
+ * Windows headless collection missed the Usage API. The default Windows mode
+ * now uses the normal headed Chromium launched minimized/offscreen; whether
+ * that mode behaves identically still needs explicit Windows E2E validation.
  */
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
@@ -499,9 +503,9 @@ export async function collectClaudeUsageFromBrowser(
 ): Promise<CollectorAccountResult> {
   let context: BrowserContext | null = null;
   try {
-    // Only a user-invoked diagnostic run uses visible mode. Never pop up
-    // login windows automatically during background collection.
-    context = await launchProfile(account, !options.visible);
+    // On Windows normal collection uses headed Chrome/Edge minimized/offscreen.
+    // --visible is only for explicit user diagnostics; no automated login.
+    context = await launchProfile(account, options.visible === true);
     return await collectFromContext(account, context);
   } catch {
     return result(
