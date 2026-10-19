@@ -31,6 +31,7 @@ const {
   resolveExternalUrl,
   resolveStaticAsset,
 } = require("./security.js");
+const { RefreshScheduler } = require("./scheduler.js");
 
 const STATIC_ROOT = path.join(__dirname, "..", "static-dist");
 const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
@@ -45,6 +46,7 @@ let cachedToken = null;
 let quitting = false;
 /** Identity the IPC handler checks every sender against. */
 let trustedSender = null;
+let scheduler = null;
 /** One snapshot request at a time; the rest observe the result. */
 let inFlightSnapshot = null;
 let lastSnapshotAt = 0;
@@ -331,26 +333,83 @@ function createWindow() {
   void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 }
 
+function formatLastUpdate(status) {
+  if (!status || status.lastSuccessAt === null) return "Last update: never";
+  const minutes = Math.floor((status.ageMs ?? 0) / 60_000);
+  const when =
+    minutes < 1 ? "just now" : minutes === 1 ? "1 minute ago" : `${minutes} minutes ago`;
+  // Say "stale" rather than only showing a time: a reader given a timestamp
+  // alone treats it as current, which is the thing to avoid.
+  return status.stale ? `Last update: ${when} (stale)` : `Last update: ${when}`;
+}
+
+function buildTrayMenu() {
+  const status = scheduler ? scheduler.status() : null;
+  const paused = status?.paused ?? false;
+
+  return Menu.buildFromTemplate([
+    { label: "Open QuotaOps", click: () => showWindow() },
+    { type: "separator" },
+    {
+      label: status?.running ? "Refreshing..." : "Refresh now",
+      enabled: !status?.running,
+      click: () => {
+        void scheduler?.refresh({ force: true }).then(refreshTray);
+      },
+    },
+    {
+      label: paused ? "Resume monitoring" : "Pause monitoring",
+      click: () => {
+        if (!scheduler) return;
+        if (paused) scheduler.resume();
+        else scheduler.pause();
+        refreshTray();
+      },
+    },
+    { type: "separator" },
+    { label: formatLastUpdate(status), enabled: false },
+    {
+      label: paused ? "Monitoring paused" : "Monitoring active",
+      enabled: false,
+    },
+    { type: "separator" },
+    { label: "Settings", click: () => showWindow() },
+    {
+      label: "Quit",
+      click: () => {
+        quitting = true;
+        scheduler?.cancel();
+        app.quit();
+      },
+    },
+  ]);
+}
+
+function refreshTray() {
+  if (!tray) return;
+  tray.setContextMenu(buildTrayMenu());
+  const status = scheduler ? scheduler.status() : null;
+  tray.setToolTip(status?.paused ? "QuotaOps (paused)" : "QuotaOps");
+}
+
+function showWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function createTray() {
   tray = new Tray(path.join(__dirname, "icon.ico"));
-  tray.setToolTip("QuotaOps");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Open QuotaOps", click: () => mainWindow?.show() },
-      { type: "separator" },
-      {
-        label: "Quit",
-        click: () => {
-          quitting = true;
-          app.quit();
-        },
-      },
-    ]),
-  );
+  refreshTray();
   tray.on("click", () => {
     if (mainWindow?.isVisible()) mainWindow.hide();
-    else mainWindow?.show();
+    else showWindow();
   });
+
+  // The menu shows live state, so it is rebuilt on a slow tick rather than
+  // only when something is clicked.
+  setInterval(refreshTray, 30_000).unref();
 }
 
 app.whenReady().then(() => {
@@ -393,8 +452,25 @@ app.whenReady().then(() => {
     return inFlightSnapshot;
   });
 
+  scheduler = new RefreshScheduler({
+    collect: async () => {
+      const result = await readSnapshot();
+      // An error payload is a failed collection, not a successful one that
+      // happens to contain an error: treating it as success would reset the
+      // backoff and mark the data fresh.
+      if (result && result.error) throw new Error(result.error);
+      return result;
+    },
+  });
+
   createWindow();
   createTray();
+
+  // Drive the schedule from one timer; the scheduler decides whether a tick
+  // is due, so the interval here is only a resolution, not a policy.
+  setInterval(() => {
+    if (scheduler?.isDue()) void scheduler.refresh().then(refreshTray);
+  }, 15_000).unref();
 
   // Hiding to tray leaves no window open, which would otherwise quit the app.
   app.on("window-all-closed", () => {
@@ -404,4 +480,5 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   quitting = true;
+  scheduler?.cancel();
 });
