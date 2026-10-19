@@ -21,11 +21,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "lib/verification.ps1")
 $results = [System.Collections.ArrayList]::new()
 
 function Record([string]$Id, [string]$Name, [string]$Status, [string]$Detail = "") {
   [void]$results.Add([pscustomobject]@{ id = $Id; name = $Name; status = $Status; detail = $Detail })
-  $colour = switch ($Status) { "PASS" { "Green" } "FAIL" { "Red" } "SKIP" { "DarkGray" } default { "Yellow" } }
+  $colour = switch ($Status) {
+    "PASS" { "Green" }
+    "FAIL" { "Red" }
+    "SKIP" { "DarkGray" }
+    "INCONCLUSIVE" { "Magenta" }
+    default { "Yellow" }
+  }
   Write-Host ("  {0,-8} {1,-46} {2}" -f $Status, $Name, $Detail) -ForegroundColor $colour
 }
 
@@ -67,14 +74,22 @@ Try-Step "auto.typecheck" "TypeScript typecheck" {
   } finally { Pop-Location }
 }
 
-Try-Step "auto.tests" "Unit and security test suite" {
+# Not Try-Step: the result is a status, not a pass-or-throw.
+Push-Location $repo
+try {
+  $run = Invoke-Checked { npm test }
+  $summary = Read-TestSummary -Output $run.output -ExitCode $run.exitCode
+  Record "auto.tests" "Unit and security test suite" $summary.status $summary.detail
+} finally { Pop-Location }
+
+Try-Step "auto.verification" "Verification primitives self-test" {
   Push-Location $repo
   try {
-    $output = & npm test 2>&1 | Out-String
-    $pass = [regex]::Match($output, '# pass (\d+)').Groups[1].Value
-    $fail = [regex]::Match($output, '# fail (\d+)').Groups[1].Value
-    if ($fail -ne "0") { throw "$fail test(s) failed" }
-    "$pass passed, 0 failed"
+    $run = Invoke-Checked { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lib/verification.tests.ps1 }
+    if ($run.exitCode -ne 0) { throw "the verification harness reported failures" }
+    $count = ([regex]::Matches($run.output, '(?m)^ok ')).Count
+    if ($count -lt 1) { throw "the verification harness produced no results" }
+    "$count case(s) verified"
   } finally { Pop-Location }
 }
 
@@ -182,13 +197,22 @@ Try-Step "e2e07.acl" "QuotaOps home is not world-readable" {
 # --- network boundary --------------------------------------------------------
 Write-Host "`nNetwork boundary"
 
-Try-Step "net.collector-port" "Collector port is loopback-only when listening" {
-  $listeners = @(Get-NetTCPConnection -LocalPort 4317 -State Listen -ErrorAction SilentlyContinue)
-  if ($listeners.Count -eq 0) { return "collector not running" }
-  $nonLoopback = @($listeners | Where-Object { $_.LocalAddress -ne "127.0.0.1" })
-  if ($nonLoopback.Count -gt 0) { throw "$($nonLoopback.Count) non-loopback listener(s)" }
-  "$($listeners.Count) loopback listener(s)"
+# Absence is not evidence of correct binding, so it is reported as SKIP
+# rather than folded into a passing security assertion.
+# Enumerate every listener and filter here. `Get-NetTCPConnection -LocalPort`
+# throws when nothing matches, which would make "the collector is not
+# running" indistinguishable from "the sockets could not be read" -- the
+# first is a SKIP, the second an INCONCLUSIVE, and they are not the same
+# claim.
+$listeners = $null
+try {
+  $all = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+  $listeners = @($all | Where-Object { $_.LocalPort -eq 4317 })
+} catch {
+  $listeners = $null
 }
+$collectorState = Get-CollectorListenerState -Listeners $listeners
+Record "net.collector-port" "Collector binds loopback only" $collectorState.status $collectorState.detail
 
 Try-Step "net.debug-range" "No listeners in the DevTools port range" {
   $debug = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
@@ -214,10 +238,16 @@ foreach ($manual in @(
 # --- summary -----------------------------------------------------------------
 $pass = @($results | Where-Object { $_.status -eq "PASS" }).Count
 $fail = @($results | Where-Object { $_.status -eq "FAIL" }).Count
+$skip = @($results | Where-Object { $_.status -eq "SKIP" }).Count
+$unclear = @($results | Where-Object { $_.status -eq "INCONCLUSIVE" }).Count
 $manualCount = @($results | Where-Object { $_.status -eq "MANUAL" }).Count
 
 Write-Host ""
-Write-Host ("Automated: {0} passed, {1} failed. Manual steps outstanding: {2}." -f $pass, $fail, $manualCount) -ForegroundColor Cyan
+Write-Host ("Automated: {0} PASS, {1} FAIL, {2} SKIP, {3} INCONCLUSIVE. Manual outstanding: {4}." -f
+  $pass, $fail, $skip, $unclear, $manualCount) -ForegroundColor Cyan
+if ($unclear -gt 0) {
+  Write-Host "An INCONCLUSIVE check verified nothing. Do not read it as a pass." -ForegroundColor Magenta
+}
 
 $reportPath = Join-Path $repo ("docs\validation\e2e-report-" + $commit.Substring(0, 7) + ".md")
 New-Item -ItemType Directory -Force -Path (Split-Path $reportPath) | Out-Null
@@ -235,7 +265,10 @@ foreach ($row in $results) {
   $lines += "| ``$($row.id)`` | $($row.name) | **$($row.status)** | $($row.detail) |"
 }
 $lines += ""
-$lines += "Automated: $pass passed, $fail failed. Manual outstanding: $manualCount."
+$lines += "Automated: $pass PASS, $fail FAIL, $skip SKIP, $unclear INCONCLUSIVE. Manual outstanding: $manualCount."
+$lines += ""
+$lines += "SKIP means the precondition was absent, INCONCLUSIVE means the check"
+$lines += "could not run. Neither is evidence of correct behaviour."
 $lines += ""
 $lines += "This file contains counts and states only -- no credentials, tokens,"
 $lines += "cookies, profile paths, session files or raw ACL contents. It is safe"
@@ -245,4 +278,5 @@ Set-Content -Path $reportPath -Value $lines -Encoding utf8
 Write-Host ("Report written to {0}" -f $reportPath)
 
 if ($fail -gt 0) { exit 1 }
+if ($unclear -gt 0) { exit 2 }
 exit 0
