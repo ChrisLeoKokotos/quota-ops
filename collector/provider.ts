@@ -24,10 +24,12 @@ export async function openProviderLogin(
 
 export async function collectProviderUsage(
   account: CollectorAccountConfig,
+  options: { visible?: boolean } = {},
 ): Promise<CollectorAccountResult> {
   if (account.provider === "openai") {
+    if (options.visible) throw new Error("Visible diagnostic collection is currently Claude-only.");
     return await collectOpenAIUsageFromBrowser(account);
   }
 
-  return await collectClaudeUsageFromBrowser(account);
+  return await collectClaudeUsageFromBrowser(account, options);
 }
