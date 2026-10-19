@@ -68,3 +68,6 @@ Thumbs.db
 
 # Local QuotaOps collector state
 .quotaops/
+
+# Rust build output for the desktop proof of concept
+desktop/tauri/target/
