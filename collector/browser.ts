@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
-import { parseVisibleClaudeUsagePanel } from "./visible-usage.ts";
+import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -413,21 +413,12 @@ async function collectFromContext(
     );
   }
 
-  let usage = collected.parsed;
-  let sourceMessage: string | null = null;
-  if (
-    !usage &&
-    (collected.reason === "claude_page_api_not_observed" ||
-      collected.reason === "usage_response_not_observed")
-  ) {
-    // Only accept both percentages from the authenticated Usage panel itself.
-    // No relative reset strings are converted to absolute timestamps.
-    usage = await readVisibleUsagePanel(page);
-    if (usage) {
-      sourceMessage =
-        "Usage percentages read from the visible Claude page; precise reset timestamps unavailable.";
-    }
-  }
+  const selected = await selectClaudeUsageSource(
+    collected.parsed,
+    collected.reason,
+    () => readVisibleUsagePanel(page),
+  );
+  const usage = selected.usage;
 
   if (!usage) {
     return result(
@@ -438,6 +429,9 @@ async function collectFromContext(
   }
 
   const checkedAt = new Date().toISOString();
+  const sourceMessage = selected.source === "visible"
+    ? "Usage percentages read from the visible Claude page; precise reset timestamps unavailable."
+    : null;
   return result(account, "ok", sourceMessage, checkedAt, {
     id: account.id,
     label: account.label,
