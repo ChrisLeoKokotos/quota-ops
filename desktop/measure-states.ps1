@@ -7,8 +7,8 @@
 #   3. Background collection running
 #   4. Background monitoring paused
 #
-# Samples the whole process tree each time — shell, renderers, any collector
-# and any browser it launches — because measuring only the shell would hide
+# Samples the whole process tree each time -- shell, renderers, any collector
+# and any browser it launches -- because measuring only the shell would hide
 # exactly the costs these states exist to expose.
 
 [CmdletBinding()]

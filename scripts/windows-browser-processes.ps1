@@ -3,7 +3,7 @@
 # QO-SEC-03 browser process detector.
 #
 # Chrome and Edge live in Program Files, so matching the executable path
-# against "*quotaops*" never matches anything and always reports zero — which
+# against "*quotaops*" never matches anything and always reports zero -- which
 # reads as "clean teardown" whether or not processes are still running. A
 # QuotaOps-owned browser is identified instead by the profile it was launched
 # with: Playwright's launchPersistentContext passes the profile directory as

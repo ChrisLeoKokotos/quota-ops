@@ -3,7 +3,7 @@
 # Architecture benchmark harness.
 #
 # Launches a desktop shell, waits for its window, then samples the whole
-# process tree — shell, web runtime, dashboard server and any browser the
+# process tree -- shell, web runtime, dashboard server and any browser the
 # collector starts. Measuring only the top-level process would understate
 # every multi-process framework, which is most of them.
 #
@@ -26,7 +26,7 @@ function Get-TreeProcesses([int]$RootPid) {
   # Two passes, unioned, because neither alone sees the whole application.
   #
   # Parent-chain descendants catch processes that run from outside the
-  # repository — most importantly WebView2, which lives in Program Files and
+  # repository -- most importantly WebView2, which lives in Program Files and
   # accounts for most of a Tauri app's memory.
   #
   # Path matching catches processes the chain can miss when a shell re-execs
