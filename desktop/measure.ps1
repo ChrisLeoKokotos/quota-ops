@@ -23,48 +23,62 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script:MeasureRoot = $repo
 
 function Get-TreeProcesses([int]$RootPid) {
-  # Identify the application's processes by where their binary lives, not by
-  # the parent chain: a desktop shell re-execs and reparents its helpers, so a
-  # parent walk from the launched pid misses most of the tree and makes a
-  # multi-process framework look like one small process.
+  # Two passes, unioned, because neither alone sees the whole application.
   #
-  # Win32_Process.ExecutablePath comes back empty for most entries in this
-  # session, so paths come from Get-Process and command lines from CIM. The
-  # measuring PowerShell host is excluded explicitly: its own command line
-  # contains the repository path and would otherwise count as the app.
+  # Parent-chain descendants catch processes that run from outside the
+  # repository — most importantly WebView2, which lives in Program Files and
+  # accounts for most of a Tauri app's memory.
+  #
+  # Path matching catches processes the chain can miss when a shell re-execs
+  # or reparents its helpers.
+  #
+  # Using only the first would undercount Electron; using only the second
+  # would undercount Tauri by roughly 190 MB. Either way the comparison would
+  # favour one framework for a reason that has nothing to do with the
+  # framework.
   $root = $script:MeasureRoot
   $self = $PID
 
-  # Reading .Path on a process this session cannot open throws, and the
-  # script-wide "Stop" preference would abort the whole pipeline on the first
-  # such process — leaving almost nothing matched and the app looking tiny.
   $previous = $ErrorActionPreference
   $ErrorActionPreference = "SilentlyContinue"
   try {
-    $byPath = @(Get-Process | Where-Object {
-      $_.Id -ne $self -and $_.Path -and
-      $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
-    })
+    $all = @(Get-CimInstance Win32_Process)
+    $byParent = @{}
+    foreach ($entry in $all) {
+      $parent = [int]$entry.ParentProcessId
+      if (-not $byParent.ContainsKey($parent)) { $byParent[$parent] = @() }
+      $byParent[$parent] += $entry
+    }
+
+    $ids = @{}
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue([int]$RootPid)
+    while ($queue.Count -gt 0) {
+      $current = [int]$queue.Dequeue()
+      if ($ids.ContainsKey($current)) { continue }
+      $ids[$current] = $true
+      if ($byParent.ContainsKey($current)) {
+        foreach ($child in $byParent[$current]) { $queue.Enqueue([int]$child.ProcessId) }
+      }
+    }
+
+    foreach ($candidate in @(Get-Process)) {
+      if ($candidate.Id -eq $self) { continue }
+      if ($candidate.Path -and $candidate.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $ids[[int]$candidate.Id] = $true
+      }
+    }
+    $ids.Remove($self)
+
+    $resolved = @()
+    foreach ($id in @($ids.Keys)) {
+      $live = Get-Process -Id $id
+      if ($live) { $resolved += $live }
+    }
+    return @($resolved)
   } finally {
     $ErrorActionPreference = $previous
   }
-
-  # The dashboard server runs from the Node or Electron binary outside the
-  # worktree, so it is found by the script path on its command line instead.
-  $byCommand = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ProcessId -ne $self -and $_.CommandLine -and
-    $_.CommandLine -like "*dashboard-server.ts*" -and
-    $_.CommandLine -like ("*" + $root + "*")
-  } | ForEach-Object {
-    try { Get-Process -Id $_.ProcessId -ErrorAction Stop } catch { $null }
-  } | Where-Object { $_ })
-
-  $merged = @{}
-  foreach ($p in @($byPath) + @($byCommand)) { $merged[[int]$p.Id] = $p }
-  if ($env:QUOTAOPS_MEASURE_DEBUG) {
-    Write-Host ("  [debug] root={0} byPath={1} byCommand={2} merged={3}" -f $root, @($byPath).Count, @($byCommand).Count, $merged.Count)
-  }
-  return @($merged.Values)
 }
 
 function Measure-Tree([int]$RootPid) {
@@ -101,16 +115,26 @@ $env:QUOTAOPS_T0 = [string][int64]([DateTimeOffset]$t0).ToUnixTimeMilliseconds()
 if ($Shell -eq "electron") {
   $exe = Join-Path $repo "node_modules\electron\dist\electron.exe"
   if (-not (Test-Path $exe)) { throw "Electron is not installed in this worktree." }
-  $args = @((Join-Path $repo "desktop\electron"))
+  $launchArgs = @((Join-Path $repo "desktop\electron"))
+  # The shippable payload, not the build tree.
   $packageRoot = Join-Path $repo "node_modules\electron\dist"
 } else {
   $exe = Join-Path $repo "desktop\tauri\target\release\quotaops.exe"
   if (-not (Test-Path $exe)) { throw "Tauri binary not built; see docs/desktop/architecture-benchmark.md." }
-  $args = @()
-  $packageRoot = Split-Path $exe -Parent
+  $launchArgs = @()
+  # Only the produced binary: the build directory also holds artifacts and
+  # dependency objects that are never shipped. WebView2 is an operating system
+  # component on Windows 11 and is not part of the download either.
+  $packageRoot = $exe
 }
 
-$process = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+# `$args` is an automatic variable, and Start-Process rejects an empty
+# -ArgumentList, so the Tauri binary is launched without that parameter.
+$process = if ($launchArgs.Count -gt 0) {
+  Start-Process -FilePath $exe -ArgumentList $launchArgs -PassThru
+} else {
+  Start-Process -FilePath $exe -PassThru
+}
 Write-Host ("Launched {0} as pid {1}" -f $Shell, $process.Id)
 
 # Startup latency: first moment the dashboard answers its identity probe,
@@ -151,8 +175,12 @@ $cores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
 $cpuPercent = [math]::Round((($after - $before) / ($SampleSeconds * 1000.0 * $cores)) * 100, 3)
 $sampled = Measure-Tree $process.Id
 
-$packageMB = [math]::Round((Get-ChildItem $packageRoot -Recurse -File -ErrorAction SilentlyContinue |
-  Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+$packageMB = if (Test-Path $packageRoot -PathType Leaf) {
+  [math]::Round((Get-Item $packageRoot).Length / 1MB, 2)
+} else {
+  [math]::Round((Get-ChildItem $packageRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+}
 
 $result = [pscustomobject]@{
   shell            = $Shell
