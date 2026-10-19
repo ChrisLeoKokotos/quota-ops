@@ -65,3 +65,31 @@ export function parseVisibleClaudeUsagePanel(text: unknown): VisibleClaudeUsage 
     weekly: { usedPercent: weeklyPercent, resetAt: null },
   };
 }
+
+
+export type ClaudeUsageSource = "api" | "visible" | null;
+
+/**
+ * Selection policy: never hide an ambiguous organization or malformed API
+ * payload behind a DOM guess. The visible fallback is eligible only when
+ * the expected API response was absent. Tests inject the panel reader.
+ */
+export async function selectClaudeUsageSource(
+  apiUsage: VisibleClaudeUsage | null,
+  reason: string | null,
+  readVisiblePanel: () => Promise<VisibleClaudeUsage | null>,
+): Promise<{ usage: VisibleClaudeUsage | null; source: ClaudeUsageSource }> {
+  if (apiUsage) return { usage: apiUsage, source: "api" };
+
+  if (reason !== "claude_page_api_not_observed" &&
+      reason !== "usage_response_not_observed") {
+    return { usage: null, source: null };
+  }
+
+  try {
+    const usage = await readVisiblePanel();
+    return { usage, source: usage ? "visible" : null };
+  } catch {
+    return { usage: null, source: null };
+  }
+}
