@@ -17,14 +17,23 @@
 
 const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell } = require("electron");
 const { readFile } = require("node:fs/promises");
+const { readFileSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const {
+  buildContentSecurityPolicy,
+  isAllowedExternalUrl,
+  isTrustedIpcSender,
+  readBoundedBody,
+  resolveStaticAsset,
+} = require("./security.js");
 
 const STATIC_ROOT = path.join(__dirname, "..", "static-dist");
 const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
 const MAX_RESPONSE_BYTES = 262_144;
+const MIN_SNAPSHOT_INTERVAL_MS = 1_000;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const APP_ORIGIN = "app://quotaops";
 
@@ -32,6 +41,11 @@ let mainWindow = null;
 let tray = null;
 let cachedToken = null;
 let quitting = false;
+/** Identity the IPC handler checks every sender against. */
+let trustedSender = null;
+/** One snapshot request at a time; the rest observe the result. */
+let inFlightSnapshot = null;
+let lastSnapshotAt = 0;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -105,59 +119,111 @@ async function readSnapshot() {
     return { error: "collector_invalid_response" };
   }
 
-  const body = await response.text();
-  if (Buffer.byteLength(body, "utf8") > MAX_RESPONSE_BYTES) {
-    return { error: "collector_response_too_large" };
+  // Bound the body while it streams. Checking the length after `text()` has
+  // already buffered everything is not an allocation bound: by then the
+  // memory is spent.
+  const body = await readBoundedBody(response, MAX_RESPONSE_BYTES);
+  if (!body.ok) {
+    return {
+      error: body.reason === "too_large"
+        ? "collector_response_too_large"
+        : "collector_invalid_response",
+    };
   }
 
+  let parsed;
   try {
-    return JSON.parse(body);
+    parsed = JSON.parse(body.text);
   } catch {
     return { error: "collector_invalid_response" };
   }
+
+  // The renderer is handed a shape it can rely on, not whatever arrived.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "collector_invalid_response" };
+  }
+  if (parsed.version !== 1 || !Array.isArray(parsed.accounts)) {
+    return { error: "collector_invalid_response" };
+  }
+
+  return parsed;
 }
 
-/** Serves the exported bundle, refusing anything outside it. */
+/**
+ * Serves the exported bundle, refusing anything outside it.
+ *
+ * Containment is delegated to `resolveStaticAsset`, which compares path
+ * segments and re-checks after following links rather than testing a string
+ * prefix. A sibling directory whose name begins with the bundle's name would
+ * pass a prefix test; so would a symlink inside the bundle.
+ */
 function registerStaticProtocol() {
   protocol.handle("app", async (request) => {
-    const url = new URL(request.url);
+    let url;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return new Response("bad request", { status: 400 });
+    }
+
     if (url.host !== "quotaops") return new Response("not found", { status: 404 });
 
-    const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
-    const candidate = path.resolve(STATIC_ROOT, relative === "" ? "index.html" : relative);
-
-    // Path traversal guard: a request may not escape the bundle.
-    if (!candidate.startsWith(path.resolve(STATIC_ROOT))) {
+    const resolved = resolveStaticAsset(STATIC_ROOT, url.pathname);
+    if (!resolved.ok) {
       return new Response("forbidden", { status: 403 });
     }
 
-    try {
-      return await net.fetch(pathToFileURL(candidate).toString());
-    } catch {
-      // Client-side routing: unknown paths fall back to the entry document.
+    if (resolved.exists) {
       try {
-        return await net.fetch(pathToFileURL(path.join(STATIC_ROOT, "index.html")).toString());
+        return await net.fetch(pathToFileURL(resolved.path).toString());
       } catch {
         return new Response("not found", { status: 404 });
       }
     }
+
+    // Client-side routing: an unknown path falls back to the entry document.
+    const entry = resolveStaticAsset(STATIC_ROOT, "/index.html");
+    if (!entry.ok || !entry.exists) {
+      return new Response("not found", { status: 404 });
+    }
+    try {
+      return await net.fetch(pathToFileURL(entry.path).toString());
+    } catch {
+      return new Response("not found", { status: 404 });
+    }
   });
+}
+
+/**
+ * Inline script hashes recorded by the static build.
+ *
+ * Allowing them by hash keeps `unsafe-inline` out of `script-src`. If the
+ * manifest is missing the shell fails closed on scripts rather than widening
+ * the policy: a blank dashboard is a visible, diagnosable failure, whereas a
+ * silently relaxed CSP is not.
+ */
+function inlineScriptHashes() {
+  try {
+    const raw = readFileSync(path.join(STATIC_ROOT, "csp-script-hashes.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed?.version !== 1 || !Array.isArray(parsed.scriptHashes)) return [];
+    return parsed.scriptHashes.filter(
+      (hash) => typeof hash === "string" && /^sha256-[A-Za-z0-9+/]+=*$/.test(hash),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function hardenSession() {
   const target = session.defaultSession;
+  const policy = buildContentSecurityPolicy(inlineScriptHashes());
 
-  // The exported bundle loads only its own assets and talks to nothing over
-  // the network: the collector hop happens in the main process.
   target.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        "Content-Security-Policy": [
-          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; media-src 'self' blob:; " +
-            "object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
-        ],
+        "Content-Security-Policy": [policy],
         "X-Content-Type-Options": ["nosniff"],
       },
     });
@@ -165,6 +231,10 @@ function hardenSession() {
 
   target.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   target.setPermissionCheckHandler(() => false);
+
+  if (process.env.QUOTAOPS_IPC_TRACE) {
+    process.stdout.write(`[csp] ${policy}\n`);
+  }
 }
 
 function createWindow() {
@@ -186,14 +256,21 @@ function createWindow() {
 
   mainWindow.removeMenu();
 
+  // `shell.openExternal` launches whatever handler Windows has registered, so
+  // an unfiltered call lets the renderer invoke arbitrary protocol handlers.
+  // Only https destinations are passed on; everything else is dropped.
+  const openExternalIfAllowed = (target) => {
+    if (isAllowedExternalUrl(target)) void shell.openExternal(target);
+  };
+
   mainWindow.webContents.on("will-navigate", (event, target) => {
-    if (!target.startsWith(APP_ORIGIN)) {
+    if (!target.startsWith(`${APP_ORIGIN}/`)) {
       event.preventDefault();
-      void shell.openExternal(target);
+      openExternalIfAllowed(target);
     }
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalIfAllowed(url);
     return { action: "deny" };
   });
 
@@ -211,6 +288,11 @@ function createWindow() {
     const t0 = Number(process.env.QUOTAOPS_T0 ?? 0);
     if (t0) process.stdout.write(`[poc] window visible after ${Date.now() - t0} ms\n`);
   });
+
+  trustedSender = {
+    webContentsId: mainWindow.webContents.id,
+    origin: APP_ORIGIN,
+  };
 
   void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 }
@@ -240,18 +322,43 @@ function createTray() {
 app.whenReady().then(() => {
   registerStaticProtocol();
   hardenSession();
-  ipcMain.handle("quotaops:snapshot", async () => {
-    const result = await readSnapshot();
-    if (process.env.QUOTAOPS_IPC_TRACE) {
-      // Shape only, never contents: a trace must not become a data leak.
-      const shape = result && result.error
-        ? `error=${result.error}`
-        : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}`;
-      process.stdout.write(`[ipc] snapshot -> ${shape}
-`);
+  ipcMain.handle("quotaops:snapshot", async (event) => {
+    // Identity comes from Electron, never from a value the renderer sends.
+    // Without this, any frame the renderer can create could reach the
+    // privileged path.
+    if (!isTrustedIpcSender(event, trustedSender)) {
+      return { error: "forbidden" };
     }
-    return result;
+
+    // One request at a time. A renderer loop would otherwise open a new
+    // collector connection per call.
+    if (inFlightSnapshot) return inFlightSnapshot;
+
+    const now = Date.now();
+    if (now - lastSnapshotAt < MIN_SNAPSHOT_INTERVAL_MS) {
+      return { error: "rate_limited" };
+    }
+    lastSnapshotAt = now;
+
+    inFlightSnapshot = readSnapshot()
+      .then((result) => {
+        if (process.env.QUOTAOPS_IPC_TRACE) {
+          // Shape only, never contents: a trace must not become a data leak.
+          const shape = result && result.error
+            ? `error=${result.error}`
+            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}`;
+          process.stdout.write(`[ipc] snapshot -> ${shape}
+`);
+        }
+        return result;
+      })
+      .finally(() => {
+        inFlightSnapshot = null;
+      });
+
+    return inFlightSnapshot;
   });
+
   createWindow();
   createTray();
 

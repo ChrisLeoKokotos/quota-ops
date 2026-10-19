@@ -8,8 +8,9 @@
 // configured away.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { rename, rm } from "node:fs/promises";
+import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,4 +60,44 @@ const target = join(repo, "desktop", "static-dist");
 await rm(target, { recursive: true, force: true });
 await rename(out, target);
 await rm(join(repo, "out"), { recursive: true, force: true });
+/**
+ * Collects hashes of every inline script in the export.
+ *
+ * The desktop CSP would otherwise need `unsafe-inline` for scripts, which
+ * removes most of CSP's value against injection. Next emits a small, fixed
+ * set of inline bootstrap scripts whose contents are deterministic per build,
+ * so they can be allowed by hash instead.
+ */
+async function collectInlineScriptHashes(directory) {
+  const hashes = new Set();
+  const pattern = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;
+
+  const walk = async (current) => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile() && entry.name.endsWith(".html")) {
+        const html = await readFile(full, "utf8");
+        for (const match of html.matchAll(pattern)) {
+          const body = match[1] ?? "";
+          if (body.length === 0) continue;
+          hashes.add(`sha256-${createHash("sha256").update(body, "utf8").digest("base64")}`);
+        }
+      }
+    }
+  };
+
+  await walk(directory);
+  return [...hashes].sort();
+}
+
+const scriptHashes = await collectInlineScriptHashes(target);
+await writeFile(
+  join(target, "csp-script-hashes.json"),
+  JSON.stringify({ version: 1, scriptHashes }, null, 2) + "\n",
+  "utf8",
+);
+
 process.stdout.write(`[static] exported to ${target}\n`);
+process.stdout.write(`[static] ${scriptHashes.length} inline script hash(es) recorded\n`);
