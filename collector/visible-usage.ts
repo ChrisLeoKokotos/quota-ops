@@ -29,9 +29,10 @@ function uniqueUsedPercent(lines: string[]): number | null {
     .map((line) => /^(\d{1,3}(?:\.\d+)?)\s*%\s*used$/i.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => Number(match[1]));
-  if (values.length !== 1 || !Number.isFinite(values[0]) ||
-      values[0] < 0 || values[0] > 100) return null;
-  return values[0];
+  const value = values[0];
+  if (values.length !== 1 || value === undefined ||
+      !Number.isFinite(value) || value < 0 || value > 100) return null;
+  return value;
 }
 
 export function parseVisibleClaudeUsagePanel(text: unknown): VisibleClaudeUsage | null {
