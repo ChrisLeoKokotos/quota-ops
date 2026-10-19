@@ -43,6 +43,7 @@ tmp/
 # Node / Next.js
 node_modules/
 .next/
+*.tsbuildinfo
 .npm/
 .pnpm-store/
 .yarn/cache/
@@ -67,3 +68,10 @@ Thumbs.db
 
 # Local QuotaOps collector state
 .quotaops/
+
+# Rust build output for the desktop proof of concept
+desktop/tauri/target/
+
+# Desktop static export output
+desktop/static-dist/
+.next-static/

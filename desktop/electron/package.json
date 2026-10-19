@@ -1,0 +1,7 @@
+{
+  "name": "quotaops-desktop-poc",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Electron proof of concept for the QuotaOps architecture benchmark.",
+  "main": "main.js"
+}

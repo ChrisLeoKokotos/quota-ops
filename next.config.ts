@@ -33,17 +33,44 @@ const securityHeaders = [
   },
 ];
 
+/**
+ * The desktop build exports the dashboard as static assets. There is no
+ * Next.js server in that mode: the Electron main process talks to the
+ * collector directly and the renderer reaches it over a narrow IPC bridge,
+ * which removes both the ~100 MB server process and the dashboard's HTTP
+ * listener. Security headers are applied by the Electron session instead,
+ * since `headers()` has no effect on an exported build.
+ */
+const isStaticExport = process.env.QUOTAOPS_STATIC === "1";
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  ...(isStaticExport
+    ? {
+        output: "export" as const,
+        distDir: ".next-static",
+        // Assets are served from a custom scheme root, so relative paths keep
+        // working regardless of where the bundle is installed.
+        assetPrefix: "./",
+        images: { unoptimized: true },
+      }
+    : {}),
+  // Next writes AGENTS.md and CLAUDE.md into the repository root on every dev
+  // run. They are untracked generated files and only add noise to git status.
+  agentRules: false,
   reactStrictMode: true,
-  async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: securityHeaders,
-      },
-    ];
-  },
+  ...(isStaticExport
+    ? {}
+    : {
+        async headers() {
+          return [
+            {
+              source: "/:path*",
+              headers: securityHeaders,
+            },
+          ];
+        },
+      }),
 };
 
 export default nextConfig;

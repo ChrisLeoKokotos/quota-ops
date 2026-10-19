@@ -8,9 +8,15 @@ This document describes the current privacy behavior of the MVP and the rules fu
 
 QuotaOps is local-first.
 
-The current MVP has no SO HOMELY-operated backend, hosted database, user account system, or cloud synchronization. An optional same-PC collector can run locally on `127.0.0.1`.
+The current MVP has no SO HOMELY-operated backend, hosted database, user account system, or cloud synchronization. An optional same-PC collector can run locally on `127.0.0.1`. The dashboard binds a loopback port allocated by the operating system at launch rather than a fixed one.
 
 Manual quota data entered into the app is stored in browser local storage for the local QuotaOps origin. Auto-collected quota snapshots remain on the same PC and are exposed to the dashboard through a loopback-only local service. Provider authentication remains inside isolated local browser profiles.
+
+**Background Token Analytics session scanning is disabled by default, per source.** Claude Code and Codex history are consented to separately (`npm run collector:setup -- tokens-auto enable claude-code`, or `codex`, or `all`), and `tokens-auto status` reports each one. A source you have not consented to is reported as `disabled`, never as "none found" — QuotaOps does not imply it looked. After opt-in the collector reads that source's local session-history files to derive numeric token aggregates; these files can contain private prompts, responses, and code. The collector does not export their bodies, and the explicit one-off `tokens` CLI command refuses to run without consent.
+
+**What consent does not do.** It controls what QuotaOps reads. It does not change the Windows permissions of those files, which remain readable by anything running under your account — another application, a dependency in any project, or malware. Turning a source off stops QuotaOps reading it; it does not protect the files from anything else. *(Residual risk B, accepted 15 October 2026.)*
+
+**What local-first does not mean.** QuotaOps protects your data from the network and from other users of the machine. It is not a defence against code already running under your own Windows account: such a process can reach the loopback services and read the browser profiles holding provider sessions, with or without QuotaOps. *(Residual risk A, accepted 15 October 2026.)*
 
 ## Data currently stored locally
 
