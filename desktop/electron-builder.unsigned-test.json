@@ -1,8 +1,7 @@
 {
   "extends": "desktop/electron-builder.json",
   "win": {
-    "signAndEditExecutable": false,
-    "signExecutable": false
+    "signAndEditExecutable": false
   },
   "publish": null
 }
