@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, renameSync } from "node:fs";
 import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { publishStaticBundle } from "./static-publication.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,9 +101,9 @@ if (!existsSync(join(out, "index.html"))) {
 }
 
 const target = join(repo, "desktop", "static-dist");
-await rm(target, { recursive: true, force: true });
-await rename(out, target);
-await rm(join(repo, "out"), { recursive: true, force: true });
+// Never delete the live bundle before preparing its replacement. Windows can
+// refuse directory renames when an Electron window or AV scanner has an open
+// handle, even after the Next build itself succeeds.
 /**
  * Collects hashes of every inline script in the export.
  *
@@ -135,12 +136,27 @@ async function collectInlineScriptHashes(directory) {
   return [...hashes].sort();
 }
 
-const scriptHashes = await collectInlineScriptHashes(target);
-await writeFile(
-  join(target, "csp-script-hashes.json"),
-  JSON.stringify({ version: 1, scriptHashes }, null, 2) + "\n",
-  "utf8",
-);
+let scriptHashes = [];
+await publishStaticBundle({
+  source: out,
+  target,
+  prepare: async (staging) => {
+    scriptHashes = await collectInlineScriptHashes(staging);
+    // Generate CSP in the staged bundle so a failed build never publishes
+    // HTML with a stale or missing hash manifest.
+    await writeFile(
+      join(staging, "csp-script-hashes.json"),
+      JSON.stringify({ version: 1, scriptHashes }, null, 2) + "\n",
+      "utf8",
+    );
+  },
+});
+
+// The legacy Next 'out' directory is not the source of truth. Its cleanup is
+// best-effort; a Windows lock must never invalidate a successful publish.
+await rm(join(repo, "out"), { recursive: true, force: true }).catch((error) => {
+  process.stderr.write(`[static] unused out/ cleanup skipped: ${error.code ?? error.message}\n`);
+});
 
 process.stdout.write(`[static] exported to ${target}\n`);
 process.stdout.write(`[static] ${scriptHashes.length} inline script hash(es) recorded\n`);
