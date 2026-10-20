@@ -16,11 +16,34 @@ for (const relative of [
   "collector/service.ts",
   "desktop/electron-ipc/main.js",
   "desktop/electron-ipc/icon.ico",
+  "desktop/electron-ipc/update-manager.js",
+  "desktop/electron-ipc/update-policy.json",
   "node_modules/playwright-core/package.json",
 ]) {
   if (!existsSync(join(root, relative))) {
     throw new Error(`Required installer input missing: ${relative}`);
   }
+}
+
+// The updater is a runtime dependency of the packaged Electron app, NOT of
+// the dashboard server. Never quietly ship an updater-enabled app with a
+// missing dependency or an unreviewed, unlocked transitive dependency graph.
+const electronAppDir = join(root, "desktop", "electron-ipc");
+const appPackage = JSON.parse(await readFile(join(electronAppDir, "package.json"), "utf8"));
+if (appPackage.dependencies?.["electron-updater"] !== "6.8.9") {
+  throw new Error("The updater version changed; require a pinned dependency review.");
+}
+const electronLock = join(electronAppDir, "package-lock.json");
+const runtimeDep = join(electronAppDir, "node_modules", "electron-updater", "package.json");
+if (!existsSync(electronLock) || !existsSync(runtimeDep)) {
+  throw new Error("Updater runtime not installed/locked. Generate and commit desktop/electron-ipc/package-lock.json, then npm ci --prefix desktop/electron-ipc --ignore-scripts.");
+}
+const lock = JSON.parse(await readFile(electronLock, "utf8"));
+const runtime = JSON.parse(await readFile(runtimeDep, "utf8"));
+if (lock.lockfileVersion < 3 ||
+    lock.packages?.["node_modules/electron-updater"]?.version !== "6.8.9" ||
+    runtime.version !== "6.8.9") {
+  throw new Error("Updater package-lock and installed runtime do not match pinned 6.8.9.");
 }
 
 const staticBuild = spawnSync(
