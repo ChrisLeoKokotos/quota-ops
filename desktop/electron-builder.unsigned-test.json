@@ -3,5 +3,7 @@
   "win": {
     "signAndEditExecutable": false
   },
-  "publish": null
+  "publish": null,
+  "afterExtract": "desktop/branding/after-extract-pe.cjs",
+  "afterPack": "desktop/branding/after-pack-pe.cjs"
 }
