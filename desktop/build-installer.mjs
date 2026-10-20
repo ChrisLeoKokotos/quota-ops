@@ -61,7 +61,7 @@ if (built.status !== 0) {
 const metadata = JSON.parse(
   await readFile(join(root, "desktop", "electron-ipc", "package.json"), "utf8"),
 );
-if (!/^\\d+\\.\\d+\\.\\d+$/.test(metadata.version)) {
+if (!/^\d+\.\d+\.\d+$/.test(metadata.version)) {
   throw new Error("Unexpected package version in installer metadata.");
 }
 const artifact = join(
