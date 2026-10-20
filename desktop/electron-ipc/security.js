@@ -263,6 +263,74 @@ function boundedText(value, maxLength) {
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
+
+/** Only numeric, nonnegative local aggregates cross into the renderer. */
+const TOKEN_FIELDS = [
+  "inputTokens", "outputTokens", "cacheReadTokens",
+  "cacheWriteTokens", "totalTokens",
+];
+function projectTokenTotals(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const result = {};
+  for (const name of TOKEN_FIELDS) {
+    const value = raw[name];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      return null;
+    }
+    result[name] = value;
+  }
+  return result;
+}
+function validProvider(value) {
+  return value === "claude" || value === "openai";
+}
+function projectTokens(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+      raw.scope !== "locally_observed" ||
+      typeof raw.generatedAt !== "string" ||
+      !Array.isArray(raw.providers) || raw.providers.length > 4 ||
+      !Array.isArray(raw.daily) || raw.daily.length > 4096 ||
+      !Array.isArray(raw.sources) || raw.sources.length > 8) return null;
+
+  const totals = projectTokenTotals(raw.totals);
+  if (!totals) return null;
+  const providers = [];
+  for (const item of raw.providers) {
+    if (!item || !validProvider(item.provider)) return null;
+    const itemTotals = projectTokenTotals(item.totals);
+    if (!itemTotals) return null;
+    providers.push({ provider: item.provider, totals: itemTotals });
+  }
+  const daily = [];
+  for (const item of raw.daily) {
+    if (!item || !validProvider(item.provider) ||
+        typeof item.date !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(item.date)) return null;
+    const itemTotals = projectTokenTotals(item);
+    if (!itemTotals) return null;
+    daily.push({ date: item.date, provider: item.provider, ...itemTotals });
+  }
+  const sources = [];
+  for (const item of raw.sources) {
+    if (!item || !validProvider(item.provider) ||
+        !["claude-code", "codex"].includes(item.source) ||
+        !["ok", "not_found", "partial", "disabled"].includes(item.state) ||
+        !Number.isSafeInteger(item.files) || item.files < 0) return null;
+    sources.push({
+      source: item.source,
+      provider: item.provider,
+      state: item.state,
+      files: item.files,
+      message: boundedText(item.message, 256),
+    });
+  }
+  return {
+    generatedAt: raw.generatedAt.slice(0, 64),
+    scope: "locally_observed",
+    totals, providers, daily, sources,
+  };
+}
+
 /**
  * Rebuilds the snapshot field by field before it crosses IPC.
  *
@@ -319,9 +387,9 @@ function projectSnapshot(parsed) {
           : null,
       };
     }),
-    // Token analytics are numeric aggregates, and the client's own parser
-    // drops the whole block if any field is wrong.
-    tokens: parsed.tokens && typeof parsed.tokens === "object" ? parsed.tokens : null,
+    // Reconstruct token analytics as well: passing the original object across
+    // the IPC boundary would leak unknown collector-supplied keys.
+    tokens: projectTokens(parsed.tokens),
   };
 }
 
