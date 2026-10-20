@@ -14,10 +14,19 @@ export class MonitoringController<T> {
   private pending = false;
   private lastSuccessAt: string | null = null;
 
+  private readonly collect: (invalidated: () => boolean) => Promise<T>;
+  private readonly publish: (value: T, at: string) => void;
+
+  // Node.js 22's strip-only TypeScript loader cannot execute parameter
+  // properties. Use ordinary constructor assignments for the collector's
+  // runtime code so CLI tests and the installed app share a valid syntax.
   constructor(
-    private readonly collect: (invalidated: () => boolean) => Promise<T>,
-    private readonly publish: (value: T, at: string) => void,
-  ) {}
+    collect: (invalidated: () => boolean) => Promise<T>,
+    publish: (value: T, at: string) => void,
+  ) {
+    this.collect = collect;
+    this.publish = publish;
+  }
 
   status(): { paused: boolean; collecting: boolean; lastSuccessAt: string | null } {
     return {
