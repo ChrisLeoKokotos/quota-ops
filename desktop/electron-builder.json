@@ -12,6 +12,8 @@
     "preload.js",
     "security.js",
     "scheduler.js",
+    "update-manager.js",
+    "update-policy.json",
     "icon.ico",
     "quotaops-icon.ico",
     "quotaops-tray.ico"
