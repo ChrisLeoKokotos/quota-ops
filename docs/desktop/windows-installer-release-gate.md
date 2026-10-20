@@ -57,7 +57,14 @@ is a Windows privilege issue, not a compilation or tests failure.
 `npm run desktop:installer:win` deliberately uses a **separate test-only
 configuration** (`desktop/electron-builder.unsigned-test.json`) that extends
 `desktop/electron-builder.json` but sets `win.signAndEditExecutable=false`
-and `win.signExecutable=false`. It skips the auxiliary Windows executable
+. This bypasses the Windows executable resource-editing stage for this
+unsigned proof-of-concept. The prior attempt also set
+`win.signExecutable=false`, but the installed electron-builder 26.4.0
+configuration validator explicitly rejected that property, so it has been
+removed. The test-only manifest now contains **only**
+`win.signAndEditExecutable=false`.
+
+It skips the auxiliary Windows executable
 resource-editing/signing stage, so the test `QuotaOps.exe` may retain Electron's
 default icon and version metadata. This test workaround must **never**
 be inherited by any production installer or signed release.
