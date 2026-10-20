@@ -48,6 +48,9 @@ test("packaged diagnostics are opt-in and never print raw collector stderr", asy
   assert.doesNotMatch(main, /console\.log\(chunk\)|process\.stdout\.write\(String\(chunk\)\)/);
   assert.match(main, /firstInstance \? "instance_lock_acquired" : "instance_lock_rejected"/);
   assert.match(main, /app\.setPath\("userData", smokeUserData\)/);
+  assert.ok(main.indexOf('app.setPath("userData", smokeUserData)') <
+    main.indexOf("app.requestSingleInstanceLock()"),
+  "Electron profile isolation must precede the single-instance lock");
   assert.match(main, /smoke_electron_userdata_isolated/);
   assert.match(main, /Refusing an unsafe packaged-smoke Electron userData override/);
 });
