@@ -1,7 +1,9 @@
 // Create an *unsigned local testing installer*, not a distributable release.
 // The owner must run Windows E2E and get independent security/code-sign review.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +48,7 @@ const args = [
   "electron-builder", "--win", "nsis", "--x64",
   "--config", "desktop/electron-builder.json", "--publish", "never",
 ];
+const buildStartedAt = Date.now();
 const built = spawnSync(npm, args, {
   cwd: root,
   stdio: "inherit",
@@ -55,7 +58,26 @@ if (built.error) throw built.error;
 if (built.status !== 0) {
   throw new Error("Windows installer build failed.");
 }
+const metadata = JSON.parse(
+  await readFile(join(root, "desktop", "electron-ipc", "package.json"), "utf8"),
+);
+if (!/^\\d+\\.\\d+\\.\\d+$/.test(metadata.version)) {
+  throw new Error("Unexpected package version in installer metadata.");
+}
+const artifact = join(
+  root, "release", "windows", `QuotaOps-Setup-${metadata.version}-x64.exe`,
+);
+if (!existsSync(artifact)) {
+  throw new Error("Installer command returned success but the EXE is missing.");
+}
+const details = await stat(artifact);
+if (details.size < 1_000_000 || details.mtimeMs < buildStartedAt - 3_000) {
+  throw new Error("Installer artifact is too small or stale; cannot report success.");
+}
+const sha256 = createHash("sha256");
+for await (const chunk of createReadStream(artifact)) sha256.update(chunk);
+process.stdout.write(`Unsigned test installer: ${artifact}\n`);
+process.stdout.write(`SHA-256: ${sha256.digest("hex")}\n`);
 process.stdout.write(
-  "Unsigned test installer created under release/windows. " +
-  "Do not distribute until E2E, security sign-off, and code-signing decision.\n",
+  "Not approved for distribution: needs Windows E2E, human security sign-off, code signing.\n",
 );
