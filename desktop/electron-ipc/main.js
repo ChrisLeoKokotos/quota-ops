@@ -15,9 +15,9 @@
 //   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
 //     authenticated. That boundary is untouched by this work.
 
-const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell } = require("electron");
+const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
 const { readFile } = require("node:fs/promises");
-const { readFileSync } = require("node:fs");
+const { readFileSync, existsSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
@@ -33,7 +33,14 @@ const {
 } = require("./security.js");
 const { RefreshScheduler } = require("./scheduler.js");
 
-const STATIC_ROOT = path.join(__dirname, "..", "static-dist");
+const STATIC_ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "static-dist")
+  : path.join(__dirname, "..", "static-dist");
+// Packaged editions ship the collector with their own Electron/Node runtime.
+// Dev still accepts an explicitly started external collector for comparison.
+const BUNDLED_COLLECTOR = app.isPackaged
+  ? path.join(process.resourcesPath, "collector-runtime", "collector", "service.ts")
+  : null;
 const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
 const COLLECTOR_CONTROLS = Object.freeze({
   pause: "http://127.0.0.1:4317/monitoring/pause",
@@ -57,6 +64,8 @@ let inFlightSnapshot = null;
 let lastSnapshotAt = 0;
 let trayCommandPending = false;
 let trayCommandError = null;
+let ownedCollector = null;
+let collectorStarted = false;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -391,6 +400,46 @@ async function runTrayCommand(action) {
   }
 }
 
+/**
+ * Supervised local utility process: no separate Node.js installation or
+ * command prompt required by the installed app. The collector still binds
+ * only 127.0.0.1 and requires its local token. We do not send provider
+ * session material or HTTP responses over utility-process IPC.
+ */
+function startBundledCollector() {
+  if (!BUNDLED_COLLECTOR || collectorStarted) return;
+  collectorStarted = true;
+  if (!existsSync(BUNDLED_COLLECTOR)) {
+    trayCommandError = "Bundled collector missing (installation incomplete)";
+    return;
+  }
+  try {
+    ownedCollector = utilityProcess.fork(BUNDLED_COLLECTOR, [], {
+      cwd: path.dirname(path.dirname(BUNDLED_COLLECTOR)),
+      execArgv: ["--experimental-strip-types"],
+      serviceName: "QuotaOps Collector",
+      stdio: "ignore",
+    });
+    ownedCollector.once("exit", () => {
+      ownedCollector = null;
+      if (!quitting) {
+        trayCommandError = "Collector stopped; data may be stale";
+        refreshTray();
+      }
+    });
+  } catch {
+    ownedCollector = null;
+    trayCommandError = "Bundled collector could not start";
+  }
+}
+
+function stopBundledCollector() {
+  if (!ownedCollector) return;
+  const child = ownedCollector;
+  ownedCollector = null;
+  try { child.kill(); } catch { /* already exited */ }
+}
+
 function formatLastUpdate(status) {
   if (!status || status.lastSuccessAt === null) return "Last snapshot check: never";
   const minutes = Math.floor((status.ageMs ?? 0) / 60_000);
@@ -471,7 +520,12 @@ function createTray() {
   setInterval(refreshTray, 30_000).unref();
 }
 
-app.whenReady().then(() => {
+const firstInstance = app.requestSingleInstanceLock();
+if (!firstInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showWindow());
+  app.whenReady().then(() => {
   registerStaticProtocol();
   hardenSession();
   ipcMain.handle("quotaops:snapshot", async (event) => {
@@ -522,6 +576,7 @@ app.whenReady().then(() => {
     },
   });
 
+  startBundledCollector();
   createWindow();
   createTray();
 
@@ -535,9 +590,11 @@ app.whenReady().then(() => {
   app.on("window-all-closed", () => {
     if (quitting) app.quit();
   });
-});
+  });
+}
 
 app.on("before-quit", () => {
   quitting = true;
   scheduler?.cancel();
+  stopBundledCollector();
 });
