@@ -30,6 +30,8 @@ test("packaged startup smoke isolates provider state and refuses an occupied col
   assert.match(script, /APPDATA: appData/);
   assert.match(script, /LOCALAPPDATA: localAppData/);
   assert.match(script, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(script, /Windows USERPROFILE isolation preflight failed/);
+  assert.match(script, /homeProbe\.stdout\.trim\(\)/);
   assert.match(script, /taskkill\.exe/);
   assert.doesNotMatch(script, /rotateCollectorToken|browser-profiles.*rm\(/);
 });
