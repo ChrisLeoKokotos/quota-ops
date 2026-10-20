@@ -15,7 +15,7 @@
 //   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
 //     authenticated. That boundary is untouched by this work.
 
-const { Menu, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
+const { Menu, Notification, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
 const { readFile } = require("node:fs/promises");
 const { readFileSync, existsSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
@@ -646,9 +646,21 @@ function configureSignedUpdates() {
     startupMark("auto_update_dependency_missing");
     return;
   }
+  let lastNotifiedUpdate = null;
   updateManager = createUpdateManager({
     updater,
-    onChange: refreshTray,
+    onChange: ({ state, version }) => {
+      refreshTray();
+      if (state === "available" && version &&
+          lastNotifiedUpdate !== version && Notification.isSupported()) {
+        lastNotifiedUpdate = version;
+        const notice = new Notification({
+          title: "QuotaOps update available",
+          body: `Version ${version} is ready to download from the QuotaOps tray menu.`,
+        });
+        notice.show();
+      }
+    },
     askInstall: async (version) => {
       const result = await dialog.showMessageBox({
         type: "question",
