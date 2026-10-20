@@ -75,3 +75,9 @@ desktop/tauri/target/
 # Desktop static export output
 desktop/static-dist/
 .next-static/
+
+# Unsigned local test installers and unpacked packaged Electron artifacts.
+# Never commit output binaries or installer caches to source control.
+/release/
+/desktop/electron-ipc/dist/
+/desktop/electron-ipc/node_modules/
