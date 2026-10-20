@@ -433,13 +433,6 @@ function startBundledCollector() {
   }
 }
 
-function stopBundledCollector() {
-  if (!ownedCollector) return;
-  const child = ownedCollector;
-  ownedCollector = null;
-  try { child.kill(); } catch { /* already exited */ }
-}
-
 function formatLastUpdate(status) {
   if (!status || status.lastSuccessAt === null) return "Last snapshot check: never";
   const minutes = Math.floor((status.ageMs ?? 0) / 60_000);
@@ -593,8 +586,31 @@ if (!firstInstance) {
   });
 }
 
-app.on("before-quit", () => {
+let quitWaitingForCollector = false;
+app.on("before-quit", (event) => {
   quitting = true;
   scheduler?.cancel();
-  stopBundledCollector();
+  if (!ownedCollector) return;
+  event.preventDefault();
+  if (quitWaitingForCollector) return;
+  quitWaitingForCollector = true;
+  const child = ownedCollector;
+  // Give Playwright time to close the active browser normally. Do not hold
+  // Quit indefinitely if a provider has hung.
+  const finish = () => {
+    clearTimeout(deadline);
+    ownedCollector = null;
+    app.quit();
+  };
+  const deadline = setTimeout(() => {
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }, 45_000);
+  child.once("exit", finish);
+  try {
+    child.postMessage({ action: "shutdown" });
+  } catch {
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }
 });
