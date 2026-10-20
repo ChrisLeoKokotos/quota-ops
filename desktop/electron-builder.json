@@ -22,7 +22,7 @@
     { "from": "desktop/collector-runtime-package.json", "to": "collector-runtime/package.json" }
   ],
   "win": {
-    "icon": "desktop/electron-ipc/icon.ico",
+    "icon": "desktop/installer-icon.ico",
     "target": [ { "target": "nsis", "arch": ["x64"] } ]
   },
   "nsis": {
