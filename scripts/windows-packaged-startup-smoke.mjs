@@ -101,6 +101,7 @@ try {
     LOCALAPPDATA: localAppData,
     // A Node-as-Electron development override would invalidate this test.
     QUOTAOPS_IPC_TRACE: "1",
+    QUOTAOPS_STARTUP_DIAGNOSTICS: "1",
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.QUOTAOPS_CSP_PROBE;
@@ -171,7 +172,10 @@ try {
   process.stderr.write(`FAIL: packaged runtime startup: ${reason}\n`);
   // Report only whitelisted diagnostic categories; never print the full
   // combined Electron output, which may contain user-controlled content.
-  process.stderr.write(`Diagnostic markers: collector_started=${/QuotaOps collector listening/.test(combinedOutput)}; ipc_snapshot=${/\[ipc\] snapshot/.test(combinedOutput)}; electron_error=${/uncaughtException|UnhandledPromiseRejection|ERR_/.test(combinedOutput)}\n`);
+  const safeStages = [...combinedOutput.matchAll(/\[quotaops-startup\] ([a-z0-9_]+)/g)]
+    .slice(0, 25).map((match) => match[1]).join(",");
+  process.stderr.write(`Startup stages: ${safeStages || "none"}\n`);
+  process.stderr.write(`Diagnostic markers: ipc_snapshot=${/\[ipc\] snapshot/.test(combinedOutput)}; electron_error=${/uncaughtException|UnhandledPromiseRejection|ERR_/.test(combinedOutput)}\n`);
 } finally {
   // The test owns the PID and uses a temporary profile with no accounts.
   // Terminate its process tree, including the utility child; do NOT kill
