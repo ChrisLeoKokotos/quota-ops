@@ -20,8 +20,12 @@ function reseditFromBuilder() {
     throw new Error("PE icon probe requires the pinned electron-builder CLI.");
   }
   try {
-    // Resolve from the builder's npm-exec installation, not the QuotaOps app.
-    return createRequire(resolve(cliPath))("resedit");
+    // Load the exact resedit version from app-builder-lib (the installed,
+    // pinned builder dependency), including when npm has nested packages.
+    // Nothing is downloaded or installed by this hook.
+    const fromBuilderCLI = createRequire(resolve(cliPath));
+    const builderLibrary = fromBuilderCLI.resolve("app-builder-lib/package.json");
+    return createRequire(builderLibrary)("resedit");
   } catch {
     throw new Error("Pinned electron-builder did not expose resedit; aborting PE icon probe.");
   }
@@ -40,8 +44,8 @@ async function afterExtract(context) {
     throw new Error("PE icon probe is Windows-only.");
   }
   if (!existsSync(ICON_PATH)) throw new Error("Branded ICO source is missing.");
-  const { Data, Resource } = reseditFromBuilder();
   const resedit = reseditFromBuilder();
+  const { Data, Resource } = resedit;
   // At afterExtract, electron.exe is still the upstream shell. In case
   // electron-builder changes its ordering, fail closed instead of guessing.
   const target = join(context.appOutDir, "electron.exe");
