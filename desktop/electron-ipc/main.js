@@ -15,7 +15,7 @@
 //   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
 //     authenticated. That boundary is untouched by this work.
 
-const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
+const { Menu, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
 const { readFile } = require("node:fs/promises");
 const { readFileSync, existsSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
@@ -32,6 +32,8 @@ const {
   resolveStaticAsset,
 } = require("./security.js");
 const { RefreshScheduler } = require("./scheduler.js");
+const { createUpdateManager, validateUpdateGate } = require("./update-manager.js");
+const UPDATE_POLICY = require("./update-policy.json");
 
 const STATIC_ROOT = app.isPackaged
   ? path.join(process.resourcesPath, "static-dist")
@@ -85,6 +87,10 @@ let trayCommandPending = false;
 let trayCommandError = null;
 let ownedCollector = null;
 let collectorStarted = false;
+// A downloaded update may install only after user confirmation and the same
+// graceful collector shutdown used by Quit.
+let updateManager = null;
+let installUpdateOnQuit = false;
 
 // Explicit opt-in startup markers: no account names, URLs, paths, cookies,
 // bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
@@ -542,6 +548,29 @@ function formatLastUpdate(status) {
 
 function buildTrayMenu() {
   const status = scheduler ? scheduler.status() : null;
+  const updateStatus = updateManager?.status() ?? { state: "disabled", version: null };
+  const offeredVersion = updateStatus.version ? ` (v${updateStatus.version})` : "";
+  const updateRows = [
+    { label: updateStatus.state === "disabled"
+        ? "Updates unavailable (unsigned test build)" : "Check for updates",
+      enabled: updateStatus.state !== "disabled" &&
+        !["checking", "downloading", "installing"].includes(updateStatus.state),
+      click: () => { void updateManager?.check(); } },
+    ...(updateStatus.state === "available" ? [
+      { label: `Download update${offeredVersion}`, click: () => {
+        void updateManager?.download();
+      } },
+    ] : []),
+    ...(updateStatus.state === "ready" ? [
+      { label: `Install update${offeredVersion} and restart...`, click: () => {
+        void updateManager?.install();
+      } },
+    ] : []),
+    ...(["checking", "downloading", "installing"].includes(updateStatus.state)
+      ? [{ label: `Update: ${updateStatus.state}`, enabled: false }] : []),
+    ...(updateStatus.state === "error"
+      ? [{ label: "Update check failed (retry from menu)", enabled: false }] : []),
+  ];
   const paused = status?.paused ?? false;
 
   return Menu.buildFromTemplate([
@@ -570,6 +599,8 @@ function buildTrayMenu() {
     },
     { type: "separator" },
     { label: "Settings", click: () => showWindow() },
+    { type: "separator" },
+    ...updateRows,
     {
       label: "Quit",
       click: () => {
@@ -593,6 +624,53 @@ function showWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+function configureSignedUpdates() {
+  const allowed = validateUpdateGate({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    resourcesPath: process.resourcesPath,
+    policy: UPDATE_POLICY,
+  });
+  if (!allowed) {
+    startupMark("auto_update_disabled_untrusted_build");
+    return;
+  }
+  let updater;
+  try {
+    // Only the Electron main process loads the pinned runtime dependency.
+    // No browser API or collector credential crosses into the updater.
+    ({ autoUpdater: updater } = require("electron-updater"));
+  } catch {
+    startupMark("auto_update_dependency_missing");
+    return;
+  }
+  updateManager = createUpdateManager({
+    updater,
+    onChange: refreshTray,
+    askInstall: async (version) => {
+      const result = await dialog.showMessageBox({
+        type: "question",
+        buttons: ["Not now", "Install and restart"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: "QuotaOps update",
+        message: `Install QuotaOps ${version ?? "update"}?`,
+        detail: "Monitoring will pause while QuotaOps closes its active browser sessions. Your account configuration and saved sessions are not deleted.",
+      });
+      return result.response === 1;
+    },
+    requestQuitForInstall: () => {
+      installUpdateOnQuit = true;
+      quitting = true;
+      scheduler?.cancel();
+      app.quit();
+    },
+  });
+  updateManager.start();
+  refreshTray();
 }
 
 function createTray() {
@@ -671,6 +749,7 @@ if (!firstInstance) {
   startBundledCollector();
   createWindow();
   createTray();
+  configureSignedUpdates();
   startupMark("ui_initialised");
 
   // Drive the schedule from one timer; the scheduler decides whether a tick
@@ -690,7 +769,16 @@ let quitWaitingForCollector = false;
 app.on("before-quit", (event) => {
   quitting = true;
   scheduler?.cancel();
-  if (!ownedCollector) return;
+  updateManager?.stop();
+  if (!ownedCollector) {
+    if (installUpdateOnQuit) {
+      event.preventDefault();
+      installUpdateOnQuit = false;
+      try { updateManager?.launchInstaller(); }
+      catch { app.quit(); }
+    }
+    return;
+  }
   event.preventDefault();
   if (quitWaitingForCollector) return;
   quitWaitingForCollector = true;
@@ -704,7 +792,13 @@ app.on("before-quit", (event) => {
     clearTimeout(deadline);
     child.off("exit", finish);
     ownedCollector = null;
-    app.quit();
+    if (installUpdateOnQuit) {
+      installUpdateOnQuit = false;
+      try { updateManager?.launchInstaller(); }
+      catch { app.quit(); }
+    } else {
+      app.quit();
+    }
   };
   const deadline = setTimeout(() => {
     try { child.kill(); } catch { /* already exited */ }
