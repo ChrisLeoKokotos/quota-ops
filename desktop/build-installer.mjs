@@ -6,6 +6,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generateInstallerIcon } from "./generate-installer-icon.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.platform !== "win32") {
@@ -38,6 +39,16 @@ for (const relative of [
     throw new Error(`Cannot package missing static resource: ${relative}`);
   }
 }
+
+// Electron Builder requires a 256x256 Windows icon. Generate a deterministic
+// 16/32/48/256 ICO before packaging, leaving the existing tracked tray icon
+// untouched and verifying the large frame at test time.
+const installerIcon = join(root, "desktop", "installer-icon.ico");
+const iconBytes = await generateInstallerIcon(installerIcon);
+if (iconBytes < 1024) {
+  throw new Error("Generated installer icon is suspiciously small.");
+}
+process.stdout.write(`[installer] generated multi-resolution ICO (${iconBytes} bytes)\n`);
 
 // Exact builder version, isolated via npm exec. No local lockfile updates and
 // no auto-publishing. The installer is NOT signed or automatically updated.
