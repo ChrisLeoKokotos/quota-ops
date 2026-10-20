@@ -45,6 +45,12 @@ const isStaticExport = process.env.QUOTAOPS_STATIC === "1";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Static export temporarily parks app/api. Next dev route validators in
+  // .next/dev/types refer to those endpoints and must not be type-checked
+  // while they are parked. Keep all TS checks enabled in the isolated config.
+  ...(isStaticExport
+    ? { typescript: { tsconfigPath: "tsconfig.static.json" } }
+    : {}),
   ...(isStaticExport
     ? {
         output: "export" as const,
