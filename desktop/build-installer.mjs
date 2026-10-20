@@ -50,6 +50,19 @@ if (iconBytes < 1024) {
 }
 process.stdout.write(`[installer] generated multi-resolution ICO (${iconBytes} bytes)\n`);
 
+// The *test-only* config intentionally skips executable resource editing and
+// signing to avoid winCodeSign's Mac dylib symlinks on standard Windows accounts.
+// The ordinary release manifest stays untouched and requires real signing.
+// Side effect: test QuotaOps.exe has Electron's default icon/metadata.
+const testConfigPath = join(root, "desktop", "electron-builder.unsigned-test.json");
+const testConfig = JSON.parse(await readFile(testConfigPath, "utf8"));
+if (testConfig.extends !== "desktop/electron-builder.json" ||
+    testConfig.win?.signAndEditExecutable !== false ||
+    testConfig.win?.signExecutable !== false ||
+    testConfig.publish !== null) {
+  throw new Error("Refusing to build: unsigned test config has changed.");
+}
+
 // Exact builder version, isolated via npm exec. No local lockfile updates and
 // no auto-publishing. The installer is NOT signed or automatically updated.
 // All arguments here are fixed literals, never supplied by the renderer.
@@ -57,7 +70,7 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const args = [
   "exec", "--yes", "--package=electron-builder@26.4.0", "--",
   "electron-builder", "--win", "nsis", "--x64",
-  "--config", "desktop/electron-builder.json", "--publish", "never",
+  "--config", "desktop/electron-builder.unsigned-test.json", "--publish", "never",
 ];
 const buildStartedAt = Date.now();
 const built = spawnSync(npm, args, {
