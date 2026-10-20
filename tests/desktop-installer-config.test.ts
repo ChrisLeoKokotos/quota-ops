@@ -24,6 +24,10 @@ test("unsigned test installer includes only app code and isolated collector asse
   assert.equal(config.publish, null, "an unsigned test build must not auto-publish");
   assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
   assert.equal(config.win.icon, "desktop/installer-icon.ico");
+  // The signed/resource-edited build remains the default manifest. Never
+  // accidentally ship a release with the diagnostic workaround enabled.
+  assert.equal(Object.hasOwn(config.win, "signAndEditExecutable"), false);
+  assert.equal(Object.hasOwn(config.win, "signExecutable"), false);
   assert.match(config.nsis.artifactName, /^QuotaOps-Setup-/);
   assert.deepEqual(config.files.sort(), [
     "icon.ico", "main.js", "package.json", "preload.js", "scheduler.js", "security.js",
@@ -67,4 +71,18 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   assert.match(script, /"--publish", "never"/);
   assert.match(script, /process\.platform !== "win32"/);
   assert.match(script, /generateInstallerIcon\(installerIcon\)/);
+  assert.match(script, /"--config", "desktop\/electron-builder\.unsigned-test\.json"/);
+  const testConfig = JSON.parse(
+    await readFile(
+      new URL("../desktop/electron-builder.unsigned-test.json", import.meta.url), "utf8",
+    ),
+  ) as {
+    extends: string;
+    win: { signAndEditExecutable: boolean; signExecutable: boolean };
+    publish: unknown;
+  };
+  assert.equal(testConfig.extends, "desktop/electron-builder.json");
+  assert.equal(testConfig.win.signAndEditExecutable, false);
+  assert.equal(testConfig.win.signExecutable, false);
+  assert.equal(testConfig.publish, null);
 });
