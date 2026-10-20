@@ -29,6 +29,8 @@ test("packaged startup smoke isolates provider state and refuses an occupied col
   assert.match(script, /USERPROFILE: userHome/);
   assert.match(script, /APPDATA: appData/);
   assert.match(script, /LOCALAPPDATA: localAppData/);
+  assert.match(script, /smokeUserData = join\(appData, "QuotaOpsSmoke"\)/);
+  assert.match(script, /QUOTAOPS_SMOKE_USER_DATA: smokeUserData/);
   assert.match(script, /delete env\.ELECTRON_RUN_AS_NODE/);
   assert.match(script, /Windows USERPROFILE isolation preflight failed/);
   assert.match(script, /homeProbe\.stdout\.trim\(\)/);
@@ -45,4 +47,7 @@ test("packaged diagnostics are opt-in and never print raw collector stderr", asy
   assert.match(main, /collector_stderr_\$\{classifyCollectorError\(chunk\)\}/);
   assert.doesNotMatch(main, /console\.log\(chunk\)|process\.stdout\.write\(String\(chunk\)\)/);
   assert.match(main, /firstInstance \? "instance_lock_acquired" : "instance_lock_rejected"/);
+  assert.match(main, /app\.setPath\("userData", smokeUserData\)/);
+  assert.match(main, /smoke_electron_userdata_isolated/);
+  assert.match(main, /Refusing an unsafe packaged-smoke Electron userData override/);
 });
