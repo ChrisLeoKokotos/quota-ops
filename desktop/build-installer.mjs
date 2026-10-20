@@ -76,6 +76,8 @@ const testConfig = JSON.parse(await readFile(testConfigPath, "utf8"));
 if (testConfig.extends !== "desktop/electron-builder.json" ||
     testConfig.win?.signAndEditExecutable !== false ||
     Object.keys(testConfig.win).length !== 1 ||
+    testConfig.afterExtract !== "desktop/branding/after-extract-pe.cjs" ||
+    testConfig.afterPack !== "desktop/branding/after-pack-pe.cjs" ||
     testConfig.publish !== null) {
   throw new Error("Refusing to build: unsigned test config has changed.");
 }
@@ -122,11 +124,21 @@ process.stdout.write(`SHA-256: ${sha256.digest("hex")}\n`);
 process.stdout.write(
   "Not approved for distribution: needs Windows E2E, human security sign-off, code signing.\n",
 );
-// Stated on every build so the gap cannot be mistaken for finished branding.
-process.stdout.write(
-  "Branding: installer, uninstaller, window and tray carry the QuotaOps logo.\n" +
-    "QuotaOps.exe does NOT: `signAndEditExecutable: false` skips resource editing,\n" +
-    "and enabling it fails extracting winCodeSign's macOS dylib symlinks without\n" +
-    "administrator rights or Developer Mode. Desktop and Start Menu shortcuts\n" +
-    "inherit the executable's icon, so they are unbranded too.\n",
-);
+// State the actual experiment mode, never claim an unverified icon is ready
+// for distribution. A local Windows packaged-boot test remains compulsory.
+if (process.env.QUOTAOPS_BRANDED_PE_PROBE === "1") {
+  process.stdout.write(
+    "EXPERIMENTAL PE BRANDING: pre-integrity icon and post-pack resource\n" +
+      "checks were enabled. This is still UNSIGNED and NOT release approved.\n" +
+      "Run isolated packaged startup smoke again; verify icon visually and\n" +
+      "obtain independent ASAR-integrity/security review before release.\n",
+  );
+} else {
+  process.stdout.write(
+    "Branding: installer, uninstaller, window and tray carry the QuotaOps logo.\n" +
+      "QuotaOps.exe does NOT: `signAndEditExecutable: false` skips resource editing,\n" +
+      "and enabling it fails extracting winCodeSign's macOS dylib symlinks without\n" +
+      "administrator rights or Developer Mode. Desktop and Start Menu shortcuts\n" +
+      "inherit the executable's icon, so they are unbranded too.\n",
+  );
+}
