@@ -588,3 +588,70 @@ test("non-string and non-finite values are dropped rather than forwarded", () =>
   assert.equal(projected.accounts[1]?.account, null);
   assert.equal(projected.tokens, null);
 });
+
+test("token analytics cannot smuggle private history or extra keys through IPC", () => {
+  const totals = {
+    inputTokens: 10, outputTokens: 20, cacheReadTokens: 30,
+    cacheWriteTokens: 40, totalTokens: 100,
+  };
+  const payload = {
+    version: 1,
+    generatedAt: "2026-10-20T00:00:00Z",
+    accounts: [],
+    tokens: {
+      scope: "locally_observed",
+      generatedAt: "2026-10-20T00:00:00Z",
+      secretPrompt: "private prompt",
+      totals: { ...totals, secret: "credentials" },
+      providers: [{ provider: "claude", totals: { ...totals, privateFile: "secret.ts" } }],
+      daily: [{
+        provider: "claude", date: "2026-10-20", ...totals,
+        transcript: "should never be sent",
+      }],
+      sources: [{
+        source: "claude-code", provider: "claude", state: "ok", files: 1,
+        message: null, path: "C:\\Users\\private\\.claude\\history",
+      }],
+    },
+  };
+  const result = security.projectSnapshot(payload);
+  assert.deepEqual(result.tokens, {
+    scope: "locally_observed",
+    generatedAt: "2026-10-20T00:00:00Z",
+    totals,
+    providers: [{ provider: "claude", totals }],
+    daily: [{ provider: "claude", date: "2026-10-20", ...totals }],
+    sources: [{
+      source: "claude-code", provider: "claude", state: "ok", files: 1,
+      message: null,
+    }],
+  });
+  const serialized = JSON.stringify(result);
+  for (const secret of ["private prompt", "credentials", "secret.ts", "privateFile", "history"]) {
+    assert.equal(serialized.includes(secret), false);
+  }
+});
+
+test("malformed token analytics fail closed instead of fabricating totals", () => {
+  const valid = {
+    scope: "locally_observed", generatedAt: "2026-10-20T00:00:00Z",
+    totals: {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
+      cacheWriteTokens: 0, totalTokens: 0,
+    },
+    providers: [], daily: [], sources: [],
+  };
+  for (const tokens of [
+    { ...valid, totals: { ...valid.totals, inputTokens: -1 } },
+    { ...valid, totals: { ...valid.totals, outputTokens: Infinity } },
+    { ...valid, scope: "remote_history" },
+    { ...valid, daily: [{ date: "../secrets", provider: "claude", ...valid.totals }] },
+    { ...valid, providers: [{ provider: "evil", totals: valid.totals }] },
+    { ...valid, sources: [{ source: "untrusted", provider: "claude", state: "ok", files: 1, message: null }] },
+  ]) {
+    const result = security.projectSnapshot({
+      version: 1, generatedAt: "2026-10-20", accounts: [], tokens,
+    });
+    assert.equal(result.tokens, null);
+  }
+});
