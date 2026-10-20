@@ -86,5 +86,5 @@ desktop/static-dist/
 /desktop/installer-icon.ico
 
 # Staged static-export bundles and preserved rollback copies. The tool keeps
-// them only when interrupted or unable to remove an old locked backup.
+# them only when interrupted or unable to remove an old locked backup.
 /desktop/.quotaops-static-stage-*
