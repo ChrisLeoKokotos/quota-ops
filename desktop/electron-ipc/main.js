@@ -101,6 +101,36 @@ function classifyCollectorError(value) {
   return "other";
 }
 
+// The isolated Windows packaged-smoke process must use a DIFFERENT Electron
+// profile and single-instance-lock namespace, not just different Node HOME.
+// Chromium's Windows appData resolution can ignore a child APPDATA override.
+// This opt-in path is constrained to our disposable test sandbox and must be
+// set before requestSingleInstanceLock() / the first ready event.
+// Ordinary desktop launches always keep Electron's normal userData directory.
+const smokeUserData = process.env.QUOTAOPS_SMOKE_USER_DATA;
+if (smokeUserData !== undefined) {
+  const home = process.env.USERPROFILE;
+  const appData = process.env.APPDATA;
+  const isIsolatedHome = typeof home === "string" &&
+    path.isAbsolute(home) &&
+    path.basename(home).toLowerCase() === "user" &&
+    /^quotaops-packaged-test-[a-z0-9-]+$/i.test(path.basename(path.dirname(home)));
+  const expectedUserData = typeof appData === "string"
+    ? path.resolve(appData, "QuotaOpsSmoke")
+    : "";
+  if (!app.isPackaged || process.platform !== "win32" ||
+      !STARTUP_DIAGNOSTICS || !isIsolatedHome ||
+      !path.isAbsolute(smokeUserData) ||
+      !existsSync(smokeUserData) ||
+      path.resolve(smokeUserData).toLowerCase() !== expectedUserData.toLowerCase() ||
+      path.resolve(appData).toLowerCase() !==
+        path.resolve(path.dirname(home), "Roaming").toLowerCase()) {
+    throw new Error("Refusing an unsafe packaged-smoke Electron userData override");
+  }
+  app.setPath("userData", smokeUserData);
+  startupMark("smoke_electron_userdata_isolated");
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "app",
