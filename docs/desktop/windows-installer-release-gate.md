@@ -110,7 +110,12 @@ it for inspection.
 `node scripts/windows-packaged-startup-smoke.mjs` runs
 `release/windows/win-unpacked/QuotaOps.exe` under a **temporary Windows
 USERPROFILE and APPDATA**, with `accounts: []` and token analytics disabled.
-It confirms the Node home override before launching Electron, checks that
+It confirms the Node home override before launching Electron and explicitly
+sets Electron's `userData` to `Roaming/QuotaOpsSmoke` inside the temporary
+sandbox **before** the single-instance lock is requested. Windows Chromium
+profile resolution must not be assumed to follow a child `APPDATA` variable
+alone. The opt-in override is allowed only for a recognized packaged smoke
+sandbox; ordinary application launches use the normal userData path. It checks that
 port `127.0.0.1:4317` is free, then probes `GET /health` using a
 temporary bearer that is never printed. It verifies the app stays alive
 briefly, then kills **only the process tree it spawned** and removes its
