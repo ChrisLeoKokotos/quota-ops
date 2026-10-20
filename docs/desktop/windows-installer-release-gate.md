@@ -76,6 +76,35 @@ environment. Do not elevate the owner's normal VS Code session merely to
 work around this helper archive, and do not enable system-wide symlink
 privileges without an explicit separate security decision.
 
+### Windows static-export directory locks
+
+The previous `desktop/build-static.mjs` unconditionally removed
+`desktop/static-dist` and then renamed `.next-static` into place. On
+Windows a live Electron process, Next compiler cache or security scanner may
+keep a handle to one of those folders. This produced `EPERM` **after**
+Next.js reported successful page compilation, leaving the previously
+working `static-dist` deleted.
+
+`desktop/static-publication.mjs` now copies the generated source into a
+private sibling staging directory; the CSP manifest is written and validated
+there. Only after the staged bundle is complete does it move the old
+`static-dist` aside and promote the new one. If either rename fails, the
+old bundle is left untouched or restored. If restoring itself fails, the
+exception includes the precise backup path for manual recovery; the backup
+is deliberately **not** deleted.
+
+The source `.next-static` is left intact rather than renamed out from
+under a live Next process. The published directory is never modified in
+place. Unit tests simulate both an old-target lock and a promotion failure
+with rollback, plus a CSP preparation error.
+
+If a lock is persistent, quit the developer Electron window **from its tray
+Quit action**, stop any concurrent Next build, and retry as an ordinary Windows
+user. Do not delete `.next-static`, `desktop/static-dist`, `app/api`, or
+any browser profile just to get the installer to build. If a backup
+`desktop/.quotaops-static-stage-*.previous` is mentioned in an error, preserve
+it for inspection.
+
 ## Critical Windows E2E — clean environment
 
 1. Exit the QuotaOps developer Electron and *stop* any manually started
