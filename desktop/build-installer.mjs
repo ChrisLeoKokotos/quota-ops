@@ -58,7 +58,7 @@ const testConfigPath = join(root, "desktop", "electron-builder.unsigned-test.jso
 const testConfig = JSON.parse(await readFile(testConfigPath, "utf8"));
 if (testConfig.extends !== "desktop/electron-builder.json" ||
     testConfig.win?.signAndEditExecutable !== false ||
-    testConfig.win?.signExecutable !== false ||
+    Object.keys(testConfig.win).length !== 1 ||
     testConfig.publish !== null) {
   throw new Error("Refusing to build: unsigned test config has changed.");
 }
