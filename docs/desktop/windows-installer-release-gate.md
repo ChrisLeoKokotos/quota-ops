@@ -105,6 +105,32 @@ any browser profile just to get the installer to build. If a backup
 `desktop/.quotaops-static-stage-*.previous` is mentioned in an error, preserve
 it for inspection.
 
+## Isolated packaged-startup diagnosis (before installation)
+
+`node scripts/windows-packaged-startup-smoke.mjs` runs
+`release/windows/win-unpacked/QuotaOps.exe` under a **temporary Windows
+USERPROFILE and APPDATA**, with `accounts: []` and token analytics disabled.
+It confirms the Node home override before launching Electron, checks that
+port `127.0.0.1:4317` is free, then probes `GET /health` using a
+temporary bearer that is never printed. It verifies the app stays alive
+briefly, then kills **only the process tree it spawned** and removes its
+temporary test directory once the collector port has closed. If cleanup fails,
+the temporary directory remains and the test reports failure.
+
+If `4317` is busy it fails closed: **do not kill an unrelated listener**.
+Stop your own dev collector normally first. The test does not access the
+five existing provider profiles and does not log private state. Startup
+markers emitted by the Electron main and bundled utility process are fixed
+classifications enabled **only** with `QUOTAOPS_STARTUP_DIAGNOSTICS=1`.
+Raw child stdout/stderr is never printed or uploaded.
+
+This proves only basic packaged boot, sandboxed empty configuration and
+authenticated collector availability. It does **not** prove the five real
+accounts work, that every UI icon renders, tray Pause/Resume, or successful
+installation/uninstallation. Record `PASS`, `FAIL`, or `INCONCLUSIVE`
+along with the exact SHA. Even if this passes, a full Windows E2E and
+independent security sign-off are still required.
+
 ## Critical Windows E2E — clean environment
 
 1. Exit the QuotaOps developer Electron and *stop* any manually started
