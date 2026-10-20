@@ -39,6 +39,7 @@ The detailed existing IPC threat model is at
 | QO-DESK-08 | MEDIUM | Stop during an active Playwright session could orphan browsers if the child is killed abruptly. | Added utility-parent drain and 45s backstop in #39. Browser cleanup after quit **OPEN** pending Windows tests |
 | QO-DESK-09 | LOW/operational | Chrome or Edge not installed, expired provider sessions, no visible dashboard freshness during first collection. | Documented; check `login_required`, `unsupported` and `unavailable` paths on installed build |
 | QO-DESK-10 | MEDIUM supply chain | Test installer builder is pinned via npm exec but not installed from a checked-in lock. | **OPEN** for release: commit lockfile/CI build attestation and verify transitive dependencies; do not ship this proof as trusted production binary |
+| QO-DESK-11 | MEDIUM | Token analytics were previously passed from a loopback peer to the renderer as an unprojected object, contrary to the field-by-field boundary claim. | Added explicit numeric-only field projection, array caps and malicious-payload tests in #39; packaged E2E **pending** |
 
 ## Threat review checklist
 
