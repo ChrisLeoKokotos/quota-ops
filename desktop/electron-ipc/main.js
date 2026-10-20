@@ -86,6 +86,21 @@ let trayCommandError = null;
 let ownedCollector = null;
 let collectorStarted = false;
 
+// Explicit opt-in startup markers: no account names, URLs, paths, cookies,
+// bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
+const STARTUP_DIAGNOSTICS = process.env.QUOTAOPS_STARTUP_DIAGNOSTICS === "1";
+function startupMark(code) {
+  if (STARTUP_DIAGNOSTICS) process.stdout.write(`[quotaops-startup] ${code}\n`);
+}
+function classifyCollectorError(value) {
+  const line = String(value).slice(0, 4096);
+  if (/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|ERR_UNKNOWN_FILE_EXTENSION/.test(line)) return "ts_loader";
+  if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find package/.test(line)) return "module_resolution";
+  if (/EACCES|EPERM|access denied/i.test(line)) return "permission";
+  if (/SyntaxError/.test(line)) return "syntax";
+  return "other";
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "app",
@@ -358,6 +373,7 @@ function createWindow() {
   }
 
   mainWindow.once("ready-to-show", () => {
+    startupMark("window_ready");
     mainWindow.show();
     const t0 = Number(process.env.QUOTAOPS_T0 ?? 0);
     if (t0) process.stdout.write(`[poc] window visible after ${Date.now() - t0} ms\n`);
@@ -368,6 +384,8 @@ function createWindow() {
     origin: APP_ORIGIN,
   };
 
+  mainWindow.webContents.on("did-fail-load", () => startupMark("renderer_load_failed"));
+  mainWindow.webContents.on("render-process-gone", () => startupMark("renderer_process_gone"));
   void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 }
 
@@ -432,6 +450,7 @@ function startBundledCollector() {
   if (!BUNDLED_COLLECTOR || collectorStarted) return;
   collectorStarted = true;
   if (!existsSync(BUNDLED_COLLECTOR)) {
+    startupMark("collector_missing");
     trayCommandError = "Bundled collector missing (installation incomplete)";
     return;
   }
@@ -440,9 +459,32 @@ function startBundledCollector() {
       cwd: path.dirname(path.dirname(BUNDLED_COLLECTOR)),
       execArgv: ["--experimental-strip-types"],
       serviceName: "QuotaOps Collector",
-      stdio: "ignore",
+      // Only explicit packaged startup smoke captures child output. Never
+      // forward it verbatim: provider logs can contain private state.
+      stdio: STARTUP_DIAGNOSTICS ? "pipe" : "ignore",
     });
-    ownedCollector.once("exit", () => {
+    startupMark("collector_fork_requested");
+    if (STARTUP_DIAGNOSTICS) {
+      ownedCollector.once("spawn", () => startupMark("collector_spawned"));
+      ownedCollector.once("error", () => startupMark("collector_fatal_error"));
+      let reportedStderr = false;
+      ownedCollector.stderr?.on("data", (chunk) => {
+        if (reportedStderr) return;
+        reportedStderr = true;
+        startupMark(`collector_stderr_${classifyCollectorError(chunk)}`);
+      });
+      let reportedListening = false;
+      let stdoutTail = "";
+      ownedCollector.stdout?.on("data", (chunk) => {
+        stdoutTail = (stdoutTail + String(chunk)).slice(-1024);
+        if (!reportedListening && stdoutTail.includes("QuotaOps collector listening")) {
+          reportedListening = true;
+          startupMark("collector_listening");
+        }
+      });
+    }
+    ownedCollector.once("exit", (code) => {
+      startupMark(`collector_exited_${Number.isInteger(code) ? code : "unknown"}`);
       ownedCollector = null;
       if (!quitting) {
         trayCommandError = "Collector stopped; data may be stale";
@@ -450,6 +492,7 @@ function startBundledCollector() {
       }
     });
   } catch {
+    startupMark("collector_fork_threw");
     ownedCollector = null;
     trayCommandError = "Bundled collector could not start";
   }
@@ -538,11 +581,13 @@ function createTray() {
 }
 
 const firstInstance = app.requestSingleInstanceLock();
+startupMark(firstInstance ? "instance_lock_acquired" : "instance_lock_rejected");
 if (!firstInstance) {
   app.quit();
 } else {
   app.on("second-instance", () => showWindow());
   app.whenReady().then(() => {
+  startupMark("electron_ready");
   registerStaticProtocol();
   hardenSession();
   ipcMain.handle("quotaops:snapshot", async (event) => {
@@ -596,6 +641,7 @@ if (!firstInstance) {
   startBundledCollector();
   createWindow();
   createTray();
+  startupMark("ui_initialised");
 
   // Drive the schedule from one timer; the scheduler decides whether a tick
   // is due, so the interval here is only a resolution, not a policy.
