@@ -4,12 +4,12 @@
 // On completion, terminates only the process tree spawned by this test.
 //
 // Usage: node scripts/windows-packaged-startup-smoke.mjs
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
@@ -105,6 +105,16 @@ try {
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.QUOTAOPS_CSP_PROBE;
+
+  // Fail closed BEFORE launching Electron unless the active Node runtime
+  // confirms this child's home points to the isolated test directory.
+  const homeProbe = spawnSync(process.execPath, [
+    "-p", "require('node:os').homedir()",
+  ], { env, encoding: "utf8", windowsHide: true, timeout: 8_000 });
+  if (homeProbe.error || homeProbe.status !== 0 ||
+      resolve(homeProbe.stdout.trim()).toLowerCase() !== resolve(userHome).toLowerCase()) {
+    throw new Error("Windows USERPROFILE isolation preflight failed; refusing packaged launch");
+  }
 
   child = spawn(executable, [], {
     cwd: dirname(executable),
