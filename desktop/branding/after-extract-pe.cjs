@@ -1,1 +1,1 @@
-module.exports = require("./probe-pe-icon.cjs").afterExtract;
+exports.default = require("./probe-pe-icon.cjs").afterExtract;
