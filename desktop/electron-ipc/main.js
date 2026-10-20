@@ -654,11 +654,16 @@ function configureSignedUpdates() {
       if (state === "available" && version &&
           lastNotifiedUpdate !== version && Notification.isSupported()) {
         lastNotifiedUpdate = version;
-        const notice = new Notification({
-          title: "QuotaOps update available",
-          body: `Version ${version} is ready to download from the QuotaOps tray menu.`,
-        });
-        notice.show();
+        try {
+          const notice = new Notification({
+            title: "QuotaOps update available",
+            body: `Version ${version} is ready to download from the QuotaOps tray menu.`,
+          });
+          notice.show();
+        } catch {
+          // System notifications are optional; the tray update action stays visible.
+          startupMark("update_notification_unavailable");
+        }
       }
     },
     askInstall: async (version) => {
