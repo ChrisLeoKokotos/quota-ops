@@ -59,6 +59,9 @@ const sandbox = await mkdtemp(join(tmpdir(), "quotaops-packaged-test-"));
 const userHome = join(sandbox, "user");
 const appData = join(sandbox, "Roaming");
 const localAppData = join(sandbox, "Local");
+// Electron/Chromium's Windows profile may not follow APPDATA environment
+// overrides. Explicitly select an isolated profile before the single-instance lock.
+const smokeUserData = join(appData, "QuotaOpsSmoke");
 const collectorHome = join(userHome, ".quotaops");
 const token = randomBytes(32).toString("base64url");
 let child = null;
@@ -81,7 +84,7 @@ function recordExit(code, signal) {
 try {
   await Promise.all([
     mkdir(collectorHome, { recursive: true }),
-    mkdir(appData, { recursive: true }),
+    mkdir(smokeUserData, { recursive: true }),
     mkdir(localAppData, { recursive: true }),
   ]);
   await writeFile(join(collectorHome, "collector.token"), token + "\n", { flag: "wx", mode: 0o600 });
@@ -99,6 +102,7 @@ try {
     USERPROFILE: userHome,
     APPDATA: appData,
     LOCALAPPDATA: localAppData,
+    QUOTAOPS_SMOKE_USER_DATA: smokeUserData,
     // A Node-as-Electron development override would invalidate this test.
     QUOTAOPS_IPC_TRACE: "1",
     QUOTAOPS_STARTUP_DIAGNOSTICS: "1",
