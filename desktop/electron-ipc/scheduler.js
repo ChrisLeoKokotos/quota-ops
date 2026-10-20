@@ -40,6 +40,7 @@ class RefreshScheduler {
     this.paused = false;
     this.running = false;
     this.cancelled = false;
+    this.generation = 0;
     this.lastSuccessAt = null;
     this.lastAttemptAt = null;
     this.lastError = null;
@@ -90,6 +91,7 @@ class RefreshScheduler {
 
     this.lastAttemptAt = this.now();
     this.running = true;
+    const generation = this.generation;
 
     this.inFlight = (async () => {
       try {
@@ -99,6 +101,9 @@ class RefreshScheduler {
         // user asked for collection to stop, and a late write would look
         // like it carried on.
         if (this.cancelled) return { ok: false, reason: "cancelled" };
+        if (generation !== this.generation) {
+          return { ok: false, reason: "paused" };
+        }
 
         this.lastResult = value;
         this.lastSuccessAt = this.now();
@@ -106,6 +111,10 @@ class RefreshScheduler {
         this.consecutiveFailures = 0;
         return { ok: true, value };
       } catch (error) {
+        if (this.cancelled) return { ok: false, reason: "cancelled" };
+        if (generation !== this.generation) {
+          return { ok: false, reason: "paused" };
+        }
         this.consecutiveFailures += 1;
         // The message is kept for the UI's status line; the caller decides
         // whether it is safe to show.
@@ -122,6 +131,7 @@ class RefreshScheduler {
 
   pause() {
     this.paused = true;
+    this.generation += 1;
   }
 
   resume() {
@@ -133,6 +143,7 @@ class RefreshScheduler {
   cancel() {
     this.cancelled = true;
     this.paused = true;
+    this.generation += 1;
   }
 
   /**
