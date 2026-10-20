@@ -1,0 +1,36 @@
+{
+  "appId": "gr.sohomely.quotaops",
+  "productName": "QuotaOps",
+  "directories": {
+    "app": "desktop/electron-ipc",
+    "output": "release/windows"
+  },
+  "asar": true,
+  "files": [
+    "package.json",
+    "main.js",
+    "preload.js",
+    "security.js",
+    "scheduler.js",
+    "icon.ico"
+  ],
+  "extraResources": [
+    { "from": "desktop/static-dist", "to": "static-dist" },
+    { "from": "collector", "to": "collector-runtime/collector", "filter": ["**/*.ts"] },
+    { "from": "lib", "to": "collector-runtime/lib", "filter": ["**/*.ts"] },
+    { "from": "node_modules/playwright-core", "to": "collector-runtime/node_modules/playwright-core" },
+    { "from": "desktop/collector-runtime-package.json", "to": "collector-runtime/package.json" }
+  ],
+  "win": {
+    "icon": "desktop/electron-ipc/icon.ico",
+    "target": [ { "target": "nsis", "arch": ["x64"] } ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "artifactName": "QuotaOps-Setup-${version}-x64.exe"
+  },
+  "publish": null
+}
