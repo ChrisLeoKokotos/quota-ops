@@ -81,3 +81,6 @@ desktop/static-dist/
 /release/
 /desktop/electron-ipc/dist/
 /desktop/electron-ipc/node_modules/
+
+# Generated Windows icon; do not overwrite the existing tray artwork.
+/desktop/installer-icon.ico
