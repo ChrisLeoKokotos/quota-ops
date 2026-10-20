@@ -174,14 +174,39 @@ async function main(): Promise<void> {
     config.pollIntervalSeconds * 1000,
   );
 
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     clearInterval(timer);
     monitoring.stop();
-    server.close(() => process.exit(0));
+    // A running Playwright browser must close through its normal finally
+    // block before the utility process exits. Discard all in-flight results.
+    void monitoring.waitUntilIdle().then(() => {
+      server.close(() => {
+        process.exitCode = 0;
+      });
+    }).catch(() => {
+      process.exitCode = 1;
+      server.close();
+    });
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // The installed Electron app owns the collector utility process and asks it
+  // to drain on Quit. The renderer has no access to this process channel.
+  const utilityParent = (process as NodeJS.Process & {
+    parentPort?: {
+      on(event: "message", callback: (event: { data: unknown }) => void): void;
+    };
+  }).parentPort;
+  utilityParent?.on("message", (event) => {
+    const data = event.data;
+    if (data && typeof data === "object" &&
+        "action" in data && data.action === "shutdown") shutdown();
+  });
 }
 
 void main().catch((error: unknown) => {
