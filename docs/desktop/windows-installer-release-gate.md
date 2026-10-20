@@ -76,6 +76,45 @@ environment. Do not elevate the owner's normal VS Code session merely to
 work around this helper archive, and do not enable system-wide symlink
 privileges without an explicit separate security decision.
 
+### Experimental PE icon stamping (Draft only; opt-in)
+
+The normal unsigned build **still produces the stock Electron executable
+icon**, and the usual release manifest remains untouched. This must not be
+reported as complete desktop branding.
+
+A research-only Windows probe uses electron-builder v26's supported
+`afterExtract` hook to replace the extracted Electron icon **before** the
+packager inserts its `ElectronAsar` integrity resource. A read-only
+`afterPack` check rejects an output missing the actual approved 256px PNG
+frame or the `INTEGRITY/ElectronAsar` resource. This avoids the known
+post-integrity `rcedit` ordering problem. It reuses the `resedit` version
+already shipped with the pinned electron-builder; it does not download a
+second executable or change privilege settings. Both hooks are wired only
+in `desktop/electron-builder.unsigned-test.json` and do nothing unless
+`QUOTAOPS_BRANDED_PE_PROBE=1`.
+
+**Experimental build only, explicitly in PowerShell:**
+
+```powershell
+$env:QUOTAOPS_BRANDED_PE_PROBE = "1"
+npm run desktop:installer:win
+Remove-Item Env:QUOTAOPS_BRANDED_PE_PROBE
+```
+
+Run on a clean working tree after `npm run typecheck` and `npm test`.
+If a hook fails (unexpected Electron binary layout, missing builder
+`resedit`, modified resource ordering, or failed resource verification),
+the build MUST fail rather than producing an installer with a claimed
+icon. This is not an approved unsigned release. The earlier unsigned
+installer SHA applies only to the original unbranded build.
+
+**Before treating the experiment as successful**, rerun the isolated
+packaged Windows startup smoke; confirm the approved icon visually in
+Explorer and taskbar; inspect the actual PE and ASAR integrity resource;
+repeat the installed Windows E2E; secure independent security approval.
+Do not disable the integrity fuse, patch a signed artifact after signing,
+bypass Windows privilege controls, or publish the test installer.
+
 ### Windows static-export directory locks
 
 The previous `desktop/build-static.mjs` unconditionally removed
