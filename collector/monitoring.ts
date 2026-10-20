@@ -54,6 +54,13 @@ export class MonitoringController<T> {
     this.pause();
   }
 
+  /** Allow the current isolated provider browser to close before shutdown. */
+  async waitUntilIdle(): Promise<void> {
+    while (this.inFlight) {
+      await this.inFlight;
+    }
+  }
+
   /** Schedule an immediate refresh. No parallel browser profile launches. */
   queueRefresh(): boolean {
     if (this.paused || this.stopped) return false;

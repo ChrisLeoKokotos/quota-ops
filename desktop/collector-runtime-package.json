@@ -1,0 +1,7 @@
+{
+  "name": "quotaops-collector-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Isolated local collector runtime shipped with the QuotaOps Windows application"
+}

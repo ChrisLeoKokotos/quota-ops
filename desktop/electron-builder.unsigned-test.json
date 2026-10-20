@@ -1,0 +1,9 @@
+{
+  "extends": "desktop/electron-builder.json",
+  "win": {
+    "signAndEditExecutable": false
+  },
+  "publish": null,
+  "afterExtract": "desktop/branding/after-extract-pe.cjs",
+  "afterPack": "desktop/branding/after-pack-pe.cjs"
+}

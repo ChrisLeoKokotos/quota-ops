@@ -15,9 +15,9 @@
 //   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
 //     authenticated. That boundary is untouched by this work.
 
-const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell } = require("electron");
+const { Menu, Tray, app, BrowserWindow, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
 const { readFile } = require("node:fs/promises");
-const { readFileSync } = require("node:fs");
+const { readFileSync, existsSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
@@ -33,7 +33,33 @@ const {
 } = require("./security.js");
 const { RefreshScheduler } = require("./scheduler.js");
 
-const STATIC_ROOT = path.join(__dirname, "..", "static-dist");
+const STATIC_ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "static-dist")
+  : path.join(__dirname, "..", "static-dist");
+
+/**
+ * Resolves a branding asset for both layouts.
+ *
+ * electron-builder flattens the app directory, so packaged icons sit beside
+ * main.js; in the repository they live under `desktop/branding/`. A missing
+ * asset returns null and the caller falls back, so a packaging mistake shows
+ * up as the default Electron icon rather than a crash on startup.
+ */
+function brandingAsset(name) {
+  const packaged = path.join(__dirname, name);
+  if (existsSync(packaged)) return packaged;
+
+  const source = path.join(__dirname, "..", "branding", name);
+  return existsSync(source) ? source : null;
+}
+
+const APP_ICON = brandingAsset("quotaops-icon.ico");
+const TRAY_ICON = brandingAsset("quotaops-tray.ico");
+// Packaged editions ship the collector with their own Electron/Node runtime.
+// Dev still accepts an explicitly started external collector for comparison.
+const BUNDLED_COLLECTOR = app.isPackaged
+  ? path.join(process.resourcesPath, "collector-runtime", "collector", "service.ts")
+  : null;
 const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
 const COLLECTOR_CONTROLS = Object.freeze({
   pause: "http://127.0.0.1:4317/monitoring/pause",
@@ -57,6 +83,53 @@ let inFlightSnapshot = null;
 let lastSnapshotAt = 0;
 let trayCommandPending = false;
 let trayCommandError = null;
+let ownedCollector = null;
+let collectorStarted = false;
+
+// Explicit opt-in startup markers: no account names, URLs, paths, cookies,
+// bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
+const STARTUP_DIAGNOSTICS = process.env.QUOTAOPS_STARTUP_DIAGNOSTICS === "1";
+function startupMark(code) {
+  if (STARTUP_DIAGNOSTICS) process.stdout.write(`[quotaops-startup] ${code}\n`);
+}
+function classifyCollectorError(value) {
+  const line = String(value).slice(0, 4096);
+  if (/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|ERR_UNKNOWN_FILE_EXTENSION/.test(line)) return "ts_loader";
+  if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find package/.test(line)) return "module_resolution";
+  if (/EACCES|EPERM|access denied/i.test(line)) return "permission";
+  if (/SyntaxError/.test(line)) return "syntax";
+  return "other";
+}
+
+// The isolated Windows packaged-smoke process must use a DIFFERENT Electron
+// profile and single-instance-lock namespace, not just different Node HOME.
+// Chromium's Windows appData resolution can ignore a child APPDATA override.
+// This opt-in path is constrained to our disposable test sandbox and must be
+// set before requestSingleInstanceLock() / the first ready event.
+// Ordinary desktop launches always keep Electron's normal userData directory.
+const smokeUserData = process.env.QUOTAOPS_SMOKE_USER_DATA;
+if (smokeUserData !== undefined) {
+  const home = process.env.USERPROFILE;
+  const appData = process.env.APPDATA;
+  const isIsolatedHome = typeof home === "string" &&
+    path.isAbsolute(home) &&
+    path.basename(home).toLowerCase() === "user" &&
+    /^quotaops-packaged-test-[a-z0-9-]+$/i.test(path.basename(path.dirname(home)));
+  const expectedUserData = typeof appData === "string"
+    ? path.resolve(appData, "QuotaOpsSmoke")
+    : "";
+  if (!app.isPackaged || process.platform !== "win32" ||
+      !STARTUP_DIAGNOSTICS || !isIsolatedHome ||
+      !path.isAbsolute(smokeUserData) ||
+      !existsSync(smokeUserData) ||
+      path.resolve(smokeUserData).toLowerCase() !== expectedUserData.toLowerCase() ||
+      path.resolve(appData).toLowerCase() !==
+        path.resolve(path.dirname(home), "Roaming").toLowerCase()) {
+    throw new Error("Refusing an unsafe packaged-smoke Electron userData override");
+  }
+  app.setPath("userData", smokeUserData);
+  startupMark("smoke_electron_userdata_isolated");
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -257,6 +330,9 @@ function createWindow() {
     show: false,
     backgroundColor: "#111317",
     title: "QuotaOps",
+    // Drives the window frame and the taskbar button. Without it both fall
+    // back to Electron's default icon even when the executable is branded.
+    ...(APP_ICON ? { icon: APP_ICON } : {}),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -327,6 +403,7 @@ function createWindow() {
   }
 
   mainWindow.once("ready-to-show", () => {
+    startupMark("window_ready");
     mainWindow.show();
     const t0 = Number(process.env.QUOTAOPS_T0 ?? 0);
     if (t0) process.stdout.write(`[poc] window visible after ${Date.now() - t0} ms\n`);
@@ -337,6 +414,8 @@ function createWindow() {
     origin: APP_ORIGIN,
   };
 
+  mainWindow.webContents.on("did-fail-load", () => startupMark("renderer_load_failed"));
+  mainWindow.webContents.on("render-process-gone", () => startupMark("renderer_process_gone"));
   void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 }
 
@@ -388,6 +467,64 @@ async function runTrayCommand(action) {
   } finally {
     trayCommandPending = false;
     refreshTray();
+  }
+}
+
+/**
+ * Supervised local utility process: no separate Node.js installation or
+ * command prompt required by the installed app. The collector still binds
+ * only 127.0.0.1 and requires its local token. We do not send provider
+ * session material or HTTP responses over utility-process IPC.
+ */
+function startBundledCollector() {
+  if (!BUNDLED_COLLECTOR || collectorStarted) return;
+  collectorStarted = true;
+  if (!existsSync(BUNDLED_COLLECTOR)) {
+    startupMark("collector_missing");
+    trayCommandError = "Bundled collector missing (installation incomplete)";
+    return;
+  }
+  try {
+    ownedCollector = utilityProcess.fork(BUNDLED_COLLECTOR, [], {
+      cwd: path.dirname(path.dirname(BUNDLED_COLLECTOR)),
+      execArgv: ["--experimental-strip-types"],
+      serviceName: "QuotaOps Collector",
+      // Only explicit packaged startup smoke captures child output. Never
+      // forward it verbatim: provider logs can contain private state.
+      stdio: STARTUP_DIAGNOSTICS ? "pipe" : "ignore",
+    });
+    startupMark("collector_fork_requested");
+    if (STARTUP_DIAGNOSTICS) {
+      ownedCollector.once("spawn", () => startupMark("collector_spawned"));
+      ownedCollector.once("error", () => startupMark("collector_fatal_error"));
+      let reportedStderr = false;
+      ownedCollector.stderr?.on("data", (chunk) => {
+        if (reportedStderr) return;
+        reportedStderr = true;
+        startupMark(`collector_stderr_${classifyCollectorError(chunk)}`);
+      });
+      let reportedListening = false;
+      let stdoutTail = "";
+      ownedCollector.stdout?.on("data", (chunk) => {
+        stdoutTail = (stdoutTail + String(chunk)).slice(-1024);
+        if (!reportedListening && stdoutTail.includes("QuotaOps collector listening")) {
+          reportedListening = true;
+          startupMark("collector_listening");
+        }
+      });
+    }
+    ownedCollector.once("exit", (code) => {
+      startupMark(`collector_exited_${Number.isInteger(code) ? code : "unknown"}`);
+      ownedCollector = null;
+      if (!quitting) {
+        trayCommandError = "Collector stopped; data may be stale";
+        refreshTray();
+      }
+    });
+  } catch {
+    startupMark("collector_fork_threw");
+    ownedCollector = null;
+    trayCommandError = "Bundled collector could not start";
   }
 }
 
@@ -459,7 +596,9 @@ function showWindow() {
 }
 
 function createTray() {
-  tray = new Tray(path.join(__dirname, "icon.ico"));
+  // The tray build is cropped to the artwork: at 16x16 the logo's transparent
+  // margin costs legibility that the notification area cannot spare.
+  tray = new Tray(TRAY_ICON ?? path.join(__dirname, "icon.ico"));
   refreshTray();
   tray.on("click", () => {
     if (mainWindow?.isVisible()) mainWindow.hide();
@@ -471,7 +610,14 @@ function createTray() {
   setInterval(refreshTray, 30_000).unref();
 }
 
-app.whenReady().then(() => {
+const firstInstance = app.requestSingleInstanceLock();
+startupMark(firstInstance ? "instance_lock_acquired" : "instance_lock_rejected");
+if (!firstInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showWindow());
+  app.whenReady().then(() => {
+  startupMark("electron_ready");
   registerStaticProtocol();
   hardenSession();
   ipcMain.handle("quotaops:snapshot", async (event) => {
@@ -522,8 +668,10 @@ app.whenReady().then(() => {
     },
   });
 
+  startBundledCollector();
   createWindow();
   createTray();
+  startupMark("ui_initialised");
 
   // Drive the schedule from one timer; the scheduler decides whether a tick
   // is due, so the interval here is only a resolution, not a policy.
@@ -535,9 +683,38 @@ app.whenReady().then(() => {
   app.on("window-all-closed", () => {
     if (quitting) app.quit();
   });
-});
+  });
+}
 
-app.on("before-quit", () => {
+let quitWaitingForCollector = false;
+app.on("before-quit", (event) => {
   quitting = true;
   scheduler?.cancel();
+  if (!ownedCollector) return;
+  event.preventDefault();
+  if (quitWaitingForCollector) return;
+  quitWaitingForCollector = true;
+  const child = ownedCollector;
+  // Give Playwright time to close the active browser normally. Do not hold
+  // Quit indefinitely if a provider has hung.
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(deadline);
+    child.off("exit", finish);
+    ownedCollector = null;
+    app.quit();
+  };
+  const deadline = setTimeout(() => {
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }, 45_000);
+  child.once("exit", finish);
+  try {
+    child.postMessage({ action: "shutdown" });
+  } catch {
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }
 });

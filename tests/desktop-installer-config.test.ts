@@ -1,0 +1,104 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+type FileSet = { from: string; to: string; filter?: string[] };
+type Builder = {
+  appId: string;
+  asar: boolean;
+  directories: { app: string };
+  files: string[];
+  extraResources: FileSet[];
+  win: { icon: string; target: Array<{ target: string; arch: string[] }> };
+  nsis: { artifactName: string; installerIcon: string; uninstallerIcon: string };
+  publish: unknown;
+};
+
+test("unsigned test installer includes only app code and isolated collector assets", async () => {
+  const config = JSON.parse(
+    await readFile(new URL("../desktop/electron-builder.json", import.meta.url), "utf8"),
+  ) as Builder;
+  assert.equal(config.appId, "gr.sohomely.quotaops");
+  assert.equal(config.asar, true);
+  assert.equal(config.directories.app, "desktop/electron-ipc");
+  assert.equal(config.publish, null, "an unsigned test build must not auto-publish");
+  assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
+  // The branded logo, not the synthetic placeholder the earlier build drew.
+  assert.equal(config.win.icon, "desktop/branding/quotaops-icon.ico");
+  assert.equal(config.nsis.installerIcon, "desktop/branding/quotaops-icon.ico");
+  assert.equal(config.nsis.uninstallerIcon, "desktop/branding/quotaops-icon.ico");
+  // The signed/resource-edited build remains the default manifest. Never
+  // accidentally ship a release with the diagnostic workaround enabled.
+  assert.equal(Object.hasOwn(config.win, "signAndEditExecutable"), false);
+  assert.equal(Object.hasOwn(config.win, "signExecutable"), false);
+  assert.match(config.nsis.artifactName, /^QuotaOps-Setup-/);
+  assert.deepEqual(config.files.sort(), [
+    "icon.ico", "main.js", "package.json", "preload.js",
+    "quotaops-icon.ico", "quotaops-tray.ico", "scheduler.js", "security.js",
+  ].sort());
+  const resources = new Map(config.extraResources.map((set) => [set.to, set.from]));
+  assert.equal(resources.get("static-dist"), "desktop/static-dist");
+  assert.equal(resources.get("collector-runtime/collector"), "collector");
+  assert.equal(resources.get("collector-runtime/lib"), "lib");
+  assert.equal(resources.get("collector-runtime/node_modules/playwright-core"),
+    "node_modules/playwright-core");
+  assert.equal(resources.get("collector-runtime/package.json"),
+    "desktop/collector-runtime-package.json");
+  for (const resource of config.extraResources) {
+    assert.doesNotMatch(resource.from, /\.quotaops|browser-profiles|collector\.token|\.env|users\\/i);
+    assert.doesNotMatch(resource.to, /\.quotaops|browser-profiles|collector\.token|\.env/i);
+  }
+});
+
+test("installer uses protected Electron utility process and closes it on quit", async () => {
+  const main = await readFile(
+    new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8",
+  );
+  const backend = await readFile(
+    new URL("../collector/service.ts", import.meta.url), "utf8",
+  );
+  assert.match(main, /utilityProcess\.fork\(BUNDLED_COLLECTOR/);
+  assert.match(main, /execArgv:\s*\["--experimental-strip-types"\]/);
+  assert.match(main, /app\.requestSingleInstanceLock\(\)/);
+  assert.match(main, /child\.postMessage\(\{ action: "shutdown" \}\)/);
+  assert.match(main, /collector-runtime/);
+  assert.match(backend, /monitoring\.waitUntilIdle\(\)/);
+  assert.match(backend, /utilityParent\?\.on\("message"/);
+  assert.doesNotMatch(main, /remote-debugging-port|webSecurity:\s*false/);
+});
+
+test("installer build stays opt-in, pinned and does not publish", async () => {
+  const script = await readFile(
+    new URL("../desktop/build-installer.mjs", import.meta.url), "utf8",
+  );
+  assert.match(script, /electron-builder@26\.4\.0/);
+  assert.match(script, /"--publish", "never"/);
+  assert.match(script, /process\.platform !== "win32"/);
+  // The build regenerates the branded assets from logo.png rather than
+  // trusting whatever happens to be on disk, and the synthetic placeholder
+  // generator must not creep back in.
+  assert.match(script, /generateBrandingAssets\(\)/);
+  assert.equal(
+    /generateInstallerIcon/.test(script),
+    false,
+    "the synthetic placeholder icon generator must not be used for packaging",
+  );
+  assert.match(script, /"--config", "desktop\/electron-builder\.unsigned-test\.json"/);
+  const testConfig = JSON.parse(
+    await readFile(
+      new URL("../desktop/electron-builder.unsigned-test.json", import.meta.url), "utf8",
+    ),
+  ) as {
+    extends: string;
+    win: { signAndEditExecutable: boolean };
+    afterExtract: string;
+    afterPack: string;
+    publish: unknown;
+  };
+  assert.equal(testConfig.extends, "desktop/electron-builder.json");
+  assert.equal(testConfig.win.signAndEditExecutable, false);
+  assert.deepEqual(Object.keys(testConfig.win), ["signAndEditExecutable"]);
+  assert.equal(testConfig.publish, null);
+  assert.equal(testConfig.afterExtract, "desktop/branding/after-extract-pe.cjs");
+  assert.equal(testConfig.afterPack, "desktop/branding/after-pack-pe.cjs");
+});

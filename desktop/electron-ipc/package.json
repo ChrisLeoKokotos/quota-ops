@@ -1,7 +1,9 @@
 {
-  "name": "quotaops-desktop-ipc-poc",
+  "name": "quotaops-desktop",
   "private": true,
-  "version": "0.0.0",
-  "description": "Electron IPC proof of concept: static UI, no dashboard HTTP server.",
+  "version": "0.1.0",
+  "description": "QuotaOps local-first desktop quota monitor",
+  "author": "So Homely",
+  "license": "UNLICENSED",
   "main": "main.js"
 }
