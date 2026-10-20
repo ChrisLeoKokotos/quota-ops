@@ -597,8 +597,12 @@ app.on("before-quit", (event) => {
   const child = ownedCollector;
   // Give Playwright time to close the active browser normally. Do not hold
   // Quit indefinitely if a provider has hung.
+  let finished = false;
   const finish = () => {
+    if (finished) return;
+    finished = true;
     clearTimeout(deadline);
+    child.off("exit", finish);
     ownedCollector = null;
     app.quit();
   };
