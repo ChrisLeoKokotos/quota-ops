@@ -9,7 +9,7 @@ type Builder = {
   directories: { app: string };
   files: string[];
   extraResources: FileSet[];
-  win: { target: Array<{ target: string; arch: string[] }> };
+  win: { icon: string; target: Array<{ target: string; arch: string[] }> };
   nsis: { artifactName: string };
   publish: unknown;
 };
@@ -23,6 +23,7 @@ test("unsigned test installer includes only app code and isolated collector asse
   assert.equal(config.directories.app, "desktop/electron-ipc");
   assert.equal(config.publish, null, "an unsigned test build must not auto-publish");
   assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
+  assert.equal(config.win.icon, "desktop/installer-icon.ico");
   assert.match(config.nsis.artifactName, /^QuotaOps-Setup-/);
   assert.deepEqual(config.files.sort(), [
     "icon.ico", "main.js", "package.json", "preload.js", "scheduler.js", "security.js",
@@ -65,4 +66,5 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   assert.match(script, /electron-builder@26\.4\.0/);
   assert.match(script, /"--publish", "never"/);
   assert.match(script, /process\.platform !== "win32"/);
+  assert.match(script, /generateInstallerIcon\(installerIcon\)/);
 });
