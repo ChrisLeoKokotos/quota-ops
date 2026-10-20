@@ -84,3 +84,7 @@ desktop/static-dist/
 
 # Generated Windows icon; do not overwrite the existing tray artwork.
 /desktop/installer-icon.ico
+
+# Staged static-export bundles and preserved rollback copies. The tool keeps
+// them only when interrupted or unable to remove an old locked backup.
+/desktop/.quotaops-static-stage-*
