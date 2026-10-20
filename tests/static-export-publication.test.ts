@@ -75,7 +75,7 @@ test("when promotion fails after moving the previous bundle, roll it back", asyn
           await writeFile(join(staged, "csp-script-hashes.json"), "{}");
         },
         renamePath: async (from, to) => {
-          if (basename(from).startsWith(".quotaops-static-stage-") && to === target) {
+          if (basename(from).startsWith(".quotaops-static-stage-") && !from.endsWith(".previous") && to === target) {
             const error = new Error("simulated EPERM promoting staging directory");
             Object.assign(error, { code: "EPERM" });
             throw error;
