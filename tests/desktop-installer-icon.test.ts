@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 test("generated Windows ICO embeds valid 16/32/48/256 PNG image frames", async () => {
@@ -18,7 +18,7 @@ test("generated Windows ICO embeds valid 16/32/48/256 PNG image frames", async (
     const generated = spawnSync(process.execPath, [
       "--input-type=module", "-e",
       "const m = await import(process.argv[1]); await m.generateInstallerIcon(process.argv[2]);",
-      new URL(`file:///${generator.replaceAll("\\", "/")}`).href, target,
+      pathToFileURL(generator).href, target,
     ], { encoding: "utf8", timeout: 15_000 });
     assert.equal(generated.error, undefined);
     assert.equal(generated.status, 0, generated.stderr);
