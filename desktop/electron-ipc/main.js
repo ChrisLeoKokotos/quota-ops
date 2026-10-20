@@ -36,6 +36,25 @@ const { RefreshScheduler } = require("./scheduler.js");
 const STATIC_ROOT = app.isPackaged
   ? path.join(process.resourcesPath, "static-dist")
   : path.join(__dirname, "..", "static-dist");
+
+/**
+ * Resolves a branding asset for both layouts.
+ *
+ * electron-builder flattens the app directory, so packaged icons sit beside
+ * main.js; in the repository they live under `desktop/branding/`. A missing
+ * asset returns null and the caller falls back, so a packaging mistake shows
+ * up as the default Electron icon rather than a crash on startup.
+ */
+function brandingAsset(name) {
+  const packaged = path.join(__dirname, name);
+  if (existsSync(packaged)) return packaged;
+
+  const source = path.join(__dirname, "..", "branding", name);
+  return existsSync(source) ? source : null;
+}
+
+const APP_ICON = brandingAsset("quotaops-icon.ico");
+const TRAY_ICON = brandingAsset("quotaops-tray.ico");
 // Packaged editions ship the collector with their own Electron/Node runtime.
 // Dev still accepts an explicitly started external collector for comparison.
 const BUNDLED_COLLECTOR = app.isPackaged
@@ -266,6 +285,9 @@ function createWindow() {
     show: false,
     backgroundColor: "#111317",
     title: "QuotaOps",
+    // Drives the window frame and the taskbar button. Without it both fall
+    // back to Electron's default icon even when the executable is branded.
+    ...(APP_ICON ? { icon: APP_ICON } : {}),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -501,7 +523,9 @@ function showWindow() {
 }
 
 function createTray() {
-  tray = new Tray(path.join(__dirname, "icon.ico"));
+  // The tray build is cropped to the artwork: at 16x16 the logo's transparent
+  // margin costs legibility that the notification area cannot spare.
+  tray = new Tray(TRAY_ICON ?? path.join(__dirname, "icon.ico"));
   refreshTray();
   tray.on("click", () => {
     if (mainWindow?.isVisible()) mainWindow.hide();

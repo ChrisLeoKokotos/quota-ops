@@ -2,11 +2,11 @@
 // The owner must run Windows E2E and get independent security/code-sign review.
 import { spawnSync } from "node:child_process";
 import { createReadStream, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { copyFile, readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateInstallerIcon } from "./generate-installer-icon.mjs";
+import { generateBrandingAssets } from "./branding/generate-icons.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.platform !== "win32") {
@@ -40,15 +40,32 @@ for (const relative of [
   }
 }
 
-// Electron Builder requires a 256x256 Windows icon. Generate a deterministic
-// 16/32/48/256 ICO before packaging, leaving the existing tracked tray icon
-// untouched and verifying the large frame at test time.
-const installerIcon = join(root, "desktop", "installer-icon.ico");
-const iconBytes = await generateInstallerIcon(installerIcon);
-if (iconBytes < 1024) {
-  throw new Error("Generated installer icon is suspiciously small.");
+// Regenerate the branded icons from the approved logo on every build, so a
+// package can never ship a stale asset or quietly fall back to the earlier
+// synthetic placeholder. The source logo is read, never written.
+const branding = await generateBrandingAssets();
+for (const asset of branding.assets) {
+  process.stdout.write(
+    `[installer] ${asset.name.padEnd(22)} ${String(asset.bytes).padStart(7)} bytes  ` +
+      `sha256:${asset.sha256.slice(0, 12)}\n`,
+  );
 }
-process.stdout.write(`[installer] generated multi-resolution ICO (${iconBytes} bytes)\n`);
+
+const appIcon = branding.assets.find((asset) => asset.name === "quotaops-icon.ico");
+if (!appIcon || appIcon.bytes < 4096) {
+  throw new Error("Branded application icon is missing or suspiciously small.");
+}
+
+// electron-builder resolves `files` against the app directory, so the icons
+// are staged beside main.js before packaging. desktop/branding/ stays the
+// committed source of truth.
+for (const name of ["quotaops-icon.ico", "quotaops-tray.ico"]) {
+  await copyFile(
+    join(root, "desktop", "branding", name),
+    join(root, "desktop", "electron-ipc", name),
+  );
+}
+process.stdout.write("[installer] branded icons staged into the app directory\n");
 
 // The *test-only* config intentionally skips executable resource editing and
 // signing to avoid winCodeSign's Mac dylib symlinks on standard Windows accounts.
@@ -104,4 +121,12 @@ process.stdout.write(`Unsigned test installer: ${artifact}\n`);
 process.stdout.write(`SHA-256: ${sha256.digest("hex")}\n`);
 process.stdout.write(
   "Not approved for distribution: needs Windows E2E, human security sign-off, code signing.\n",
+);
+// Stated on every build so the gap cannot be mistaken for finished branding.
+process.stdout.write(
+  "Branding: installer, uninstaller, window and tray carry the QuotaOps logo.\n" +
+    "QuotaOps.exe does NOT: `signAndEditExecutable: false` skips resource editing,\n" +
+    "and enabling it fails extracting winCodeSign's macOS dylib symlinks without\n" +
+    "administrator rights or Developer Mode. Desktop and Start Menu shortcuts\n" +
+    "inherit the executable's icon, so they are unbranded too.\n",
 );

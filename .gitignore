@@ -88,3 +88,8 @@ desktop/static-dist/
 # Staged static-export bundles and preserved rollback copies. The tool keeps
 # them only when interrupted or unable to remove an old locked backup.
 /desktop/.quotaops-static-stage-*
+
+# Branded icons staged into the app directory by the installer build.
+# desktop/branding/ is the committed source of truth.
+desktop/electron-ipc/quotaops-icon.ico
+desktop/electron-ipc/quotaops-tray.ico

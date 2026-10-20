@@ -10,7 +10,7 @@ type Builder = {
   files: string[];
   extraResources: FileSet[];
   win: { icon: string; target: Array<{ target: string; arch: string[] }> };
-  nsis: { artifactName: string };
+  nsis: { artifactName: string; installerIcon: string; uninstallerIcon: string };
   publish: unknown;
 };
 
@@ -23,14 +23,18 @@ test("unsigned test installer includes only app code and isolated collector asse
   assert.equal(config.directories.app, "desktop/electron-ipc");
   assert.equal(config.publish, null, "an unsigned test build must not auto-publish");
   assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
-  assert.equal(config.win.icon, "desktop/installer-icon.ico");
+  // The branded logo, not the synthetic placeholder the earlier build drew.
+  assert.equal(config.win.icon, "desktop/branding/quotaops-icon.ico");
+  assert.equal(config.nsis.installerIcon, "desktop/branding/quotaops-icon.ico");
+  assert.equal(config.nsis.uninstallerIcon, "desktop/branding/quotaops-icon.ico");
   // The signed/resource-edited build remains the default manifest. Never
   // accidentally ship a release with the diagnostic workaround enabled.
   assert.equal(Object.hasOwn(config.win, "signAndEditExecutable"), false);
   assert.equal(Object.hasOwn(config.win, "signExecutable"), false);
   assert.match(config.nsis.artifactName, /^QuotaOps-Setup-/);
   assert.deepEqual(config.files.sort(), [
-    "icon.ico", "main.js", "package.json", "preload.js", "scheduler.js", "security.js",
+    "icon.ico", "main.js", "package.json", "preload.js",
+    "quotaops-icon.ico", "quotaops-tray.ico", "scheduler.js", "security.js",
   ].sort());
   const resources = new Map(config.extraResources.map((set) => [set.to, set.from]));
   assert.equal(resources.get("static-dist"), "desktop/static-dist");
@@ -70,7 +74,15 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   assert.match(script, /electron-builder@26\.4\.0/);
   assert.match(script, /"--publish", "never"/);
   assert.match(script, /process\.platform !== "win32"/);
-  assert.match(script, /generateInstallerIcon\(installerIcon\)/);
+  // The build regenerates the branded assets from logo.png rather than
+  // trusting whatever happens to be on disk, and the synthetic placeholder
+  // generator must not creep back in.
+  assert.match(script, /generateBrandingAssets\(\)/);
+  assert.equal(
+    /generateInstallerIcon/.test(script),
+    false,
+    "the synthetic placeholder icon generator must not be used for packaging",
+  );
   assert.match(script, /"--config", "desktop\/electron-builder\.unsigned-test\.json"/);
   const testConfig = JSON.parse(
     await readFile(
