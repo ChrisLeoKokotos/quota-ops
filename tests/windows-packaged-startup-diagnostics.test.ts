@@ -42,5 +42,5 @@ test("packaged diagnostics are opt-in and never print raw collector stderr", asy
   assert.match(main, /stdio: STARTUP_DIAGNOSTICS \? "pipe" : "ignore"/);
   assert.match(main, /collector_stderr_\$\{classifyCollectorError\(chunk\)\}/);
   assert.doesNotMatch(main, /console\.log\(chunk\)|process\.stdout\.write\(String\(chunk\)\)/);
-  assert.match(main, /startupMark\("instance_lock_rejected"\)/);
+  assert.match(main, /firstInstance \? "instance_lock_acquired" : "instance_lock_rejected"/);
 });
