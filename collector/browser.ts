@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import { claudeLaunchMode } from "./claude-launch-mode.ts";
+import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -98,16 +100,17 @@ async function openInteractiveWindowsLogin(
 
 async function launchProfile(
   account: CollectorAccountConfig,
-  headless: boolean,
+  visible: boolean,
 ): Promise<BrowserContext> {
   await assertSafeProfileDirectory(account.profileDir);
+  const mode = claudeLaunchMode(process.platform, visible);
 
   const options = {
-    headless,
+    headless: mode.headless,
     viewport: { width: 1280, height: 900 },
     acceptDownloads: false,
     chromiumSandbox: true,
-    args: ["--disable-extensions"],
+    args: mode.args,
   };
 
   try {
@@ -244,7 +247,10 @@ async function collectUsageFromRealPageRequests(
     if (parsed) usageByOrganization.set(organizationId, parsed);
   };
 
-  page.on("response", onResponse);
+  // Context-level responses include requests driven by service workers or other
+  // frames which a page-only listener can miss. Still filter by exact Claude
+  // origin and organization endpoint before parsing.
+  page.context().on("response", onResponse);
 
   try {
     await page.goto(CLAUDE_USAGE_URL, {
@@ -327,7 +333,31 @@ async function collectUsageFromRealPageRequests(
       reason: "claude_page_api_not_observed",
     };
   } finally {
-    page.off("response", onResponse);
+    page.context().off("response", onResponse);
+  }
+}
+
+/**
+ * Fallback for a real, visibly rendered Settings > Usage panel when the page's
+ * API response was not observable. Read only the bounded quota panel into the
+ * local process; do not serialize whole-page text, cookies or browser state.
+ * A changed/ambiguous UI returns null instead of invented quota values.
+ */
+async function readVisibleUsagePanel(
+  page: Page,
+): Promise<ReturnType<typeof parseVisibleClaudeUsagePanel>> {
+  try {
+    const panel = await page.evaluate(() => {
+      const text = document.body?.innerText ?? "";
+      const start = text.indexOf("Your usage limits");
+      if (start < 0) return null;
+      const end = text.indexOf("Limit resets", start);
+      if (end < 0 || end + "Limit resets".length - start > 4096) return null;
+      return text.slice(start, end + "Limit resets".length);
+    });
+    return parseVisibleClaudeUsagePanel(panel);
+  } catch {
+    return null;
   }
 }
 
@@ -385,7 +415,14 @@ async function collectFromContext(
     );
   }
 
-  if (!collected.parsed) {
+  const selected = await selectClaudeUsageSource(
+    collected.parsed,
+    collected.reason,
+    () => readVisibleUsagePanel(page),
+  );
+  const usage = selected.usage;
+
+  if (!usage) {
     return result(
       account,
       "unsupported",
@@ -394,7 +431,10 @@ async function collectFromContext(
   }
 
   const checkedAt = new Date().toISOString();
-  return result(account, "ok", null, checkedAt, {
+  const sourceMessage = selected.source === "visible"
+    ? "Usage percentages read from the visible Claude page; precise reset timestamps unavailable."
+    : null;
+  return result(account, "ok", sourceMessage, checkedAt, {
     id: account.id,
     label: account.label,
     provider: "claude",
@@ -403,12 +443,12 @@ async function collectFromContext(
       {
         id: "five-hour",
         label: "5-hour",
-        ...collected.parsed.fiveHour,
+        ...usage.fiveHour,
       },
       {
         id: "weekly",
         label: "Weekly",
-        ...collected.parsed.weekly,
+        ...usage.weekly,
       },
     ],
     updatedAt: checkedAt,
@@ -423,7 +463,7 @@ export async function openClaudeLogin(
     return;
   }
 
-  const context = await launchProfile(account, false);
+  const context = await launchProfile(account, true);
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(CLAUDE_USAGE_URL, {
@@ -452,15 +492,20 @@ export async function openClaudeLogin(
  * unauthenticated loopback DevTools HTTP port. The authenticated profile stays
  * on this machine and is always closed after each collection.
  *
- * The Windows headless path requires real-account E2E validation before
- * considering this a production release.
+ * Real-account E2E showed Claude Usage working with headed Chromium while
+ * Windows headless collection missed the Usage API. The default Windows mode
+ * now uses the normal headed Chromium launched minimized/offscreen; whether
+ * that mode behaves identically still needs explicit Windows E2E validation.
  */
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
+  options: { visible?: boolean } = {},
 ): Promise<CollectorAccountResult> {
   let context: BrowserContext | null = null;
   try {
-    context = await launchProfile(account, true);
+    // On Windows normal collection uses headed Chrome/Edge minimized/offscreen.
+    // --visible is only for explicit user diagnostics; no automated login.
+    context = await launchProfile(account, options.visible === true);
     return await collectFromContext(account, context);
   } catch {
     return result(

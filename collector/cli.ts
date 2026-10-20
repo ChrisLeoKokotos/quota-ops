@@ -22,7 +22,7 @@ function usage(): never {
       "  list",
       "  add <provider> <id> <label>",
       "  login <id>",
-      "  collect <id>",
+      "  collect <id> [--visible]",
       "  tokens",
       "  tokens-auto <enable|disable|status> [claude-code|codex|all]",
       "  enable <id> [id...]",
@@ -179,8 +179,9 @@ async function main(): Promise<void> {
   }
 
   if (command === "collect") {
-    const [id] = args;
-    if (!id) usage();
+    const [id, ...flags] = args;
+    if (!id || flags.some((flag) => flag !== "--visible") ||
+        flags.filter((flag) => flag === "--visible").length > 1) usage();
 
     const config = await loadCollectorConfig();
     const account = config.accounts.find((item) => item.id === id);
@@ -188,7 +189,11 @@ async function main(): Promise<void> {
       throw new Error(`Unknown account id: ${id}`);
     }
 
-    const result = await collectProviderUsage(account);
+    // Visible mode is explicit and never runs during background collection.
+    // No credentials, cookies or browser profile files are exported.
+    const result = await collectProviderUsage(account, {
+      visible: flags.includes("--visible"),
+    });
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return;
   }
