@@ -35,6 +35,11 @@ const { RefreshScheduler } = require("./scheduler.js");
 
 const STATIC_ROOT = path.join(__dirname, "..", "static-dist");
 const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
+const COLLECTOR_CONTROLS = Object.freeze({
+  pause: "http://127.0.0.1:4317/monitoring/pause",
+  resume: "http://127.0.0.1:4317/monitoring/resume",
+  refresh: "http://127.0.0.1:4317/monitoring/refresh",
+});
 const MAX_RESPONSE_BYTES = 262_144;
 const MIN_SNAPSHOT_INTERVAL_MS = 1_000;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -50,6 +55,8 @@ let scheduler = null;
 /** One snapshot request at a time; the rest observe the result. */
 let inFlightSnapshot = null;
 let lastSnapshotAt = 0;
+let trayCommandPending = false;
+let trayCommandError = null;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -333,14 +340,67 @@ function createWindow() {
   void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 }
 
+/**
+ * Control the actual collector process, not Electron's read-only scheduler.
+ * These three fixed POST destinations are reachable only from the trusted main
+ * process, with the local bearer token. No renderer IPC control surface.
+ */
+async function collectorControl(action) {
+  const url = COLLECTOR_CONTROLS[action];
+  if (!url) return false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let token;
+    try { token = await collectorToken(); }
+    catch { return false; }
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(3000),
+        redirect: "error",
+      });
+    } catch { return false; }
+    if (response.status === 401 && attempt === 0) {
+      cachedToken = null;
+      continue;
+    }
+    return response.ok;
+  }
+  return false;
+}
+
+async function runTrayCommand(action) {
+  if (trayCommandPending) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const ok = await collectorControl(action);
+    if (!ok) {
+      trayCommandError = "Collector command failed; monitoring state unchanged";
+      return;
+    }
+    if (action === "pause") scheduler?.pause();
+    if (action === "resume") scheduler?.resume();
+    // Manual provider refresh is asynchronous; a successful 202 only queues
+    // it. Do not pretend the next cached snapshot is newly collected.
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
 function formatLastUpdate(status) {
-  if (!status || status.lastSuccessAt === null) return "Last update: never";
+  if (!status || status.lastSuccessAt === null) return "Last snapshot check: never";
   const minutes = Math.floor((status.ageMs ?? 0) / 60_000);
   const when =
     minutes < 1 ? "just now" : minutes === 1 ? "1 minute ago" : `${minutes} minutes ago`;
   // Say "stale" rather than only showing a time: a reader given a timestamp
   // alone treats it as current, which is the thing to avoid.
-  return status.stale ? `Last update: ${when} (stale)` : `Last update: ${when}`;
+  // Local scheduler only reads a cached snapshot; this is not the time
+  // provider usage was collected. Avoid claiming provider freshness.
+  return status.stale ? `Last snapshot check: ${when} (stale)` : `Last snapshot check: ${when}`;
 }
 
 function buildTrayMenu() {
@@ -351,23 +411,22 @@ function buildTrayMenu() {
     { label: "Open QuotaOps", click: () => showWindow() },
     { type: "separator" },
     {
-      label: status?.running ? "Refreshing..." : "Refresh now",
-      enabled: !status?.running,
+      label: trayCommandPending ? "Sending command..." : "Refresh now",
+      enabled: !trayCommandPending && !paused,
       click: () => {
-        void scheduler?.refresh({ force: true }).then(refreshTray);
+        void runTrayCommand("refresh");
       },
     },
     {
       label: paused ? "Resume monitoring" : "Pause monitoring",
+      enabled: !trayCommandPending,
       click: () => {
-        if (!scheduler) return;
-        if (paused) scheduler.resume();
-        else scheduler.pause();
-        refreshTray();
+        void runTrayCommand(paused ? "resume" : "pause");
       },
     },
     { type: "separator" },
     { label: formatLastUpdate(status), enabled: false },
+    ...(trayCommandError ? [{ label: trayCommandError, enabled: false }] : []),
     {
       label: paused ? "Monitoring paused" : "Monitoring active",
       enabled: false,
