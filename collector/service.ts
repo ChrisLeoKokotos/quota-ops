@@ -184,7 +184,9 @@ async function main(): Promise<void> {
     // block before the utility process exits. Discard all in-flight results.
     void monitoring.waitUntilIdle().then(() => {
       server.close(() => {
-        process.exitCode = 0;
+        // The utility parentPort may keep the event loop alive; all provider
+        // contexts have finished and the loopback listener is closed.
+        process.exit(0);
       });
     }).catch(() => {
       process.exitCode = 1;
