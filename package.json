@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-timeout=60000 --experimental-strip-types tests/*.test.ts",
     "collector:setup": "node --experimental-strip-types collector/cli.ts",
-    "collector:start": "node --experimental-strip-types collector/service.ts"
+    "collector:start": "node --experimental-strip-types collector/service.ts",
+    "desktop:installer:win": "node desktop/build-installer.mjs"
   },
   "engines": {
     "node": ">=22.14.0"
