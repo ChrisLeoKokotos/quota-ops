@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { MonitoringController } from "./monitoring.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -42,38 +43,42 @@ async function main(): Promise<void> {
   const collectorToken = await getOrCreateCollectorToken();
   let results: CollectorAccountResult[] = [];
   let tokenAnalytics: TokenAnalyticsSnapshot | null = null;
-  let collecting = false;
+  // generatedAt is a provider collection timestamp, not the time a client
+  // retrieved a cached /snapshot (which can be many minutes old).
+  let generatedAt = new Date(0).toISOString();
 
-  const snapshot = (): CollectorSnapshotResponse => ({
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    accounts: results,
-    tokens: tokenAnalytics,
-  });
-
-  const refresh = async (): Promise<void> => {
-    if (collecting) return;
-    collecting = true;
-
-    try {
+  const monitoring = new MonitoringController(
+    async (invalidated) => {
       const current = await loadCollectorConfig();
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
 
       for (const account of enabled) {
+        if (invalidated()) return null;
         nextResults.push(await collectProviderUsage(account));
       }
-
-      results = nextResults;
-      // Session history may contain private prompts and source code.
-      // Never read it in the background without local opt-in.
-      tokenAnalytics = current.tokenAnalyticsEnabled
+      if (invalidated()) return null;
+      // Local private histories are read only with the stored consent.
+      const nextTokens = current.tokenAnalyticsEnabled
         ? await collectLocalTokenAnalytics(current.tokenAnalyticsSources)
         : null;
-    } finally {
-      collecting = false;
-    }
-  };
+      if (invalidated()) return null;
+      return { nextResults, nextTokens };
+    },
+    (value, at) => {
+      if (value === null) return;
+      results = value.nextResults;
+      tokenAnalytics = value.nextTokens;
+      generatedAt = at;
+    },
+  );
+
+  const snapshot = (): CollectorSnapshotResponse => ({
+    version: 1,
+    generatedAt,
+    accounts: results,
+    tokens: tokenAnalytics,
+  });
 
   let rateWindowStartedAt = Date.now();
   let requestCount = 0;
@@ -107,6 +112,30 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Explicit POST operations require exactly the same authenticated
+    // loopback boundary as reads. The renderer has no IPC method for them.
+    if (request.method === "POST") {
+      if (request.url === "/monitoring/pause") {
+        monitoring.pause();
+        sendJson(request, response, 200, { status: "ok", ...monitoring.status() });
+        return;
+      }
+      if (request.url === "/monitoring/resume") {
+        monitoring.resume();
+        sendJson(request, response, 200, { status: "ok", ...monitoring.status() });
+        return;
+      }
+      if (request.url === "/monitoring/refresh") {
+        const queued = monitoring.queueRefresh();
+        sendJson(request, response, queued ? 202 : 409, {
+          status: queued ? "accepted" : "paused", ...monitoring.status(),
+        });
+        return;
+      }
+      sendJson(request, response, 404, { error: "not_found" });
+      return;
+    }
+
     if (request.method !== "GET") {
       sendJson(request, response, 405, { error: "method_not_allowed" });
       return;
@@ -115,7 +144,7 @@ async function main(): Promise<void> {
     if (request.url === "/health") {
       sendJson(request, response, 200, {
         status: "ok",
-        collecting,
+        ...monitoring.status(),
       });
       return;
     }
@@ -139,14 +168,15 @@ async function main(): Promise<void> {
     );
   });
 
-  void refresh();
+  monitoring.queueRefresh();
   const timer = setInterval(
-    () => void refresh(),
+    () => monitoring.queueRefresh(),
     config.pollIntervalSeconds * 1000,
   );
 
   const shutdown = () => {
     clearInterval(timer);
+    monitoring.stop();
     server.close(() => process.exit(0));
   };
 

@@ -294,3 +294,25 @@ test("status reports a failure without inventing a successful collection", async
 test("a scheduler without a collect function is rejected at construction", () => {
   assert.throws(() => new RefreshScheduler({} as never), TypeError);
 });
+
+test("pausing an in-flight tray refresh discards its late snapshot", async () => {
+  const gate = deferred<string>();
+  const scheduler = new RefreshScheduler({ collect: () => gate.promise });
+  const run = scheduler.refresh();
+  scheduler.pause();
+  gate.resolve("late snapshot");
+  assert.deepEqual(await run, { ok: false, reason: "paused" });
+  assert.equal(scheduler.lastResult, null);
+  assert.equal(scheduler.lastSuccessAt, null);
+});
+
+test("pause and resume before completion still reject the old generation", async () => {
+  const gate = deferred<string>();
+  const scheduler = new RefreshScheduler({ collect: () => gate.promise });
+  const run = scheduler.refresh();
+  scheduler.pause();
+  scheduler.resume();
+  gate.resolve("stale snapshot");
+  assert.deepEqual(await run, { ok: false, reason: "paused" });
+  assert.equal(scheduler.lastResult, null);
+});
