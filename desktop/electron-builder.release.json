@@ -1,0 +1,12 @@
+{
+  "extends": "desktop/electron-builder.json",
+  "publish": {
+    "provider": "github",
+    "owner": "ChrisLeoKokotos",
+    "repo": "quota-ops",
+    "releaseType": "release"
+  },
+  "win": {
+    "verifyUpdateCodeSignature": true
+  }
+}
