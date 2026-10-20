@@ -91,10 +91,14 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   ) as {
     extends: string;
     win: { signAndEditExecutable: boolean };
+    afterExtract: string;
+    afterPack: string;
     publish: unknown;
   };
   assert.equal(testConfig.extends, "desktop/electron-builder.json");
   assert.equal(testConfig.win.signAndEditExecutable, false);
   assert.deepEqual(Object.keys(testConfig.win), ["signAndEditExecutable"]);
   assert.equal(testConfig.publish, null);
+  assert.equal(testConfig.afterExtract, "desktop/branding/after-extract-pe.cjs");
+  assert.equal(testConfig.afterPack, "desktop/branding/after-pack-pe.cjs");
 });
