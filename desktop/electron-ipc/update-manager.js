@@ -79,7 +79,14 @@ function createUpdateManager({ updater, onChange = () => {}, askInstall,
 
   const transition = (next, info = null) => {
     if (stopped || installing) return;
-    if (info && VALID_VERSION.test(String(info.version ?? ""))) {
+    if (info) {
+      if (typeof info.version !== "string" || info.version.length > 64 ||
+          !VALID_VERSION.test(info.version)) {
+        state = "error";
+        version = null;
+        emit();
+        return;
+      }
       version = info.version;
     }
     state = next;
