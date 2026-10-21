@@ -35,6 +35,7 @@ test("unsigned test installer includes only app code and isolated collector asse
   assert.deepEqual(config.files.sort(), [
     "icon.ico", "main.js", "package.json", "preload.js",
     "quotaops-icon.ico", "quotaops-tray.ico", "scheduler.js", "security.js",
+    "update-manager.js", "update-policy.json",
   ].sort());
   const resources = new Map(config.extraResources.map((set) => [set.to, set.from]));
   assert.equal(resources.get("static-dist"), "desktop/static-dist");
