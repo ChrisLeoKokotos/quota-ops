@@ -7,6 +7,7 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { assertSafeProfileDirectory } from "./security.ts";
 import { claudeLaunchMode } from "./claude-launch-mode.ts";
 import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
+import { requiresManualClaudeVerification } from "./verification-state.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -383,6 +384,44 @@ async function readVisibleUsagePanel(
   }
 }
 
+/**
+ * Detect a provider-owned human verification challenge after normal Usage
+ * collection failed. No challenge is clicked or solved, and no page text,
+ * frame URL, user data or challenge token is returned to the collector.
+ */
+async function hasManualClaudeVerification(page: Page): Promise<boolean> {
+  try {
+    const signals = await page.evaluate(() => {
+      const title = (document.title ?? "").trim();
+      const titleIsChallenge =
+        /^(?:just a moment\.{0,3}|verify you are human|checking your browser)\s*$/i.test(title);
+      const challengePrompt = /^(?:verify you are human|verify you're human|confirm you are human|checking your browser|checking if the site connection is secure)$/i;
+      const visibleChallengePrompt = Array
+        .from(document.querySelectorAll("h1, h2, label"))
+        .slice(0, 80)
+        .some((node) => challengePrompt.test((node.textContent ?? "").trim().replace(/\s+/g, " ")));
+      const trustedChallengeFrame = Array
+        .from(document.querySelectorAll("iframe[src]"))
+        .slice(0, 32)
+        .some((frame) => {
+          try {
+            const src = frame.getAttribute("src");
+            if (!src) return false;
+            const url = new URL(src, document.baseURI);
+            return url.protocol === "https:" &&
+              url.hostname === "challenges.cloudflare.com";
+          } catch {
+            return false;
+          }
+        });
+      return { titleIsChallenge, visibleChallengePrompt, trustedChallengeFrame };
+    });
+    return requiresManualClaudeVerification(signals);
+  } catch {
+    return false;
+  }
+}
+
 function result(
   account: CollectorAccountConfig,
   status: CollectorAccountResult["status"],
@@ -445,6 +484,13 @@ async function collectFromContext(
   const usage = selected.usage;
 
   if (!usage) {
+    if (await hasManualClaudeVerification(page)) {
+      return result(
+        account,
+        "verification_required",
+        "Claude requires manual human verification in this local profile. Open the profile interactively and complete the provider's verification; QuotaOps will not bypass it.",
+      );
+    }
     return result(
       account,
       "unsupported",
