@@ -349,23 +349,28 @@ async function readVisibleUsagePanel(
   try {
     const panel = await page.evaluate(() => {
       const text = document.body?.innerText ?? "";
-      // Match only exact section headings, not incidental page mentions.
-      // Keep the extraction inside the browser: return at most 4 KiB of
-      // the bounded Usage panel, never the full page or session material.
-      const headings = /^(?:Your usage limits(?:\s+\S+)?|Plan usage limits)$/i;
+      // A screenshot-verified 2026 Claude layout starts its quota widget at
+      // "Current session", with "Weekly limit · All models" further down.
+      // Return only this bounded widget, never entire page or browser state.
       const boundaries = /^(?:Limit resets|Usage credits)$/i;
+      const weeklyLabels = /^(?:Weekly limits|Weekly limit\s*[·•]\s*All models(?:\s*[›>])?)$/i;
       const lines = text.split(/\r?\n/);
       for (let start = 0; start < lines.length; start++) {
         const heading = lines[start];
         if (heading === undefined ||
-            !headings.test(heading.trim().replace(/\s+/g, " "))) continue;
+            heading.trim().replace(/\s+/g, " ").toLowerCase() !== "current session") {
+          continue;
+        }
         let length = heading.length;
+        let seenWeekly = false;
         for (let end = start + 1; end < lines.length; end++) {
           const line = lines[end];
           if (line === undefined) break;
           length += line.length + 1;
           if (length > 4096) break;
-          if (boundaries.test(line.trim().replace(/\s+/g, " "))) {
+          const normalized = line.trim().replace(/\s+/g, " ");
+          if (weeklyLabels.test(normalized)) seenWeekly = true;
+          if (seenWeekly && boundaries.test(normalized)) {
             return lines.slice(start, end + 1).join("\n");
           }
         }
