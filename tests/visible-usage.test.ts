@@ -84,34 +84,34 @@ test("new section heading still refuses missing or ambiguous percentages", () =>
   assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("Usage credits", "")), null);
 });
 
-// Screenshot from the owner's real Claude Settings > Usage on 14 Nov 2026.
-// The title above this widget was scrolled away; do not require one.
-const screenshotUsagePanel = `Current session
+// The current combined-weekly layout, with synthetic percentages rather
+// than live account usage. The title might not be visible above this widget.
+const combinedWeeklyLayout = `Current session
 Starts with your first message
 0% used
 Weekly limit · All models
-Resets Fri 10:00 PM
-17% used
+Resets next week
+42.5% used
 Limit resets
 `;
 
-test("accepts screenshot-verified combined weekly quota and 0% session usage", () => {
-  assert.deepEqual(parseVisibleClaudeUsagePanel(screenshotUsagePanel), {
+test("accepts combined weekly quota and exact 0% current session usage", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(combinedWeeklyLayout), {
     fiveHour: { usedPercent: 0, resetAt: null },
-    weekly: { usedPercent: 17, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
   });
   assert.deepEqual(
-    parseVisibleClaudeUsagePanel(screenshotUsagePanel.replace("Weekly limit · All models", "Weekly limit · All models ›")),
-    { fiveHour: { usedPercent: 0, resetAt: null }, weekly: { usedPercent: 17, resetAt: null } },
+    parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · All models ›")),
+    { fiveHour: { usedPercent: 0, resetAt: null }, weekly: { usedPercent: 42.5, resetAt: null } },
   );
 });
 
 test("combined weekly layout fails closed on missing, extra or misplaced quota values", () => {
-  assert.equal(parseVisibleClaudeUsagePanel(screenshotUsagePanel.replace("17% used", "")), null);
-  assert.equal(parseVisibleClaudeUsagePanel(screenshotUsagePanel.replace("0% used", "0% used\n50% used")), null);
-  assert.equal(parseVisibleClaudeUsagePanel(screenshotUsagePanel.replace("Weekly limit · All models", "Weekly limit · Sonnet")), null);
-  assert.equal(parseVisibleClaudeUsagePanel(screenshotUsagePanel.replace("Limit resets", "")), null);
-  assert.equal(parseVisibleClaudeUsagePanel("Verify you are human\nCurrent session\n0% used\nWeekly limit · All models\n17% used\nLimit resets"), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("42.5% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("0% used", "0% used\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · Sonnet")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Limit resets", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel("Verify you are human\nCurrent session\n0% used\nWeekly limit · All models\n42.5% used\nLimit resets"), null);
 });
 
 test("uses API data without attempting a DOM fallback", async () => {
