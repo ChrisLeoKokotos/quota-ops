@@ -56,6 +56,34 @@ test("rejects excessive input rather than scanning arbitrary private page text",
   assert.equal(parseVisibleClaudeUsagePanel(observedPanel + "x".repeat(4096)), null);
 });
 
+
+// Anthropic's 2026 Help Center now calls the section "Plan usage limits"
+// and documents "Usage credits" immediately below it.
+const planUsagePanel = `Plan usage limits
+Current session
+Resets in 2 hr 12 min
+25% used
+Weekly limits
+All models
+Resets Fri 11:00 PM
+42.5% used
+Usage credits
+`;
+
+test("accepts Plan usage limits followed by Usage credits as the visible section boundary", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(planUsagePanel), {
+    fiveHour: { usedPercent: 25, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+});
+
+test("new section heading still refuses missing or ambiguous percentages", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("25% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("42.5% used", "42.5% used\\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("All models", "Other models")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("Usage credits", "")), null);
+});
+
 test("uses API data without attempting a DOM fallback", async () => {
   const api = parseVisibleClaudeUsagePanel(observedPanel);
   assert.ok(api);
