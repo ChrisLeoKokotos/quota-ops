@@ -46,12 +46,16 @@ export function parseVisibleClaudeUsagePanel(text: unknown): VisibleClaudeUsage 
     .filter(Boolean);
 
   // The panel has to be identifiable as usage data, not arbitrary account text.
-  if (!/^Your usage limits(?:\s+\S+)?$/i.test(lines[0] ?? "")) return null;
+  if (!/^(?:Your usage limits(?:\s+\S+)?|Plan usage limits)$/i.test(lines[0] ?? "")) return null;
 
   const current = exactLineIndex(lines, "Current session", 1);
   const weekly = exactLineIndex(lines, "Weekly limits", current + 1);
   const allModels = exactLineIndex(lines, "All models", weekly + 1);
-  const end = exactLineIndex(lines, "Limit resets", allModels + 1);
+  // Two observed section boundaries. Never scan into other quota/credit widgets.
+  const end = [
+    exactLineIndex(lines, "Limit resets", allModels + 1),
+    exactLineIndex(lines, "Usage credits", allModels + 1),
+  ].filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? -1;
   if (!(current > 0 && weekly > current && allModels > weekly && end > allModels)) {
     return null;
   }
