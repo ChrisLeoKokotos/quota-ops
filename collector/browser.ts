@@ -352,17 +352,17 @@ async function readVisibleUsagePanel(
       // Match only exact section headings, not incidental page mentions.
       // Keep the extraction inside the browser: return at most 4 KiB of
       // the bounded Usage panel, never the full page or session material.
-      const headings = /^(?:Your usage limits(?:\\s+\\S+)?|Plan usage limits)$/i;
+      const headings = /^(?:Your usage limits(?:\s+\S+)?|Plan usage limits)$/i;
       const boundaries = /^(?:Limit resets|Usage credits)$/i;
-      const lines = text.split(/\\r?\\n/);
+      const lines = text.split(/\r?\n/);
       for (let start = 0; start < lines.length; start++) {
-        if (!headings.test(lines[start].trim().replace(/\\s+/g, " "))) continue;
+        if (!headings.test(lines[start].trim().replace(/\s+/g, " "))) continue;
         let length = lines[start].length;
         for (let end = start + 1; end < lines.length; end++) {
           length += lines[end].length + 1;
           if (length > 4096) break;
-          if (boundaries.test(lines[end].trim().replace(/\\s+/g, " "))) {
-            return lines.slice(start, end + 1).join("\\n");
+          if (boundaries.test(lines[end].trim().replace(/\s+/g, " "))) {
+            return lines.slice(start, end + 1).join("\n");
           }
         }
       }
