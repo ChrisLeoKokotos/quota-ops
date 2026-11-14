@@ -23,7 +23,12 @@ operational collector or a trustworthy Windows installer.
    certificate/publisher identity, a protected build/release workflow and
    isolated signed old-to-new upgrade testing are not yet supplied. The
    updater is disabled in unsigned builds, by design.
-4. **Review:** Security and QA approval, provenance of npm dependency lock,
+4. **Dependency audit:** Hosted CI identified **critical** advisories for
+   Next.js `16.3.8` (GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr,
+   GHSA-p3m5-59mp-jv5r). The code branch pins `16.4.6`, but the root
+   `package-lock.json` has NOT YET been regenerated and tested. Until the
+   lockfile is reviewed, committed and CI audit passes, the release is blocked.
+5. **Review:** Security and QA approval, provenance of npm dependency lock,
    CI checks on the actual proposed release SHA, and a release owner
    decision are outstanding.
 
