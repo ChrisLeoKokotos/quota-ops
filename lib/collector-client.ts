@@ -18,7 +18,7 @@ export type CollectorConnectionState =
 interface CollectorAccountResult {
   id: string;
   label: string;
-  status: "ok" | "login_required" | "unavailable" | "unsupported";
+  status: "ok" | "login_required" | "verification_required" | "unavailable" | "unsupported";
   account: QuotaAccount | null;
   checkedAt: string;
   message: string | null;
