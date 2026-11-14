@@ -45,19 +45,49 @@ export function parseVisibleClaudeUsagePanel(text: unknown): VisibleClaudeUsage 
     .map((line) => line.trim().replace(/\s+/g, " "))
     .filter(Boolean);
 
-  // The panel has to be identifiable as usage data, not arbitrary account text.
-  if (!/^Your usage limits(?:\s+\S+)?$/i.test(lines[0] ?? "")) return null;
+  // A bounded browser extraction may begin at "Current session" rather
+  // than including the page title. Require exact, ordered section labels
+  // for BOTH windows so unrelated percentages cannot be mistaken for quota.
+  const first = lines[0] ?? "";
+  const hasTitle = /^(?:Your usage limits(?:\s+\S+)?|Plan usage limits)$/i.test(first);
+  if (!hasTitle && first.toLowerCase() !== "current session") return null;
+  const current = hasTitle ? exactLineIndex(lines, "Current session", 1) : 0;
+  if (current !== (hasTitle ? 1 : 0)) return null;
 
-  const current = exactLineIndex(lines, "Current session", 1);
-  const weekly = exactLineIndex(lines, "Weekly limits", current + 1);
-  const allModels = exactLineIndex(lines, "All models", weekly + 1);
-  const end = exactLineIndex(lines, "Limit resets", allModels + 1);
-  if (!(current > 0 && weekly > current && allModels > weekly && end > allModels)) {
+  // Older layouts separate "Weekly limits" and "All models". The visible
+  // November 2026 layout combines them as "Weekly limit · All models".
+  const combinedWeekly = lines
+    .map((line, index) =>
+      index > current && /^Weekly limit\s*[·•]\s*All models(?:\s*[›>])?$/i.test(line)
+        ? index : -1)
+    .filter((index) => index >= 0);
+  const legacyWeekly = exactLineIndex(lines, "Weekly limits", current + 1);
+  if (combinedWeekly.length > 1) return null;
+
+  let weekly: number;
+  let weeklyDataStart: number;
+  if (combinedWeekly.length === 1 && legacyWeekly === -1) {
+    weekly = combinedWeekly[0] ?? -1;
+    weeklyDataStart = weekly;
+  } else if (combinedWeekly.length === 0 && legacyWeekly > current) {
+    weekly = legacyWeekly;
+    weeklyDataStart = exactLineIndex(lines, "All models", weekly + 1);
+  } else {
+    return null; // Competing or missing weekly windows.
+  }
+
+  // Never scan into another quota section or the rest of account settings.
+  const end = [
+    exactLineIndex(lines, "Limit resets", weeklyDataStart + 1),
+    exactLineIndex(lines, "Usage credits", weeklyDataStart + 1),
+  ].filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? -1;
+
+  if (!(weekly > current && weeklyDataStart >= weekly && end > weeklyDataStart)) {
     return null;
   }
 
   const fiveHourPercent = uniqueUsedPercent(lines.slice(current + 1, weekly));
-  const weeklyPercent = uniqueUsedPercent(lines.slice(allModels + 1, end));
+  const weeklyPercent = uniqueUsedPercent(lines.slice(weeklyDataStart + 1, end));
   if (fiveHourPercent === null || weeklyPercent === null) return null;
 
   // Relative UI labels ("Resets in 4 hr") and locale-specific weekly labels

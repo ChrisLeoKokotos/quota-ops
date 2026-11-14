@@ -56,6 +56,64 @@ test("rejects excessive input rather than scanning arbitrary private page text",
   assert.equal(parseVisibleClaudeUsagePanel(observedPanel + "x".repeat(4096)), null);
 });
 
+
+// Anthropic's 2026 Help Center now calls the section "Plan usage limits"
+// and documents "Usage credits" immediately below it.
+const planUsagePanel = `Plan usage limits
+Current session
+Resets in 2 hr 12 min
+25% used
+Weekly limits
+All models
+Resets Fri 11:00 PM
+42.5% used
+Usage credits
+`;
+
+test("accepts Plan usage limits followed by Usage credits as the visible section boundary", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(planUsagePanel), {
+    fiveHour: { usedPercent: 25, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+});
+
+test("new section heading still refuses missing or ambiguous percentages", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("25% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("42.5% used", "42.5% used\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("All models", "Other models")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("Usage credits", "")), null);
+});
+
+// The current combined-weekly layout, with synthetic percentages rather
+// than live account usage. The title might not be visible above this widget.
+const combinedWeeklyLayout = `Current session
+Starts with your first message
+0% used
+Weekly limit · All models
+Resets next week
+42.5% used
+Limit resets
+`;
+
+test("accepts combined weekly quota and exact 0% current session usage", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(combinedWeeklyLayout), {
+    fiveHour: { usedPercent: 0, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+  assert.deepEqual(
+    parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · All models ›")),
+    { fiveHour: { usedPercent: 0, resetAt: null }, weekly: { usedPercent: 42.5, resetAt: null } },
+  );
+});
+
+test("combined weekly layout fails closed on missing, extra or misplaced quota values", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("42.5% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("0% used", "0% used\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · Sonnet")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Limit resets", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel("Verify you are human\nCurrent session\n0% used\nWeekly limit · All models\n42.5% used\nLimit resets"), null);
+});
+
 test("uses API data without attempting a DOM fallback", async () => {
   const api = parseVisibleClaudeUsagePanel(observedPanel);
   assert.ok(api);
