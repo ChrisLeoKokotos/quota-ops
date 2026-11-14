@@ -169,7 +169,7 @@ try {
 
   // A brief stable period distinguishes healthy startup from immediate exit.
   await sleep(3000);
-  if (observedExit !== null) {
+  if (observedExit !== null && !testQuit) {
     throw new Error(`packaged application exited just after startup: ${JSON.stringify(observedExit)}`);
   }
 
