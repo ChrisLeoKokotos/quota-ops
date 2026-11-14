@@ -349,11 +349,24 @@ async function readVisibleUsagePanel(
   try {
     const panel = await page.evaluate(() => {
       const text = document.body?.innerText ?? "";
-      const start = text.indexOf("Your usage limits");
-      if (start < 0) return null;
-      const end = text.indexOf("Limit resets", start);
-      if (end < 0 || end + "Limit resets".length - start > 4096) return null;
-      return text.slice(start, end + "Limit resets".length);
+      // Match only exact section headings, not incidental page mentions.
+      // Keep the extraction inside the browser: return at most 4 KiB of
+      // the bounded Usage panel, never the full page or session material.
+      const headings = /^(?:Your usage limits(?:\\s+\\S+)?|Plan usage limits)$/i;
+      const boundaries = /^(?:Limit resets|Usage credits)$/i;
+      const lines = text.split(/\\r?\\n/);
+      for (let start = 0; start < lines.length; start++) {
+        if (!headings.test(lines[start].trim().replace(/\\s+/g, " "))) continue;
+        let length = lines[start].length;
+        for (let end = start + 1; end < lines.length; end++) {
+          length += lines[end].length + 1;
+          if (length > 4096) break;
+          if (boundaries.test(lines[end].trim().replace(/\\s+/g, " "))) {
+            return lines.slice(start, end + 1).join("\\n");
+          }
+        }
+      }
+      return null;
     });
     return parseVisibleClaudeUsagePanel(panel);
   } catch {
