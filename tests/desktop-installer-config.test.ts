@@ -103,3 +103,22 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   assert.equal(testConfig.afterExtract, "desktop/branding/after-extract-pe.cjs");
   assert.equal(testConfig.afterPack, "desktop/branding/after-pack-pe.cjs");
 });
+
+test("isolated Quit smoke cannot be enabled without a validated disposable Electron home", async () => {
+  const main = await readFile(
+    new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8",
+  );
+  const smoke = await readFile(
+    new URL("../scripts/windows-packaged-startup-smoke.mjs", import.meta.url), "utf8",
+  );
+  assert.match(main, /let validatedSmokeHome = false/);
+  assert.match(main, /validatedSmokeHome = true/);
+  assert.match(main, /validatedSmokeHome && process\.env\.QUOTAOPS_SMOKE_REQUEST_QUIT === "1"/);
+  assert.match(main, /quotaops-packaged-test/);
+  assert.match(main, /child\.postMessage\(\{ action: "shutdown" \}\)/);
+  assert.match(smoke, /process\.argv\[2\] === "--quit"/);
+  assert.match(smoke, /QUOTAOPS_SMOKE_REQUEST_QUIT: testQuit \? "1" : "0"/);
+  assert.match(smoke, /collector_shutdown_completed/);
+  assert.match(smoke, /electron_will_quit/);
+  assert.doesNotMatch(smoke, /taskkill\.exe.*QuotaOps\.exe/);
+});
