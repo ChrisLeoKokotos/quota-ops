@@ -79,7 +79,7 @@ test("accepts Plan usage limits followed by Usage credits as the visible section
 
 test("new section heading still refuses missing or ambiguous percentages", () => {
   assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("25% used", "")), null);
-  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("42.5% used", "42.5% used\\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("42.5% used", "42.5% used\n50% used")), null);
   assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("All models", "Other models")), null);
   assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("Usage credits", "")), null);
 });
