@@ -113,6 +113,7 @@ function classifyCollectorError(value) {
 // This opt-in path is constrained to our disposable test sandbox and must be
 // set before requestSingleInstanceLock() / the first ready event.
 // Ordinary desktop launches always keep Electron's normal userData directory.
+let validatedSmokeHome = false;
 const smokeUserData = process.env.QUOTAOPS_SMOKE_USER_DATA;
 if (smokeUserData !== undefined) {
   const home = process.env.USERPROFILE;
@@ -134,6 +135,7 @@ if (smokeUserData !== undefined) {
     throw new Error("Refusing an unsafe packaged-smoke Electron userData override");
   }
   app.setPath("userData", smokeUserData);
+  validatedSmokeHome = true;
   startupMark("smoke_electron_userdata_isolated");
 }
 
@@ -604,6 +606,7 @@ function buildTrayMenu() {
     {
       label: "Quit",
       click: () => {
+        startupMark("tray_quit_requested");
         quitting = true;
         scheduler?.cancel();
         app.quit();
@@ -769,6 +772,18 @@ if (!firstInstance) {
   configureSignedUpdates();
   startupMark("ui_initialised");
 
+  // Test-only Quit request. Validated disposable homes have an isolated
+  // Electron lock and zero real provider accounts in the smoke fixture.
+  // Ordinary installs and user environments cannot enable this path.
+  if (validatedSmokeHome && process.env.QUOTAOPS_SMOKE_REQUEST_QUIT === "1") {
+    setTimeout(() => {
+      startupMark("smoke_quit_requested");
+      quitting = true;
+      scheduler?.cancel();
+      app.quit();
+    }, 6_000).unref();
+  }
+
   // Drive the schedule from one timer; the scheduler decides whether a tick
   // is due, so the interval here is only a resolution, not a policy.
   setInterval(() => {
@@ -784,6 +799,7 @@ if (!firstInstance) {
 
 let quitWaitingForCollector = false;
 app.on("before-quit", (event) => {
+  startupMark("before_quit");
   quitting = true;
   scheduler?.cancel();
   updateManager?.stop();
@@ -808,6 +824,7 @@ app.on("before-quit", (event) => {
     finished = true;
     clearTimeout(deadline);
     child.off("exit", finish);
+    startupMark("collector_shutdown_completed");
     ownedCollector = null;
     if (installUpdateOnQuit) {
       installUpdateOnQuit = false;
@@ -818,14 +835,18 @@ app.on("before-quit", (event) => {
     }
   };
   const deadline = setTimeout(() => {
+    startupMark("collector_shutdown_deadline");
     try { child.kill(); } catch { /* already exited */ }
     finish();
   }, 45_000);
   child.once("exit", finish);
   try {
     child.postMessage({ action: "shutdown" });
+    startupMark("collector_shutdown_posted");
   } catch {
     try { child.kill(); } catch { /* already exited */ }
     finish();
   }
 });
+
+app.on("will-quit", () => startupMark("electron_will_quit"));
