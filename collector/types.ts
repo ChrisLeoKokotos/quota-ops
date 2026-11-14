@@ -4,6 +4,7 @@ import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 export type CollectorAccountStatus =
   | "ok"
   | "login_required"
+  | "verification_required"
   | "unavailable"
   | "unsupported";
 
