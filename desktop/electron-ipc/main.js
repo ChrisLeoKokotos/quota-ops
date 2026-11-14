@@ -781,7 +781,7 @@ if (!firstInstance) {
       quitting = true;
       scheduler?.cancel();
       app.quit();
-    }, 6_000).unref();
+    }, 12_000).unref();
   }
 
   // Drive the schedule from one timer; the scheduler decides whether a tick
