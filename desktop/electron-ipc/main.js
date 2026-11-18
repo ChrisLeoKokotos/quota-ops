@@ -96,6 +96,14 @@ let installUpdateOnQuit = false;
 // Explicit opt-in startup markers: no account names, URLs, paths, cookies,
 // bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
 const STARTUP_DIAGNOSTICS = process.env.QUOTAOPS_STARTUP_DIAGNOSTICS === "1";
+
+// Windows default: software rendering. Measured idle private memory 319 MB
+// with GPU acceleration, 242 MB without (GPU process 99 -> 21 MB); the static
+// dashboard does not need the GPU. QUOTAOPS_HARDWARE_ACCELERATION=1 restores
+// it for diagnosis. Must run before the app is ready.
+if (process.platform === "win32" && process.env.QUOTAOPS_HARDWARE_ACCELERATION !== "1") {
+  app.disableHardwareAcceleration();
+}
 function startupMark(code) {
   if (STARTUP_DIAGNOSTICS) process.stdout.write(`[quotaops-startup] ${code}\n`);
 }
