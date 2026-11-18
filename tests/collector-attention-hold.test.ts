@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { AttentionHolds } from "../collector/attention-hold.ts";
+import { AttentionHolds, BACKGROUND_RETRY_MS } from "../collector/attention-hold.ts";
 import type { CollectorAccountResult } from "../collector/types.ts";
 
 // Issue #49: a provider challenge or a signed-out profile needs a person.
@@ -21,7 +21,7 @@ test("after a verification challenge, scheduled cycles report it without collect
   assert.equal(held.status, "verification_required");
   assert.equal(held.checkedAt, "2026-11-18T10:00:00.000Z", "a held result must not look freshly collected");
   assert.equal(held.account, null, "no usage values are invented");
-  assert.match(held.message ?? "", /Automatic checks are paused/);
+  assert.match(held.message ?? "", /Background checks are paused/);
 });
 
 test("a refresh the person asks for tries a held account again, and success clears the hold", () => {
@@ -78,10 +78,65 @@ test("the verification path uses the normal browser and a config-validated accou
   assert.match(main, /ACCOUNT_ID_PATTERN\.test\(accountId\)/);
   // The tray must learn a held account within its own 30 s tick, not the
   // scheduler's 5-minute snapshot interval (found by the packaged E2E).
-  assert.match(main, /const tick = \(\) => \{ void refreshAttention\(\)\.finally\(refreshTray\); \};/);
+  assert.match(main, /Promise\.all\(\[refreshAttention\(\), refreshCollectorSettings\(\)\]\)\.finally\(refreshTray\)/);
   assert.match(main, /setInterval\(tick, 30_000\)/);
   assert.doesNotMatch(main, /scheduler\?\.lastResult/);
   // The renderer still has no route to collector POST operations.
   const preload = await readFile(new URL("../desktop/electron-ipc/preload.js", import.meta.url), "utf8").catch(() => "");
   assert.doesNotMatch(preload, /verify|monitoring/);
+});
+
+test("a held account is retried in the background at most once per day", () => {
+  let now = Date.parse("2026-11-18T10:00:00.000Z");
+  const holds = new AttentionHolds(() => now);
+  holds.record(resultWith("verification_required"));
+  now += BACKGROUND_RETRY_MS - 1;
+  assert.ok(holds.skip(account, "scheduled"), "still within the retry window");
+  now += 2;
+  assert.equal(holds.skip(account, "scheduled"), null, "one background retry after a day");
+});
+
+test("a consented visible refresh retries a held account", () => {
+  const holds = new AttentionHolds();
+  holds.record(resultWith("verification_required"));
+  assert.equal(holds.skip(account, "visible"), null);
+});
+
+test("holds survive a restart and carry statuses and timestamps only", () => {
+  const now = Date.parse("2026-11-18T10:00:00.000Z");
+  const first = new AttentionHolds(() => now);
+  first.record({ ...resultWith("verification_required"), message: "secret page text must not persist" });
+  const saved = first.serialize();
+  assert.doesNotMatch(saved, /secret page text|account"|usedPercent/);
+  const second = new AttentionHolds(() => now + 1_000);
+  second.restore(saved, new Map([[account.id, account.label]]));
+  assert.ok(second.skip(account, "scheduled"));
+  // Unknown accounts, other statuses and future timestamps are dropped.
+  const third = new AttentionHolds(() => now);
+  third.restore(JSON.stringify({ version: 1, holds: [
+    { id: "unknown", status: "verification_required", checkedAt: "2026-11-18T09:00:00.000Z", heldAt: now - 1 },
+    { id: account.id, status: "ok", checkedAt: "2026-11-18T09:00:00.000Z", heldAt: now - 1 },
+  ] }), new Map([[account.id, account.label]]));
+  assert.equal(third.isHeld(account.id), false);
+  assert.equal(third.isHeld("unknown"), false);
+  const fourth = new AttentionHolds(() => now);
+  fourth.restore("not json", new Map());
+  assert.equal(fourth.isHeld(account.id), false);
+});
+
+test("only a consented visible refresh opens browser windows; background is headless", async () => {
+  const service = await readFile(new URL("../collector/service.ts", import.meta.url), "utf8");
+  assert.match(service, /const visible = trigger === "visible";/);
+  assert.match(service, /collectProviderUsage\(account, \{ signal, visible \}\)/);
+  assert.match(service, /trigger === "scheduled" && current\.backgroundCollection === "off"\) return null/);
+  assert.match(service, /request\.url === "\/monitoring\/refresh-visible"/);
+
+  const main = await readFile(new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8");
+  const start = main.indexOf("async function runVisibleRefresh()");
+  const body = main.slice(start, main.indexOf("/** Open one isolated profile", start));
+  const consent = body.indexOf("dialog.showMessageBox(");
+  const request = body.indexOf('collectorControl("refreshVisible")');
+  assert.ok(consent > 0 && request > consent, "the visible refresh is requested only after the consent dialog");
+  assert.match(body, /if \(choice\.response !== 1\) return;/);
+  assert.equal((main.match(/collectorControl\("refreshVisible"\)/g) ?? []).length, 1);
 });

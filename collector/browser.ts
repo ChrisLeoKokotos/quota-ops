@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+// Type-only: playwright-core (~63 MB resident once loaded) is imported on
+// first browser launch, not when the collector starts.
+import type { BrowserContext, Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
 import {
@@ -12,7 +14,7 @@ import {
   withCancellableContext,
   withTimeout,
 } from "./browser-session.ts";
-import { claudeLaunchMode } from "./claude-launch-mode.ts";
+import { collectionLaunchMode } from "./claude-launch-mode.ts";
 import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
 import {
   isChallengeResponseHeader,
@@ -116,7 +118,9 @@ async function launchProfile(
   visible: boolean,
 ): Promise<BrowserContext> {
   await assertSafeProfileDirectory(account.profileDir);
-  const mode = claudeLaunchMode(process.platform, visible);
+  // Unattended collection is headless: no window, no focus change.
+  const mode = collectionLaunchMode(visible ? "visible" : "background");
+  const { chromium } = await import("playwright-core");
 
   const options = {
     headless: mode.headless,

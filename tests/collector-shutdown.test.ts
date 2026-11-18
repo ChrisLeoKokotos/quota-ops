@@ -137,5 +137,5 @@ test("production bounds keep the collector inside the parent's Quit deadline", a
   assert.ok(parentDeadline <= 30_000, "Quit must not wait the former 45 s");
   const service = await readFile(new URL("../collector/service.ts", import.meta.url), "utf8");
   assert.match(service, /createCollectorShutdown\(/);
-  assert.match(service, /collectProviderUsage\(account, \{ signal \}\)/);
+  assert.match(service, /collectProviderUsage\(account, \{ signal, visible \}\)/);
 });

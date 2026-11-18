@@ -67,6 +67,7 @@ const COLLECTOR_CONTROLS = Object.freeze({
   pause: "http://127.0.0.1:4317/monitoring/pause",
   resume: "http://127.0.0.1:4317/monitoring/resume",
   refresh: "http://127.0.0.1:4317/monitoring/refresh",
+  refreshVisible: "http://127.0.0.1:4317/monitoring/refresh-visible",
 });
 const MAX_RESPONSE_BYTES = 262_144;
 const MIN_SNAPSHOT_INTERVAL_MS = 1_000;
@@ -485,6 +486,74 @@ function accountsNeedingPerson() {
   return attentionAccounts;
 }
 
+// What the tray needs from collector.json: the background mode and how many
+// accounts a visible refresh would open. Read-only, bounded; nothing else.
+let collectorSettings = { background: "headless", enabledAccounts: 0 };
+async function refreshCollectorSettings() {
+  try {
+    const file = path.join(homedir(), ".quotaops", "collector.json");
+    const raw = await readFile(file, "utf8");
+    if (raw.length > 1_048_576) return;
+    const parsed = JSON.parse(raw);
+    collectorSettings = {
+      background: parsed?.backgroundCollection === "off" ? "off" : "headless",
+      enabledAccounts: Array.isArray(parsed?.accounts)
+        ? parsed.accounts.filter((account) => account && account.enabled === true).length
+        : 0,
+    };
+  } catch {
+    // Keep the last known settings.
+  }
+}
+
+/**
+ * Person-initiated collection in visible browser windows. Background
+ * collection is headless and cannot reach a page that the provider only
+ * serves to a visible browser; this is the consented alternative.
+ */
+async function runVisibleRefresh() {
+  if (trayCommandPending) return;
+  await refreshCollectorSettings();
+  const count = collectorSettings.enabledAccounts;
+  if (count === 0) return;
+  const choice = await dialog.showMessageBox({
+    type: "info",
+    buttons: ["Cancel", "Open browser windows"],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    title: "QuotaOps visible refresh",
+    message: `Open a browser window for each of your ${count} account${count === 1 ? "" : "s"}?`,
+    detail:
+      "QuotaOps will open one window at a time, read the usage page and close it " +
+      `(about 15 seconds each, about ${Math.max(1, Math.round((count * 15) / 60))} minute${count * 15 > 90 ? "s" : ""} in total). ` +
+      "Windows may switch to these windows; avoid typing until QuotaOps finishes. " +
+      "QuotaOps does not complete verifications for you: if a provider asks you to " +
+      "verify, use Manual verification required in this menu.",
+  });
+  if (choice.response !== 1) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    if (!(await collectorControl("refreshVisible"))) {
+      trayCommandError = "Collector command failed; nothing was opened";
+      return;
+    }
+    if (Notification.isSupported()) {
+      try {
+        new Notification({
+          title: "QuotaOps is refreshing",
+          body: "Browser windows will open and close for each account. Avoid typing until it finishes.",
+        }).show();
+      } catch { /* optional */ }
+    }
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
 /** Open one isolated profile in the normal browser for manual verification. */
 async function runVerifyCommand(accountId) {
   if (trayCommandPending || !ACCOUNT_ID_PATTERN.test(accountId)) return;
@@ -649,6 +718,14 @@ function buildTrayMenu() {
       },
     },
     {
+      // Visible browser windows only after the person agrees, every time.
+      label: "Refresh with visible browser...",
+      enabled: !trayCommandPending && !paused && collectorSettings.enabledAccounts > 0,
+      click: () => {
+        void runVisibleRefresh();
+      },
+    },
+    {
       label: paused ? "Resume monitoring" : "Pause monitoring",
       enabled: !trayCommandPending,
       click: () => {
@@ -660,6 +737,12 @@ function buildTrayMenu() {
     ...(trayCommandError ? [{ label: trayCommandError, enabled: false }] : []),
     {
       label: paused ? "Monitoring paused" : "Monitoring active",
+      enabled: false,
+    },
+    {
+      label: collectorSettings.background === "off"
+        ? "Background checks: off (refresh manually)"
+        : "Background checks: hidden, no windows",
       enabled: false,
     },
     ...attentionRows,
@@ -769,7 +852,10 @@ function createTray() {
 
   // The menu shows live state, so it is rebuilt on a slow tick rather than
   // only when something is clicked.
-  const tick = () => { void refreshAttention().finally(refreshTray); };
+  const tick = () => {
+    void Promise.all([refreshAttention(), refreshCollectorSettings()]).finally(refreshTray);
+  };
+  void refreshCollectorSettings().finally(refreshTray);
   setTimeout(tick, 15_000).unref();
   setInterval(tick, 30_000).unref();
 }

@@ -4,7 +4,13 @@ import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
-import { AttentionHolds, type RefreshTrigger } from "./attention-hold.ts";
+import {
+  AttentionHolds,
+  loadHolds,
+  persistHolds,
+  type RefreshTrigger,
+} from "./attention-hold.ts";
+import { getCollectorStatePath } from "./paths.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
@@ -53,6 +59,8 @@ async function main(): Promise<void> {
   // Accounts waiting for a person (challenge / signed out) are not retried by
   // scheduled cycles; see attention-hold.ts (issue #49).
   const holds = new AttentionHolds();
+  const statePath = getCollectorStatePath();
+  await loadHolds(holds, statePath, new Map(config.accounts.map((account) => [account.id, account.label])));
   const interactiveProfiles = new Map<string, InteractiveProfile>();
   let nextTrigger: RefreshTrigger = "scheduled";
 
@@ -61,8 +69,13 @@ async function main(): Promise<void> {
       const trigger = nextTrigger;
       nextTrigger = "scheduled";
       const current = await loadCollectorConfig();
+      // Unattended collection switched off: only a person's request collects.
+      if (trigger === "scheduled" && current.backgroundCollection === "off") return null;
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
+      // Only a consented, person-initiated refresh may show a browser window;
+      // everything else is headless and cannot take the foreground.
+      const visible = trigger === "visible";
 
       for (const account of enabled) {
         if (invalidated()) return null;
@@ -72,10 +85,11 @@ async function main(): Promise<void> {
           continue;
         }
         // The signal aborts on shutdown and closes this account's profile.
-        const result = await collectProviderUsage(account, { signal });
+        const result = await collectProviderUsage(account, { signal, visible });
         if (!invalidated()) holds.record(result);
         nextResults.push(result);
       }
+      await persistHolds(holds, statePath);
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
       const nextTokens = current.tokenAnalyticsEnabled
@@ -219,6 +233,16 @@ async function main(): Promise<void> {
         });
         return;
       }
+      if (request.url === "/monitoring/refresh-visible") {
+        // Main process asks only after the person confirmed a dialog that
+        // says browser windows will open and may take focus.
+        nextTrigger = "visible";
+        const queued = monitoring.queueRefresh();
+        sendJson(request, response, queued ? 202 : 409, {
+          status: queued ? "accepted" : "paused", ...monitoring.status(),
+        });
+        return;
+      }
       if (request.url?.startsWith("/accounts/verify?")) {
         void openForVerification(request, response);
         return;
@@ -259,11 +283,16 @@ async function main(): Promise<void> {
     );
   });
 
-  monitoring.queueRefresh();
-  const timer = setInterval(
-    () => monitoring.queueRefresh(),
-    config.pollIntervalSeconds * 1000,
-  );
+  // Scheduled ticks honour backgroundCollection at the time they fire.
+  const scheduledTick = () => {
+    void loadCollectorConfig()
+      .then((current) => {
+        if (current.backgroundCollection !== "off") monitoring.queueRefresh();
+      })
+      .catch(() => undefined);
+  };
+  scheduledTick();
+  const timer = setInterval(scheduledTick, config.pollIntervalSeconds * 1000);
 
   // Bounded: cancels the in-flight provider browser, drains for a few
   // seconds, closes the listener and its keep-alive sockets, then exits.

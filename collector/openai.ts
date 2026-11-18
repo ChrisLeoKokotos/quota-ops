@@ -1,6 +1,7 @@
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import { collectionLaunchMode } from "./claude-launch-mode.ts";
 import {
   BROWSER_LAUNCH_TIMEOUT_MS,
   CollectionCancelledError,
@@ -28,22 +29,18 @@ async function launchOpenAIProfile(
   visible: boolean,
 ): Promise<BrowserContext> {
   await assertSafeProfileDirectory(account.profileDir);
+  // Unattended collection is headless: no window, no focus change.
+  const mode = collectionLaunchMode(visible ? "visible" : "background");
+  const { chromium } = await import("playwright-core");
 
   const options = {
-    headless: false,
+    headless: mode.headless,
     viewport: { width: 1280, height: 900 },
     acceptDownloads: false,
     chromiumSandbox: true,
     // Explicit bound; Playwright's default is 180 s per channel.
     timeout: BROWSER_LAUNCH_TIMEOUT_MS,
-    args: visible
-      ? ["--disable-extensions"]
-      : [
-          "--disable-extensions",
-          "--start-minimized",
-          "--window-position=-32000,-32000",
-          "--window-size=1280,900",
-        ],
+    args: mode.args,
   };
 
   try {
@@ -271,12 +268,12 @@ export async function openOpenAILogin(
 
 export async function collectOpenAIUsageFromBrowser(
   account: CollectorAccountConfig,
-  options: { signal?: AbortSignal | undefined } = {},
+  options: { visible?: boolean; signal?: AbortSignal | undefined } = {},
 ): Promise<CollectorAccountResult> {
   try {
     // Cancellation (collector shutdown) closes the profile immediately.
     return await withCancellableContext(
-      () => launchOpenAIProfile(account, false),
+      () => launchOpenAIProfile(account, options.visible === true),
       async (context) => {
         const page = context.pages()[0] ?? (await context.newPage());
         await page.goto(CHATGPT_HOME, {

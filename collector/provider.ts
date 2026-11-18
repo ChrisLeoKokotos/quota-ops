@@ -27,8 +27,10 @@ export async function collectProviderUsage(
   options: { visible?: boolean; signal?: AbortSignal | undefined } = {},
 ): Promise<CollectorAccountResult> {
   if (account.provider === "openai") {
-    if (options.visible) throw new Error("Visible diagnostic collection is currently Claude-only.");
-    return await collectOpenAIUsageFromBrowser(account, { signal: options.signal });
+    return await collectOpenAIUsageFromBrowser(account, {
+      visible: options.visible === true,
+      signal: options.signal,
+    });
   }
 
   return await collectClaudeUsageFromBrowser(account, options);

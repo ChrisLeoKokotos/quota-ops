@@ -1,34 +1,32 @@
 /**
- * Select the normal Chromium launch mode for Claude collection.
+ * Browser presentation for provider collection (Claude and OpenAI).
  *
- * On Windows the account's authenticated Usage page has been observed to
- * produce valid quota responses in headed mode while headless returned
- * claude_page_api_not_observed. Prefer normal headed Chromium for both runs.
- * The non-interactive run is started minimized/offscreen on Windows.
+ * background: headless on every platform. It creates no window, so it can
+ *   never take the foreground, dismiss a menu or receive the user's typing.
+ *   Unattended (scheduled) collection only ever uses this mode.
+ * visible: an ordinary headed window. Used only when a person asked for it
+ *   (tray "Refresh with visible browser...", after a consent dialog) or for
+ *   CLI diagnostics. It may take the foreground; the person knows it will.
  *
- * This is NOT an authentication or challenge bypass: the same isolated
- * persistent browser profile is used, and login_required/unsupported states
- * continue to fail closed. The browser process is closed by the caller.
+ * Earlier Windows builds ran a headed browser "minimized/off-screen" in the
+ * background. Measured on Windows 11 (Nov 2026): it still took the foreground
+ * from the user's active app on every collection, closed open tray menus and
+ * routed keystrokes into a window nobody could see. It is not used any more.
+ *
+ * Neither mode changes the user agent, fingerprint or any browser security
+ * setting, and neither opens a DevTools TCP port. Provider verification is
+ * never bypassed: a challenged account is reported as needing a person.
  */
-export interface ClaudeLaunchMode {
+export type BrowserPresentation = "background" | "visible";
+
+export interface CollectionLaunchMode {
   headless: boolean;
   args: string[];
 }
 
-export function claudeLaunchMode(
-  platform: NodeJS.Platform,
-  visible: boolean,
-): ClaudeLaunchMode {
-  const args = ["--disable-extensions"];
-  if (platform === "win32") {
-    if (!visible) {
-      args.push(
-        "--start-minimized",
-        "--window-position=-32000,-32000",
-        "--window-size=1280,900",
-      );
-    }
-    return { headless: false, args };
-  }
-  return { headless: !visible, args };
+export function collectionLaunchMode(presentation: BrowserPresentation): CollectionLaunchMode {
+  return {
+    headless: presentation === "background",
+    args: ["--disable-extensions"],
+  };
 }

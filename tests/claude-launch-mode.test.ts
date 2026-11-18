@@ -1,36 +1,38 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { claudeLaunchMode } from "../collector/claude-launch-mode.ts";
+import { collectionLaunchMode } from "../collector/claude-launch-mode.ts";
 
-test("normal Windows Claude collection uses headed browser minimized/offscreen", () => {
-  const mode = claudeLaunchMode("win32", false);
-  assert.equal(mode.headless, false);
-  assert.ok(mode.args.includes("--start-minimized"));
-  assert.ok(mode.args.includes("--window-position=-32000,-32000"));
-  assert.ok(mode.args.includes("--window-size=1280,900"));
-  assert.ok(mode.args.includes("--disable-extensions"));
+// Owner P0 (Nov 2026): background collection must never take the foreground
+// or receive keyboard input. Headed "minimized/off-screen" did both.
+test("background collection is headless on every platform", () => {
+  const mode = collectionLaunchMode("background");
+  assert.equal(mode.headless, true);
+  assert.deepEqual(mode.args, ["--disable-extensions"]);
 });
 
-test("explicit Windows --visible opens headed browser with no offscreen flags", () => {
-  const mode = claudeLaunchMode("win32", true);
+test("visible collection is an ordinary headed window, nothing hidden", () => {
+  const mode = collectionLaunchMode("visible");
   assert.equal(mode.headless, false);
   assert.deepEqual(mode.args, ["--disable-extensions"]);
 });
 
-test("non-Windows default stays headless; explicit diagnostic is headed", () => {
-  for (const platform of ["linux", "darwin"] as const) {
-    assert.equal(claudeLaunchMode(platform, false).headless, true);
-    assert.equal(claudeLaunchMode(platform, true).headless, false);
+test("no launch mode opens a DevTools TCP port, changes the user agent or weakens security", () => {
+  for (const presentation of ["background", "visible"] as const) {
+    const joined = collectionLaunchMode(presentation).args.join(" ");
+    assert.doesNotMatch(joined, /remote-debugging-(port|address)/);
+    assert.doesNotMatch(joined, /user-agent|no-sandbox|disable-web-security|ignore-certificate-errors|disable-blink-features/);
   }
 });
 
-test("no launch mode opens a remote DevTools TCP port or overrides browser security", () => {
-  for (const platform of ["win32", "linux", "darwin"] as const) {
-    for (const visible of [false, true]) {
-      const joined = claudeLaunchMode(platform, visible).args.join(" ");
-      assert.doesNotMatch(joined, /remote-debugging-(port|address)/);
-      assert.doesNotMatch(joined, /no-sandbox|disable-web-security|ignore-certificate-errors/);
-    }
+test("no collector source hides a headed window off-screen or starts it minimized", async () => {
+  for (const file of ["browser.ts", "openai.ts", "claude-launch-mode.ts", "provider.ts", "service.ts"]) {
+    const source = await readFile(new URL(`../collector/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /--start-minimized|--window-position=-32000|"headless: false"/, file);
+  }
+  for (const file of ["browser.ts", "openai.ts"]) {
+    const source = await readFile(new URL(`../collector/${file}`, import.meta.url), "utf8");
+    assert.match(source, /collectionLaunchMode\(/, `${file} must use the shared launch mode`);
   }
 });

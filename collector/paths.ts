@@ -17,6 +17,11 @@ export function getDefaultProfileDir(id: string): string {
   return join(getProfileRoot(), id);
 }
 
+/** Attention holds only (statuses, timestamps); see attention-hold.ts. */
+export function getCollectorStatePath(): string {
+  return join(getQuotaOpsHome(), "collector-state.json");
+}
+
 export function getCollectorTokenPath(): string {
   return join(getQuotaOpsHome(), "collector.token");
 }

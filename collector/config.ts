@@ -72,7 +72,10 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
       candidate.tokenAnalyticsSources.claudeCode ||
       candidate.tokenAnalyticsSources.codex) &&
     Array.isArray(candidate.accounts) &&
-    candidate.accounts.every(isAccountConfig)
+    candidate.accounts.every(isAccountConfig) &&
+    (candidate.backgroundCollection === undefined ||
+      candidate.backgroundCollection === "headless" ||
+      candidate.backgroundCollection === "off")
   );
 }
 

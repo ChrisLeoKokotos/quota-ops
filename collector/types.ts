@@ -29,6 +29,11 @@ export interface CollectorConfig {
   /** Per-source consent. Reading either source exposes private history. */
   tokenAnalyticsSources: TokenAnalyticsConsent;
   accounts: CollectorAccountConfig[];
+  /**
+   * Unattended (scheduled) collection. "headless" (default when absent) never
+   * opens a window; "off" collects only when a person asks.
+   */
+  backgroundCollection?: "headless" | "off";
 }
 
 export interface CollectorAccountResult {
