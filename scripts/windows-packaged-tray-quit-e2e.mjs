@@ -15,7 +15,7 @@
 //                test home; Quit is invoked while that collection runs.
 //   after-error  same profile; Quit after its collection has ended in a
 //                provider error (signed out), with the account held.
-//   verify-path  same profile, held as "Sign in" after its error: invokes the
+//   verify-path  same profile, held after its challenge/sign-in error: invokes the
 //                tray's per-account item, checks that a NON-automated browser
 //                opens, that automation stays off the profile while it is
 //                open, and that the account is checked once after it closes.
@@ -202,13 +202,18 @@ async function runCycle(cycle) {
     }
     if (scenario === "verify-path") {
       // The tray learns the held state on its next snapshot read.
-      const item = `Sign in: ${accounts[0].label.slice(0, 40)}...`;
+      // A disposable profile is either challenged or simply signed out.
+      const items = ["Manual verification required", "Sign in"]
+        .map((prefix) => `${prefix}: ${accounts[0].label.slice(0, 40)}...`);
       let opened = null;
       for (let attempt = 0; attempt < 8 && !opened?.ok; attempt++) {
-        opened = await invokeTrayItem(child.pid, item);
+        for (const item of items) {
+          opened = await invokeTrayItem(child.pid, item);
+          if (opened.ok) break;
+        }
         if (!opened.ok) await sleep(8_000);
       }
-      if (!opened?.ok) throw new Error(`tray item "${item}" not available: ${opened?.output}`);
+      if (!opened?.ok) throw new Error(`tray attention item not available: ${opened?.output}`);
       let person = [];
       for (let i = 0; i < 30 && person.length === 0; i++) {
         await sleep(500);
