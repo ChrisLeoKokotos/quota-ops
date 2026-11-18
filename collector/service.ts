@@ -4,6 +4,8 @@ import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
+import { AttentionHolds, type RefreshTrigger } from "./attention-hold.ts";
+import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -48,16 +50,31 @@ async function main(): Promise<void> {
   // retrieved a cached /snapshot (which can be many minutes old).
   let generatedAt = new Date(0).toISOString();
 
+  // Accounts waiting for a person (challenge / signed out) are not retried by
+  // scheduled cycles; see attention-hold.ts (issue #49).
+  const holds = new AttentionHolds();
+  const interactiveProfiles = new Map<string, InteractiveProfile>();
+  let nextTrigger: RefreshTrigger = "scheduled";
+
   const monitoring = new MonitoringController(
     async (invalidated, signal) => {
+      const trigger = nextTrigger;
+      nextTrigger = "scheduled";
       const current = await loadCollectorConfig();
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
 
       for (const account of enabled) {
         if (invalidated()) return null;
+        const held = holds.skip(account, trigger);
+        if (held) {
+          nextResults.push(held);
+          continue;
+        }
         // The signal aborts on shutdown and closes this account's profile.
-        nextResults.push(await collectProviderUsage(account, { signal }));
+        const result = await collectProviderUsage(account, { signal });
+        if (!invalidated()) holds.record(result);
+        nextResults.push(result);
       }
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
@@ -71,7 +88,12 @@ async function main(): Promise<void> {
       if (value === null) return;
       results = value.nextResults;
       tokenAnalytics = value.nextTokens;
-      generatedAt = at;
+      // Do not report a fresh collection when no account produced usage:
+      // a batch in which every account failed refreshed nothing (issue #49).
+      if (value.nextResults.length === 0 ||
+          value.nextResults.some((result) => result.status === "ok")) {
+        generatedAt = at;
+      }
     },
   );
 
@@ -81,6 +103,67 @@ async function main(): Promise<void> {
     accounts: results,
     tokens: tokenAnalytics,
   });
+
+  /**
+   * POST /accounts/verify?id=<account id>: open that account's isolated
+   * profile in the normal browser for a person to sign in or verify. Only an
+   * id from the local config is accepted; nothing else comes from the request.
+   * Automation stays off the profile until the window closes, then checks the
+   * account once.
+   */
+  const openForVerification = async (
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> => {
+    let id: string | null = null;
+    try {
+      const url = new URL(request.url ?? "", `http://${HOST}`);
+      if (url.pathname === "/accounts/verify" && [...url.searchParams.keys()].length === 1) {
+        id = url.searchParams.get("id");
+      }
+    } catch {
+      id = null;
+    }
+    if (!id || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+      sendJson(request, response, 400, { error: "invalid_account" });
+      return;
+    }
+    let account;
+    try {
+      account = (await loadCollectorConfig()).accounts.find(
+        (candidate) => candidate.id === id && candidate.enabled,
+      );
+    } catch {
+      account = undefined;
+    }
+    if (!account) {
+      sendJson(request, response, 404, { error: "unknown_account" });
+      return;
+    }
+    // Never open a profile a running collection may be using.
+    if (monitoring.status().collecting) {
+      sendJson(request, response, 409, { error: "collection_in_progress" });
+      return;
+    }
+    if (!holds.beginInteractive(account.id)) {
+      sendJson(request, response, 409, { error: "already_open" });
+      return;
+    }
+    try {
+      const opened = await openProfileForPerson(account);
+      interactiveProfiles.set(account.id, opened);
+      void opened.exited.then(() => {
+        interactiveProfiles.delete(account.id);
+        holds.endInteractive(account.id);
+        nextTrigger = "manual";
+        monitoring.queueRefresh();
+      });
+      sendJson(request, response, 202, { status: "opened" });
+    } catch {
+      holds.endInteractive(account.id);
+      sendJson(request, response, 503, { error: "browser_unavailable" });
+    }
+  };
 
   let rateWindowStartedAt = Date.now();
   let requestCount = 0;
@@ -128,10 +211,16 @@ async function main(): Promise<void> {
         return;
       }
       if (request.url === "/monitoring/refresh") {
+        // A person asked: held accounts are tried once more.
+        nextTrigger = "manual";
         const queued = monitoring.queueRefresh();
         sendJson(request, response, queued ? 202 : 409, {
           status: queued ? "accepted" : "paused", ...monitoring.status(),
         });
+        return;
+      }
+      if (request.url?.startsWith("/accounts/verify?")) {
+        void openForVerification(request, response);
         return;
       }
       sendJson(request, response, 404, { error: "not_found" });
@@ -183,6 +272,9 @@ async function main(): Promise<void> {
     monitoring,
     server,
     stopScheduling: () => clearInterval(timer),
+    closeInteractive: () => {
+      for (const profile of interactiveProfiles.values()) profile.close();
+    },
     exit: (code) => process.exit(code),
   });
 

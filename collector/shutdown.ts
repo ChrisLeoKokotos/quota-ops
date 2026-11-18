@@ -32,6 +32,8 @@ export interface ShutdownDeps {
   };
   /** Stop timers that would queue new collections. */
   stopScheduling(): void;
+  /** Close profiles a person opened for manual verification, if any. */
+  closeInteractive?(): void;
   exit(code: number): void;
   drainMs?: number;
   hardExitMs?: number;
@@ -59,6 +61,7 @@ export function createCollectorShutdown(deps: ShutdownDeps): () => void {
 
     deps.stopScheduling();
     deps.monitoring.stop();
+    try { deps.closeInteractive?.(); } catch { /* best effort; hard exit still armed */ }
 
     void deps.monitoring
       .waitUntilIdle(drainMs)

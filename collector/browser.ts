@@ -24,7 +24,7 @@ import {
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
 
-async function findWindowsBrowserExecutable(): Promise<string> {
+export async function findWindowsBrowserExecutable(): Promise<string> {
   const roots = [
     process.env.LOCALAPPDATA,
     process.env.PROGRAMFILES,

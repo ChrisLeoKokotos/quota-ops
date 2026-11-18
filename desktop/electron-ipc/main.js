@@ -432,13 +432,12 @@ function createWindow() {
  * These three fixed POST destinations are reachable only from the trusted main
  * process, with the local bearer token. No renderer IPC control surface.
  */
-async function collectorControl(action) {
-  const url = COLLECTOR_CONTROLS[action];
-  if (!url) return false;
+/** POST to a fixed collector URL; returns the HTTP status, or 0 on failure. */
+async function collectorPost(url) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let token;
     try { token = await collectorToken(); }
-    catch { return false; }
+    catch { return 0; }
     let response;
     try {
       response = await fetch(url, {
@@ -447,14 +446,55 @@ async function collectorControl(action) {
         signal: AbortSignal.timeout(3000),
         redirect: "error",
       });
-    } catch { return false; }
+    } catch { return 0; }
     if (response.status === 401 && attempt === 0) {
       cachedToken = null;
       continue;
     }
-    return response.ok;
+    return response.status;
   }
-  return false;
+  return 0;
+}
+
+async function collectorControl(action) {
+  const url = COLLECTOR_CONTROLS[action];
+  if (!url) return false;
+  const status = await collectorPost(url);
+  return status >= 200 && status < 300;
+}
+
+// Same rule as the collector's config: the id is the only request input.
+const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const NEEDS_PERSON_STATUSES = new Set(["verification_required", "login_required"]);
+
+/** Accounts whose last result needs a person (issue #49), from the projected snapshot. */
+function accountsNeedingPerson() {
+  const accounts = scheduler?.lastResult?.accounts;
+  if (!Array.isArray(accounts)) return [];
+  return accounts
+    .filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status) && ACCOUNT_ID_PATTERN.test(entry.id))
+    .slice(0, 8);
+}
+
+/** Open one isolated profile in the normal browser for manual verification. */
+async function runVerifyCommand(accountId) {
+  if (trayCommandPending || !ACCOUNT_ID_PATTERN.test(accountId)) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/accounts/verify?id=${encodeURIComponent(accountId)}`,
+    );
+    if (status === 202) return;
+    trayCommandError =
+      status === 409 ? "Wait for the current check to finish, or close the open profile window"
+        : status === 503 ? "Chrome or Edge was not found for manual verification"
+          : "Could not open the profile for verification";
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
 }
 
 async function runTrayCommand(action) {
@@ -574,6 +614,20 @@ function buildTrayMenu() {
       ? [{ label: "Update check failed (retry from menu)", enabled: false }] : []),
   ];
   const paused = status?.paused ?? false;
+  // Accounts QuotaOps cannot read without a person: a provider verification
+  // challenge or a signed-out profile. Automatic checks are paused for them;
+  // this opens the profile in the normal browser. Nothing is bypassed.
+  const attention = accountsNeedingPerson();
+  const attentionRows = attention.length === 0 ? [] : [
+    { type: "separator" },
+    { label: "Needs your attention", enabled: false },
+    ...attention.map((entry) => ({
+      label: `${entry.status === "login_required" ? "Sign in" : "Manual verification required"}: ` +
+        `${String(entry.label).slice(0, 40)}...`,
+      enabled: !trayCommandPending,
+      click: () => { void runVerifyCommand(entry.id); },
+    })),
+  ];
 
   return Menu.buildFromTemplate([
     { label: "Open QuotaOps", click: () => showWindow() },
@@ -599,6 +653,7 @@ function buildTrayMenu() {
       label: paused ? "Monitoring paused" : "Monitoring active",
       enabled: false,
     },
+    ...attentionRows,
     { type: "separator" },
     { label: "Settings", click: () => showWindow() },
     { type: "separator" },
