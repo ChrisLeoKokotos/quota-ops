@@ -75,6 +75,16 @@ jobs:
           "QuotaOps.exe 32x32 icon pixels differing from the QuotaOps logo: $diff of 1024"
           if ($diff -gt 20) { throw "QuotaOps.exe does not carry the QuotaOps icon" }
 
+      # The release configuration (edited, signed executable with ASAR
+      # integrity) must also start, run its collector and quit cleanly.
+      - name: Packaged startup and Quit smoke (signed build)
+        run: |
+          node scripts/windows-packaged-startup-smoke.mjs
+          node scripts/windows-packaged-startup-smoke.mjs --quit
+
+      - name: Real tray Quit E2E, idle, repeated (signed build)
+        run: node scripts/windows-packaged-tray-quit-e2e.mjs --cycles 3
+
       - name: Remove throwaway certificate
         if: always()
         shell: pwsh
