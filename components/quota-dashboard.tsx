@@ -39,6 +39,16 @@ const NOTIFICATIONS_KEY = "quotaops:notifications";
 const SEEN_RESETS_KEY = "quotaops:seen-resets";
 const SIDEBAR_KEY = "quotaops:sidebar-open";
 
+// Collector per-account states shown to a person. A challenge is resolved by
+// the person in the account's own profile (tray: Manual verification
+// required), never by QuotaOps.
+const COLLECTOR_ISSUE_LABELS: Record<string, string> = {
+  verification_required: "Manual verification required",
+  login_required: "Sign-in required",
+  unsupported: "Usage page could not be read",
+  unavailable: "Local browser unavailable",
+};
+
 type Theme = "light" | "dark";
 type Toast = { id: string; message: string };
 
@@ -953,9 +963,14 @@ export function QuotaDashboard() {
         setCollectorLastSync(snapshot.generatedAt);
         setTokenAnalytics(snapshot.tokens);
         setCollectorIssues(
-          snapshot.issues.map((issue) =>
-            issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
-          ),
+          snapshot.issues.map((issue) => {
+            // Say plainly what the person must do; last known values stay as
+            // they were (stale), never replaced by 0%.
+            const state = COLLECTOR_ISSUE_LABELS[issue.status] ?? issue.status;
+            return issue.message
+              ? `${issue.label}: ${state}. ${issue.message}`
+              : `${issue.label}: ${state}`;
+          }),
         );
 
         if (snapshot.accounts.length > 0) {
