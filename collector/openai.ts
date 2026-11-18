@@ -1,10 +1,17 @@
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import {
+  BROWSER_LAUNCH_TIMEOUT_MS,
+  CollectionCancelledError,
+  withCancellableContext,
+  withTimeout,
+} from "./browser-session.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import { parseOpenAIUsagePayload } from "./openai-usage-parser.ts";
 
 const CHATGPT_HOME = "https://chatgpt.com/";
+const OPENAI_FETCH_TIMEOUT_MS = 20_000;
 
 async function waitForEnter(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -27,6 +34,8 @@ async function launchOpenAIProfile(
     viewport: { width: 1280, height: 900 },
     acceptDownloads: false,
     chromiumSandbox: true,
+    // Explicit bound; Playwright's default is 180 s per channel.
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
     args: visible
       ? ["--disable-extensions"]
       : [
@@ -77,7 +86,9 @@ async function fetchOpenAIUsage(page: Page): Promise<{
   reason: string | null;
 }> {
   try {
-    return await page.evaluate(async () => {
+    // In-page fetches carry no timeout; bound the whole read so a stalled
+    // provider request cannot hold the collection (and Quit) open.
+    return await withTimeout(page.evaluate(async () => {
       const decodeJwtPayload = (token: string): Record<string, unknown> => {
         try {
           const encoded = token.split(".")[1];
@@ -217,6 +228,10 @@ async function fetchOpenAIUsage(page: Page): Promise<{
         loginRequired: false,
         reason: lastReason ?? "usage_unavailable",
       };
+    }), OPENAI_FETCH_TIMEOUT_MS, {
+      payload: null,
+      loginRequired: false,
+      reason: "usage_fetch_timeout",
     });
   } catch {
     return {
@@ -256,54 +271,60 @@ export async function openOpenAILogin(
 
 export async function collectOpenAIUsageFromBrowser(
   account: CollectorAccountConfig,
+  options: { signal?: AbortSignal | undefined } = {},
 ): Promise<CollectorAccountResult> {
-  let context: BrowserContext | null = null;
-
   try {
-    context = await launchOpenAIProfile(account, false);
-    const page = context.pages()[0] ?? (await context.newPage());
-    await page.goto(CHATGPT_HOME, {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
+    // Cancellation (collector shutdown) closes the profile immediately.
+    return await withCancellableContext(
+      () => launchOpenAIProfile(account, false),
+      async (context) => {
+        const page = context.pages()[0] ?? (await context.newPage());
+        await page.goto(CHATGPT_HOME, {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        });
 
-    const fetched = await fetchOpenAIUsage(page);
-    if (fetched.loginRequired) {
-      return result(
-        account,
-        "login_required",
-        "ChatGPT login is required for this local profile.",
-      );
+        const fetched = await fetchOpenAIUsage(page);
+        if (fetched.loginRequired) {
+          return result(
+            account,
+            "login_required",
+            "ChatGPT login is required for this local profile.",
+          );
+        }
+
+        const parsed = fetched.payload
+          ? parseOpenAIUsagePayload(fetched.payload)
+          : null;
+
+        if (!parsed) {
+          return result(
+            account,
+            "unsupported",
+            `Could not read OpenAI/Codex usage data (${fetched.reason ?? "unrecognized_usage"}).`,
+          );
+        }
+
+        const checkedAt = new Date().toISOString();
+        return result(account, "ok", null, checkedAt, {
+          id: account.id,
+          label: account.label,
+          provider: "openai",
+          plan: parsed.plan,
+          windows: parsed.windows,
+          updatedAt: checkedAt,
+        });
+      },
+      options.signal,
+    );
+  } catch (error) {
+    if (error instanceof CollectionCancelledError) {
+      return result(account, "unavailable", "Collection stopped because QuotaOps is closing.");
     }
-
-    const parsed = fetched.payload
-      ? parseOpenAIUsagePayload(fetched.payload)
-      : null;
-
-    if (!parsed) {
-      return result(
-        account,
-        "unsupported",
-        `Could not read OpenAI/Codex usage data (${fetched.reason ?? "unrecognized_usage"}).`,
-      );
-    }
-
-    const checkedAt = new Date().toISOString();
-    return result(account, "ok", null, checkedAt, {
-      id: account.id,
-      label: account.label,
-      provider: "openai",
-      plan: parsed.plan,
-      windows: parsed.windows,
-      updatedAt: checkedAt,
-    });
-  } catch {
     return result(
       account,
       "unavailable",
       "Local browser collector is unavailable for this OpenAI account.",
     );
-  } finally {
-    await context?.close().catch(() => undefined);
   }
 }

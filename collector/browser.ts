@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import {
+  BROWSER_LAUNCH_TIMEOUT_MS,
+  CollectionCancelledError,
+  PAGE_EVALUATE_TIMEOUT_MS,
+  withCancellableContext,
+  withTimeout,
+} from "./browser-session.ts";
 import { claudeLaunchMode } from "./claude-launch-mode.ts";
 import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
 import { requiresManualClaudeVerification } from "./verification-state.ts";
@@ -112,6 +119,8 @@ async function launchProfile(
     acceptDownloads: false,
     chromiumSandbox: true,
     args: mode.args,
+    // Explicit bound; Playwright's default is 180 s per channel.
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
   };
 
   try {
@@ -348,7 +357,9 @@ async function readVisibleUsagePanel(
   page: Page,
 ): Promise<ReturnType<typeof parseVisibleClaudeUsagePanel>> {
   try {
-    const panel = await page.evaluate(() => {
+    // page.evaluate has no timeout of its own; an unresponsive page must not
+    // hold the collection (and therefore Quit) open.
+    const panel = await withTimeout(page.evaluate(() => {
       const text = document.body?.innerText ?? "";
       // A screenshot-verified 2026 Claude layout starts its quota widget at
       // "Current session", with "Weekly limit · All models" further down.
@@ -377,7 +388,7 @@ async function readVisibleUsagePanel(
         }
       }
       return null;
-    });
+    }), PAGE_EVALUATE_TIMEOUT_MS, null);
     return parseVisibleClaudeUsagePanel(panel);
   } catch {
     return null;
@@ -391,7 +402,7 @@ async function readVisibleUsagePanel(
  */
 async function hasManualClaudeVerification(page: Page): Promise<boolean> {
   try {
-    const signals = await page.evaluate(() => {
+    const signals = await withTimeout(page.evaluate(() => {
       const title = (document.title ?? "").trim();
       const titleIsChallenge =
         /^(?:just a moment\.{0,3}|verify you are human|checking your browser)\s*$/i.test(title);
@@ -415,7 +426,9 @@ async function hasManualClaudeVerification(page: Page): Promise<boolean> {
           }
         });
       return { titleIsChallenge, visibleChallengePrompt, trustedChallengeFrame };
-    });
+    }), PAGE_EVALUATE_TIMEOUT_MS, null);
+    // Timed out: not observed, so no claim of a challenge either way.
+    if (signals === null) return false;
     return requiresManualClaudeVerification(signals);
   } catch {
     return false;
@@ -567,21 +580,25 @@ export async function openClaudeLogin(
  */
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
-  options: { visible?: boolean } = {},
+  options: { visible?: boolean; signal?: AbortSignal | undefined } = {},
 ): Promise<CollectorAccountResult> {
-  let context: BrowserContext | null = null;
   try {
     // On Windows normal collection uses headed Chrome/Edge minimized/offscreen.
     // --visible is only for explicit user diagnostics; no automated login.
-    context = await launchProfile(account, options.visible === true);
-    return await collectFromContext(account, context);
-  } catch {
+    // Cancellation (collector shutdown) closes the profile immediately.
+    return await withCancellableContext(
+      () => launchProfile(account, options.visible === true),
+      (context) => collectFromContext(account, context),
+      options.signal,
+    );
+  } catch (error) {
+    if (error instanceof CollectionCancelledError) {
+      return result(account, "unavailable", "Collection stopped because QuotaOps is closing.");
+    }
     return result(
       account,
       "unavailable",
       "Local browser collector is unavailable for this account.",
     );
-  } finally {
-    await context?.close().catch(() => undefined);
   }
 }
