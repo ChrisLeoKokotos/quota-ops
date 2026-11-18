@@ -797,12 +797,33 @@ if (!firstInstance) {
   });
 }
 
+// The collector bounds its own shutdown (drain 8 s, hard exit 12 s; see
+// collector/shutdown.ts). This parent deadline is only the backstop for a
+// collector that cannot run its own timers, and must exceed that bound.
+const COLLECTOR_QUIT_DEADLINE_MS = 20_000;
+
+// Acknowledge Quit at once. While the collector closes its browser profile
+// the app must not look as if Quit was ignored (issue #47): hide the window
+// and remove the tray icon immediately, before any waiting.
+function acknowledgeQuit() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  if (tray) {
+    const closingTray = tray;
+    tray = null;
+    // Deferred: Quit is usually invoked from inside this tray's own menu.
+    setImmediate(() => {
+      try { closingTray.destroy(); } catch { /* already destroyed */ }
+    });
+  }
+}
+
 let quitWaitingForCollector = false;
 app.on("before-quit", (event) => {
   startupMark("before_quit");
   quitting = true;
   scheduler?.cancel();
   updateManager?.stop();
+  acknowledgeQuit();
   if (!ownedCollector) {
     if (installUpdateOnQuit) {
       event.preventDefault();
@@ -836,9 +857,11 @@ app.on("before-quit", (event) => {
   };
   const deadline = setTimeout(() => {
     startupMark("collector_shutdown_deadline");
+    // Terminating the utility process also ends its browser children
+    // (verified on Windows: no chrome.exe survives the kill).
     try { child.kill(); } catch { /* already exited */ }
     finish();
-  }, 45_000);
+  }, COLLECTOR_QUIT_DEADLINE_MS);
   child.once("exit", finish);
   try {
     child.postMessage({ action: "shutdown" });
