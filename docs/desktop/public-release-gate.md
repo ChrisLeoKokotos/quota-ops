@@ -1,5 +1,7 @@
 # QuotaOps Windows public-download release gate
 
+**Current status (18 Nov 2026): see `docs/release/v0.2.0-readiness-report.md`.**
+
 **Status: BLOCKED.** Do not publish the existing 0.1.0 unsigned test installer
 as a stable download. A successful unit suite is not equivalent to an
 operational collector or a trustworthy Windows installer.
