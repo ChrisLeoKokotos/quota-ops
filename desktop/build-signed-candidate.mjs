@@ -62,13 +62,22 @@ for (const file of [installer, exe]) {
 function signature(file) {
   const script = `$s=Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g, "''")}';` +
     "\"$($s.Status)|$($s.SignerCertificate.Thumbprint)|$($s.TimeStamperCertificate -ne $null)\"";
-  const [status, thumbprint, timestamped] = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8" })
-    .stdout.trim().split("|");
-  return { status, thumbprint: (thumbprint ?? "").toUpperCase(), timestamped: timestamped === "True" };
+  // Windows PowerShell started from PowerShell 7 (as on CI runners) inherits
+  // PSModulePath and then fails to load its own Security module.
+  const env = { ...process.env };
+  delete env.PSModulePath;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", env });
+  const [status, thumbprint, timestamped] = result.stdout.trim().split("|");
+  return {
+    status,
+    thumbprint: (thumbprint ?? "").toUpperCase(),
+    timestamped: timestamped === "True",
+    diagnostics: `${result.stdout.trim()} ${result.stderr.trim()}`.slice(0, 400),
+  };
 }
 for (const file of [exe, installer]) {
   const sig = signature(file);
-  if (!sig.thumbprint) throw new Error(`${basename(file)} is not signed.`);
+  if (!sig.thumbprint) throw new Error(`${basename(file)} is not signed (verifier output: ${sig.diagnostics}).`);
   if (expectedThumbprint && sig.thumbprint !== expectedThumbprint) {
     throw new Error(`${basename(file)} is signed by an unexpected certificate.`);
   }
