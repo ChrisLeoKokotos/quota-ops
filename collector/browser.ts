@@ -14,7 +14,12 @@ import {
 } from "./browser-session.ts";
 import { claudeLaunchMode } from "./claude-launch-mode.ts";
 import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
-import { requiresManualClaudeVerification } from "./verification-state.ts";
+import {
+  isChallengeResponseHeader,
+  isClaudeChallengeLocation,
+  isTrustedChallengeFrameUrl,
+  requiresManualClaudeVerification,
+} from "./verification-state.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -222,9 +227,15 @@ async function readJsonResponse(
   }
 }
 
+/** Main-frame document last served as a Cloudflare challenge, if any. */
+interface ChallengeObservation {
+  challengedUrl: string | null;
+}
+
 async function collectUsageFromRealPageRequests(
   page: Page,
   preferredOrganizationId: string | null,
+  observed: ChallengeObservation,
   timeoutMs = 10_000,
 ): Promise<{
   parsed: ReturnType<typeof parseClaudeUsagePayload>;
@@ -238,6 +249,19 @@ async function collectUsageFromRealPageRequests(
 
   const onResponse = async (response: import("playwright-core").Response) => {
     const url = response.url();
+
+    // Language-independent challenge evidence: Cloudflare's own header on a
+    // main-frame navigation. Only the URL is kept, to compare with where the
+    // page ends up; nothing from the response body is read.
+    try {
+      if (response.request().isNavigationRequest() &&
+          response.frame() === page.mainFrame() &&
+          isChallengeResponseHeader(response.headers()["cf-mitigated"])) {
+        observed.challengedUrl = url;
+      }
+    } catch {
+      // Detached frame or closed page: no evidence either way.
+    }
 
     if (isClaudeOrganizationsUrl(url)) {
       const payload = await readJsonResponse(response, 262_144);
@@ -400,7 +424,32 @@ async function readVisibleUsagePanel(
  * collection failed. No challenge is clicked or solved, and no page text,
  * frame URL, user data or challenge token is returned to the collector.
  */
-async function hasManualClaudeVerification(page: Page): Promise<boolean> {
+async function hasManualClaudeVerification(
+  page: Page,
+  observed: ChallengeObservation,
+): Promise<boolean> {
+  // Browser-side, language-independent evidence first (issue #49). Frame URLs
+  // come from Playwright, which also sees frames inside shadow roots.
+  let currentUrl = "";
+  try { currentUrl = page.url(); } catch { currentUrl = ""; }
+  const browserSignals = {
+    challengeLocation: isClaudeChallengeLocation(currentUrl),
+    challengeResponse: observed.challengedUrl !== null && observed.challengedUrl === currentUrl,
+    trustedChallengeFrame: (() => {
+      try {
+        return page.frames().some((frame) => isTrustedChallengeFrameUrl(frame.url()));
+      } catch {
+        return false;
+      }
+    })(),
+  };
+  if (requiresManualClaudeVerification({
+    titleIsChallenge: false,
+    visibleChallengePrompt: false,
+    ...browserSignals,
+  })) {
+    return true;
+  }
   try {
     const signals = await withTimeout(page.evaluate(() => {
       const title = (document.title ?? "").trim();
@@ -474,9 +523,11 @@ async function collectFromContext(
   const preferredOrganizationId =
     await preferredClaudeOrganizationId(context);
 
+  const observed: ChallengeObservation = { challengedUrl: null };
   const collected = await collectUsageFromRealPageRequests(
     page,
     preferredOrganizationId,
+    observed,
   );
 
   const currentUrl = page.url();
@@ -497,7 +548,7 @@ async function collectFromContext(
   const usage = selected.usage;
 
   if (!usage) {
-    if (await hasManualClaudeVerification(page)) {
+    if (await hasManualClaudeVerification(page, observed)) {
       return result(
         account,
         "verification_required",
