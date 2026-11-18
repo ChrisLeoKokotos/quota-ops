@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
+import { createCollectorShutdown } from "./shutdown.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -48,14 +49,15 @@ async function main(): Promise<void> {
   let generatedAt = new Date(0).toISOString();
 
   const monitoring = new MonitoringController(
-    async (invalidated) => {
+    async (invalidated, signal) => {
       const current = await loadCollectorConfig();
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
 
       for (const account of enabled) {
         if (invalidated()) return null;
-        nextResults.push(await collectProviderUsage(account));
+        // The signal aborts on shutdown and closes this account's profile.
+        nextResults.push(await collectProviderUsage(account, { signal }));
       }
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
@@ -174,25 +176,15 @@ async function main(): Promise<void> {
     config.pollIntervalSeconds * 1000,
   );
 
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    clearInterval(timer);
-    monitoring.stop();
-    // A running Playwright browser must close through its normal finally
-    // block before the utility process exits. Discard all in-flight results.
-    void monitoring.waitUntilIdle().then(() => {
-      server.close(() => {
-        // The utility parentPort may keep the event loop alive; all provider
-        // contexts have finished and the loopback listener is closed.
-        process.exit(0);
-      });
-    }).catch(() => {
-      process.exitCode = 1;
-      server.close();
-    });
-  };
+  // Bounded: cancels the in-flight provider browser, drains for a few
+  // seconds, closes the listener and its keep-alive sockets, then exits.
+  // The utility parentPort may keep the event loop alive, hence exit().
+  const shutdown = createCollectorShutdown({
+    monitoring,
+    server,
+    stopScheduling: () => clearInterval(timer),
+    exit: (code) => process.exit(code),
+  });
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

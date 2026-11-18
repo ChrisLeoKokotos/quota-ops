@@ -63,7 +63,9 @@ test("installer uses protected Electron utility process and closes it on quit", 
   assert.match(main, /app\.requestSingleInstanceLock\(\)/);
   assert.match(main, /child\.postMessage\(\{ action: "shutdown" \}\)/);
   assert.match(main, /collector-runtime/);
-  assert.match(backend, /monitoring\.waitUntilIdle\(\)/);
+  // Bounded, cancelling shutdown (issue #47), not an unbounded drain.
+  assert.match(backend, /createCollectorShutdown\(/);
+  assert.doesNotMatch(backend, /monitoring\.waitUntilIdle\(\)/);
   assert.match(backend, /utilityParent\?\.on\("message"/);
   assert.doesNotMatch(main, /remote-debugging-port|webSecurity:\s*false/);
 });

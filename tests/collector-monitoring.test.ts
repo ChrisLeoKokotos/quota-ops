@@ -79,6 +79,65 @@ test("stopping rejects all future refreshes, even after resume", async () => {
   assert.deepEqual(results, []);
 });
 
+// Issue #47 regressions. Before the fix waitUntilIdle() had no bound and the
+// collect callback received no signal, so a provider page that never settled
+// held collector shutdown (and Quit) open indefinitely.
+test("waitUntilIdle is bounded when an in-flight collection never settles", async () => {
+  const controller = new MonitoringController<number>(
+    () => new Promise<number>(() => {}),
+    () => undefined,
+  );
+  controller.queueRefresh();
+  assert.equal(controller.status().collecting, true);
+  controller.pause();
+  const started = Date.now();
+  const drained = await controller.waitUntilIdle(80);
+  const elapsed = Date.now() - started;
+  assert.equal(drained, false, "a stuck collection must be reported, not awaited forever");
+  assert.ok(elapsed < 1_000, `bounded wait took ${elapsed} ms`);
+});
+
+test("stop aborts the in-flight collection's signal so its browser can close", async () => {
+  let seen: AbortSignal | null = null;
+  const controller = new MonitoringController<string>(
+    (_invalidated, signal) => {
+      seen = signal;
+      return new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+      });
+    },
+    () => undefined,
+  );
+  controller.queueRefresh();
+  await until(() => seen !== null);
+  assert.equal(seen!.aborted, false);
+  controller.stop();
+  assert.equal(seen!.aborted, true);
+  assert.equal(await controller.waitUntilIdle(1_000), true);
+  assert.equal(controller.status().collecting, false);
+});
+
+test("pause keeps draining semantics: the active collection is not aborted", async () => {
+  const gate = deferred<void>();
+  let seen: AbortSignal | null = null;
+  const controller = new MonitoringController<number>(async (_invalidated, signal) => {
+    seen = signal;
+    await gate.promise;
+    return 1;
+  }, () => undefined);
+  controller.queueRefresh();
+  await until(() => seen !== null);
+  controller.pause();
+  assert.equal(seen!.aborted, false, "Pause must not change from drain to cancel");
+  gate.resolve();
+  assert.equal(await controller.waitUntilIdle(1_000), true);
+});
+
+test("waitUntilIdle reports idle immediately when nothing is collecting", async () => {
+  const controller = new MonitoringController(async () => 1, () => undefined);
+  assert.equal(await controller.waitUntilIdle(0), true);
+});
+
 test("a paused controller cannot be refreshed by a scheduled tick", async () => {
   let calls = 0;
   const controller = new MonitoringController(async () => ++calls, () => undefined);
