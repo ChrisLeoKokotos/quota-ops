@@ -14,8 +14,8 @@ or signed QuotaOps release has been activated; no user update has been attempted
   permissions.
 - Once downloaded, **Install update and restart...** opens a confirmation
   dialog. Rejecting it installs nothing. Accepting it cancels monitoring,
-  requests a graceful shutdown of the bundled collector, waits up to 45 seconds
-  (existing Quit backstop), then invokes the NSIS updater.
+  requests the same bounded shutdown as Quit (the collector exits within
+  12 seconds; 20-second backstop), then invokes the NSIS updater.
 - Closing the window, choosing Quit or rebooting does **not** silently install.
   Updates must be explicitly confirmed. The per-user
   `%USERPROFILE%\.quotaops` directory is separate from the installed

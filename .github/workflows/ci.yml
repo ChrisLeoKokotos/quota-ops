@@ -1,9 +1,11 @@
 name: CI
 
+# CI must validate stacked Draft PRs before release, not only PRs to main.
+# This workflow is read-only and never publishes or signs an installer.
 on:
   pull_request:
-    branches:
-      - main
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read

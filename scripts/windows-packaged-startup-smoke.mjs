@@ -3,7 +3,7 @@
 // with zero provider accounts and verifies the bundled collector starts.
 // On completion, terminates only the process tree spawned by this test.
 //
-// Usage: node scripts/windows-packaged-startup-smoke.mjs
+// Usage: node scripts/windows-packaged-startup-smoke.mjs [--quit]
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -13,6 +13,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
+const testQuit = process.argv.length === 3 && process.argv[2] === "--quit";
+if (process.argv.length > 2 && !testQuit) {
+  throw new Error("Only the explicit --quit isolated smoke mode is supported");
+}
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const executable = join(root, "release", "windows", "win-unpacked", "QuotaOps.exe");
 const resourceRoot = join(root, "release", "windows", "win-unpacked", "resources");
@@ -106,6 +110,7 @@ try {
     // A Node-as-Electron development override would invalidate this test.
     QUOTAOPS_IPC_TRACE: "1",
     QUOTAOPS_STARTUP_DIAGNOSTICS: "1",
+    QUOTAOPS_SMOKE_REQUEST_QUIT: testQuit ? "1" : "0",
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.QUOTAOPS_CSP_PROBE;
@@ -164,7 +169,7 @@ try {
 
   // A brief stable period distinguishes healthy startup from immediate exit.
   await sleep(3000);
-  if (observedExit !== null) {
+  if (observedExit !== null && !testQuit) {
     throw new Error(`packaged application exited just after startup: ${JSON.stringify(observedExit)}`);
   }
 
@@ -174,9 +179,33 @@ try {
     throw new Error("temporary collector settings unexpectedly changed");
   }
 
+  if (testQuit) {
+    // The tested app is the only process allowed to request its own Quit.
+    // Never taskkill a real app or leave a test-owned collector listening.
+    const quitDeadline = Date.now() + 30_000;
+    while (Date.now() < quitDeadline && observedExit === null) await sleep(350);
+    await sleep(200); // allow stdout diagnostics from the exiting Electron
+    const marks = (name) => combinedOutput.includes(`[quotaops-startup] ${name}`);
+    if (observedExit === null || observedExit.code !== 0 ||
+        !marks("smoke_quit_requested") ||
+        !marks("before_quit") ||
+        !marks("collector_shutdown_posted") ||
+        !marks("collector_shutdown_completed") ||
+        !marks("electron_will_quit") ||
+        marks("collector_shutdown_deadline")) {
+      throw new Error("isolated Quit lifecycle did not complete cleanly");
+    }
+    for (let i = 0; i < 20 && await isPortListening(); i++) await sleep(250);
+    if (await isPortListening()) {
+      throw new Error("collector listener remains after test-owned Quit");
+    }
+  }
+
   started = true;
   process.stdout.write(
-    "PASS: packaged QuotaOps stayed alive and started its authenticated collector.\n" +
+    (testQuit
+      ? "PASS: packaged QuotaOps quit gracefully and closed its collector.\n"
+      : "PASS: packaged QuotaOps stayed alive and started its authenticated collector.\n") +
     "PASS: smoke ran with zero provider accounts in an isolated temporary home.\n" +
     "No real session, browser profile, or QuotaOps configuration was used.\n",
   );

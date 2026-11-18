@@ -15,8 +15,10 @@ files, so backups and privacy expectations remain explicit.
   installed**; provider login must still be completed normally when required.
 - Local snapshot transport remains token-gated on `127.0.0.1:4317`. The
   renderer never sees the token or directly controls Pause/Resume.
-- Single Electron instance; when quitting, the collector is asked to drain
-  the current isolated browser session before exiting (45-second backstop).
+- Single Electron instance. Quit hides the window and tray icon at once; the
+  collector cancels the current isolated browser session, closes its
+  listener and exits on its own within 12 seconds; the parent kills it only
+  as a 20-second backstop (issue #47).
 - No auto-updater, telemetry, remote back end or background service installed.
 
 ## Build locally on Windows

@@ -67,6 +67,7 @@ const COLLECTOR_CONTROLS = Object.freeze({
   pause: "http://127.0.0.1:4317/monitoring/pause",
   resume: "http://127.0.0.1:4317/monitoring/resume",
   refresh: "http://127.0.0.1:4317/monitoring/refresh",
+  refreshVisible: "http://127.0.0.1:4317/monitoring/refresh-visible",
 });
 const MAX_RESPONSE_BYTES = 262_144;
 const MIN_SNAPSHOT_INTERVAL_MS = 1_000;
@@ -95,6 +96,14 @@ let installUpdateOnQuit = false;
 // Explicit opt-in startup markers: no account names, URLs, paths, cookies,
 // bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
 const STARTUP_DIAGNOSTICS = process.env.QUOTAOPS_STARTUP_DIAGNOSTICS === "1";
+
+// Windows default: software rendering. Measured idle private memory 319 MB
+// with GPU acceleration, 242 MB without (GPU process 99 -> 21 MB); the static
+// dashboard does not need the GPU. QUOTAOPS_HARDWARE_ACCELERATION=1 restores
+// it for diagnosis. Must run before the app is ready.
+if (process.platform === "win32" && process.env.QUOTAOPS_HARDWARE_ACCELERATION !== "1") {
+  app.disableHardwareAcceleration();
+}
 function startupMark(code) {
   if (STARTUP_DIAGNOSTICS) process.stdout.write(`[quotaops-startup] ${code}\n`);
 }
@@ -113,6 +122,7 @@ function classifyCollectorError(value) {
 // This opt-in path is constrained to our disposable test sandbox and must be
 // set before requestSingleInstanceLock() / the first ready event.
 // Ordinary desktop launches always keep Electron's normal userData directory.
+let validatedSmokeHome = false;
 const smokeUserData = process.env.QUOTAOPS_SMOKE_USER_DATA;
 if (smokeUserData !== undefined) {
   const home = process.env.USERPROFILE;
@@ -134,6 +144,7 @@ if (smokeUserData !== undefined) {
     throw new Error("Refusing an unsafe packaged-smoke Electron userData override");
   }
   app.setPath("userData", smokeUserData);
+  validatedSmokeHome = true;
   startupMark("smoke_electron_userdata_isolated");
 }
 
@@ -430,13 +441,12 @@ function createWindow() {
  * These three fixed POST destinations are reachable only from the trusted main
  * process, with the local bearer token. No renderer IPC control surface.
  */
-async function collectorControl(action) {
-  const url = COLLECTOR_CONTROLS[action];
-  if (!url) return false;
+/** POST to a fixed collector URL; returns the HTTP status, or 0 on failure. */
+async function collectorPost(url) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let token;
     try { token = await collectorToken(); }
-    catch { return false; }
+    catch { return 0; }
     let response;
     try {
       response = await fetch(url, {
@@ -445,14 +455,205 @@ async function collectorControl(action) {
         signal: AbortSignal.timeout(3000),
         redirect: "error",
       });
-    } catch { return false; }
+    } catch { return 0; }
     if (response.status === 401 && attempt === 0) {
       cachedToken = null;
       continue;
     }
-    return response.ok;
+    return response.status;
   }
-  return false;
+  return 0;
+}
+
+async function collectorControl(action) {
+  const url = COLLECTOR_CONTROLS[action];
+  if (!url) return false;
+  const status = await collectorPost(url);
+  return status >= 200 && status < 300;
+}
+
+// Same rule as the collector's config: the id is the only request input.
+const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const NEEDS_PERSON_STATUSES = new Set(["verification_required", "login_required"]);
+
+// Accounts whose last result needs a person (issue #49). Read from the local
+// projected snapshot on the tray's own 30 s tick: the scheduler's snapshot
+// interval (5 min) would leave the tray item missing for minutes after a
+// challenge. Local, bounded, token-authenticated; no provider access.
+let attentionAccounts = [];
+async function refreshAttention() {
+  let result;
+  try { result = await readSnapshot(); } catch { return; }
+  if (!result || result.error || !Array.isArray(result.accounts)) return;
+  attentionAccounts = result.accounts
+    .filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status) && ACCOUNT_ID_PATTERN.test(entry.id))
+    .slice(0, 8);
+}
+
+function accountsNeedingPerson() {
+  return attentionAccounts;
+}
+
+// What the tray needs from collector.json: the background mode and how many
+// accounts a visible refresh would open. Read-only, bounded; nothing else.
+let collectorSettings = { background: "headless", enabledAccounts: 0 };
+async function refreshCollectorSettings() {
+  try {
+    const file = path.join(homedir(), ".quotaops", "collector.json");
+    const raw = await readFile(file, "utf8");
+    if (raw.length > 1_048_576) return;
+    const parsed = JSON.parse(raw);
+    collectorSettings = {
+      background: parsed?.backgroundCollection === "off" ? "off" : "headless",
+      enabledAccounts: Array.isArray(parsed?.accounts)
+        ? parsed.accounts.filter((account) => account && account.enabled === true).length
+        : 0,
+    };
+  } catch {
+    // Keep the last known settings.
+  }
+}
+
+/**
+ * Person-initiated collection in visible browser windows. Background
+ * collection is headless and cannot reach a page that the provider only
+ * serves to a visible browser; this is the consented alternative.
+ */
+let visibleConsentOpen = false;
+async function runVisibleRefresh() {
+  // One consent dialog and one visible batch at a time.
+  if (trayCommandPending || visibleConsentOpen || collectorBusy) return;
+  visibleConsentOpen = true;
+  refreshTray();
+  let choice;
+  try {
+    await refreshCollectorSettings();
+    if (collectorSettings.enabledAccounts === 0) return;
+    choice = await askVisibleRefreshConsent(collectorSettings.enabledAccounts);
+  } finally {
+    visibleConsentOpen = false;
+    refreshTray();
+  }
+  if (choice !== 1 || quitting) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  const requestedAt = new Date().toISOString();
+  try {
+    if (!(await collectorControl("refreshVisible"))) {
+      trayCommandError = "Collector command failed; nothing was opened";
+      return;
+    }
+    if (Notification.isSupported()) {
+      try {
+        new Notification({
+          title: "QuotaOps is refreshing",
+          body: "Browser windows will open and close for each account. Avoid typing until it finishes.",
+        }).show();
+      } catch { /* optional */ }
+    }
+    void followVisibleRefresh(requestedAt);
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
+async function askVisibleRefreshConsent(count) {
+  const minutes = Math.max(1, Math.round((count * 15) / 60));
+  const result = await dialog.showMessageBox({
+    type: "info",
+    buttons: ["Cancel", "Open browser windows"],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    title: "QuotaOps visible refresh",
+    message: `Open a browser window for each of your ${count} account${count === 1 ? "" : "s"}?`,
+    detail:
+      "QuotaOps will open one window at a time, read the usage page and close it " +
+      `(about 15 seconds each, about ${minutes} minute${minutes === 1 ? "" : "s"} in total). ` +
+      "Windows may switch to these windows; avoid typing until QuotaOps finishes. " +
+      "QuotaOps does not complete verifications for you: if a provider asks you to " +
+      "verify, use Manual verification required in this menu.",
+  });
+  return result.response;
+}
+
+// Feedback for a person-initiated refresh: the tray says that accounts are
+// being checked until the collector is idle again, then a notification says
+// what happened. Counts only; no account names or values.
+let collectorBusy = false;
+async function collectorIsCollecting() {
+  try {
+    const token = await collectorToken();
+    const response = await fetch("http://127.0.0.1:4317/health", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(3000),
+      redirect: "error",
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return typeof body?.collecting === "boolean" ? body.collecting : null;
+  } catch {
+    return null;
+  }
+}
+
+async function followVisibleRefresh(requestedAt) {
+  collectorBusy = true;
+  refreshTray();
+  const deadline = Date.now() + 15 * 60_000;
+  // Give the collector a moment to start the queued batch.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  while (!quitting && Date.now() < deadline && (await collectorIsCollecting()) !== false) {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
+  collectorBusy = false;
+  if (quitting) return;
+  await refreshAttention();
+  refreshTray();
+  const snapshot = await readSnapshot();
+  if (!snapshot || snapshot.error || !Array.isArray(snapshot.accounts) || !Notification.isSupported()) return;
+  // Count only accounts checked by this run, never an older snapshot.
+  const checked = snapshot.accounts.filter((entry) =>
+    typeof entry.checkedAt === "string" && entry.checkedAt >= requestedAt);
+  const updated = checked.filter((entry) => entry.status === "ok").length;
+  const attention = checked.filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status)).length;
+  const other = checked.length - updated - attention;
+  try {
+    new Notification(checked.length === 0
+      ? {
+          title: "QuotaOps refresh did not run",
+          body: "Monitoring was paused or QuotaOps was busy. Nothing was updated.",
+        }
+      : {
+          title: "QuotaOps refresh finished",
+          body: `${updated} updated` +
+            (attention ? `, ${attention} need${attention === 1 ? "s" : ""} your attention (see tray)` : "") +
+            (other ? `, ${other} could not be read` : "") + ".",
+        }).show();
+  } catch { /* optional */ }
+}
+
+/** Open one isolated profile in the normal browser for manual verification. */
+async function runVerifyCommand(accountId) {
+  if (trayCommandPending || !ACCOUNT_ID_PATTERN.test(accountId)) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/accounts/verify?id=${encodeURIComponent(accountId)}`,
+    );
+    if (status === 202) return;
+    trayCommandError =
+      status === 409 ? "Wait for the current check to finish, or close the open profile window"
+        : status === 503 ? "Chrome or Edge was not found for manual verification"
+          : "Could not open the profile for verification";
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
 }
 
 async function runTrayCommand(action) {
@@ -546,7 +747,7 @@ function formatLastUpdate(status) {
   return status.stale ? `Last snapshot check: ${when} (stale)` : `Last snapshot check: ${when}`;
 }
 
-function buildTrayMenu() {
+function trayMenuTemplate() {
   const status = scheduler ? scheduler.status() : null;
   const updateStatus = updateManager?.status() ?? { state: "disabled", version: null };
   const offeredVersion = updateStatus.version ? ` (v${updateStatus.version})` : "";
@@ -572,8 +773,24 @@ function buildTrayMenu() {
       ? [{ label: "Update check failed (retry from menu)", enabled: false }] : []),
   ];
   const paused = status?.paused ?? false;
+  // Accounts QuotaOps cannot read without a person: a provider verification
+  // challenge or a signed-out profile. Automatic checks are paused for them;
+  // this opens the profile in the normal browser. Nothing is bypassed.
+  const attention = accountsNeedingPerson();
+  const attentionRows = attention.length === 0 ? [] : [
+    { type: "separator" },
+    { label: "Needs your attention", enabled: false },
+    ...attention.map((entry) => ({
+      label: `${entry.status === "login_required" ? "Sign in" : "Manual verification required"}: ` +
+        `${String(entry.label).slice(0, 40)}...`,
+      enabled: !trayCommandPending,
+      // The id makes the menu key differ per account, not just per label.
+      id: `verify-${entry.id}`,
+      click: () => { void runVerifyCommand(entry.id); },
+    })),
+  ];
 
-  return Menu.buildFromTemplate([
+  return [
     { label: "Open QuotaOps", click: () => showWindow() },
     { type: "separator" },
     {
@@ -584,6 +801,15 @@ function buildTrayMenu() {
       },
     },
     {
+      // Visible browser windows only after the person agrees, every time.
+      label: "Refresh with visible browser...",
+      enabled: !trayCommandPending && !collectorBusy && !visibleConsentOpen && !paused &&
+        collectorSettings.enabledAccounts > 0,
+      click: () => {
+        void runVisibleRefresh();
+      },
+    },
+    {
       label: paused ? "Resume monitoring" : "Pause monitoring",
       enabled: !trayCommandPending,
       click: () => {
@@ -591,12 +817,20 @@ function buildTrayMenu() {
       },
     },
     { type: "separator" },
+    ...(collectorBusy ? [{ label: "Checking accounts now...", enabled: false }] : []),
     { label: formatLastUpdate(status), enabled: false },
     ...(trayCommandError ? [{ label: trayCommandError, enabled: false }] : []),
     {
       label: paused ? "Monitoring paused" : "Monitoring active",
       enabled: false,
     },
+    {
+      label: collectorSettings.background === "off"
+        ? "Background checks: off (refresh manually)"
+        : "Background checks: hidden, no windows",
+      enabled: false,
+    },
+    ...attentionRows,
     { type: "separator" },
     { label: "Settings", click: () => showWindow() },
     { type: "separator" },
@@ -604,17 +838,28 @@ function buildTrayMenu() {
     {
       label: "Quit",
       click: () => {
+        startupMark("tray_quit_requested");
         quitting = true;
         scheduler?.cancel();
         app.quit();
       },
     },
-  ]);
+  ];
 }
 
+// The tray ticks every 30 s; building a new native menu each time grew the
+// main process during a 2-hour idle run. Rebuild only when what the menu
+// shows (labels, enabled states, ids) has changed. Click handlers read the
+// same state the labels show, so an unchanged key means unchanged behaviour.
+let lastTrayMenuKey = null;
 function refreshTray() {
   if (!tray) return;
-  tray.setContextMenu(buildTrayMenu());
+  const template = trayMenuTemplate();
+  const key = JSON.stringify(template, (name, value) => (typeof value === "function" ? undefined : value));
+  if (key !== lastTrayMenuKey) {
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    lastTrayMenuKey = key;
+  }
   const status = scheduler ? scheduler.status() : null;
   tray.setToolTip(status?.paused ? "QuotaOps (paused)" : "QuotaOps");
 }
@@ -702,7 +947,12 @@ function createTray() {
 
   // The menu shows live state, so it is rebuilt on a slow tick rather than
   // only when something is clicked.
-  setInterval(refreshTray, 30_000).unref();
+  const tick = () => {
+    void Promise.all([refreshAttention(), refreshCollectorSettings()]).finally(refreshTray);
+  };
+  void refreshCollectorSettings().finally(refreshTray);
+  setTimeout(tick, 15_000).unref();
+  setInterval(tick, 30_000).unref();
 }
 
 const firstInstance = app.requestSingleInstanceLock();
@@ -769,6 +1019,18 @@ if (!firstInstance) {
   configureSignedUpdates();
   startupMark("ui_initialised");
 
+  // Test-only Quit request. Validated disposable homes have an isolated
+  // Electron lock and zero real provider accounts in the smoke fixture.
+  // Ordinary installs and user environments cannot enable this path.
+  if (validatedSmokeHome && process.env.QUOTAOPS_SMOKE_REQUEST_QUIT === "1") {
+    setTimeout(() => {
+      startupMark("smoke_quit_requested");
+      quitting = true;
+      scheduler?.cancel();
+      app.quit();
+    }, 12_000).unref();
+  }
+
   // Drive the schedule from one timer; the scheduler decides whether a tick
   // is due, so the interval here is only a resolution, not a policy.
   setInterval(() => {
@@ -782,11 +1044,33 @@ if (!firstInstance) {
   });
 }
 
+// The collector bounds its own shutdown (drain 8 s, hard exit 12 s; see
+// collector/shutdown.ts). This parent deadline is only the backstop for a
+// collector that cannot run its own timers, and must exceed that bound.
+const COLLECTOR_QUIT_DEADLINE_MS = 20_000;
+
+// Acknowledge Quit at once. While the collector closes its browser profile
+// the app must not look as if Quit was ignored (issue #47): hide the window
+// and remove the tray icon immediately, before any waiting.
+function acknowledgeQuit() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  if (tray) {
+    const closingTray = tray;
+    tray = null;
+    // Deferred: Quit is usually invoked from inside this tray's own menu.
+    setImmediate(() => {
+      try { closingTray.destroy(); } catch { /* already destroyed */ }
+    });
+  }
+}
+
 let quitWaitingForCollector = false;
 app.on("before-quit", (event) => {
+  startupMark("before_quit");
   quitting = true;
   scheduler?.cancel();
   updateManager?.stop();
+  acknowledgeQuit();
   if (!ownedCollector) {
     if (installUpdateOnQuit) {
       event.preventDefault();
@@ -808,6 +1092,7 @@ app.on("before-quit", (event) => {
     finished = true;
     clearTimeout(deadline);
     child.off("exit", finish);
+    startupMark("collector_shutdown_completed");
     ownedCollector = null;
     if (installUpdateOnQuit) {
       installUpdateOnQuit = false;
@@ -818,14 +1103,20 @@ app.on("before-quit", (event) => {
     }
   };
   const deadline = setTimeout(() => {
+    startupMark("collector_shutdown_deadline");
+    // Terminating the utility process also ends its browser children
+    // (verified on Windows: no chrome.exe survives the kill).
     try { child.kill(); } catch { /* already exited */ }
     finish();
-  }, 45_000);
+  }, COLLECTOR_QUIT_DEADLINE_MS);
   child.once("exit", finish);
   try {
     child.postMessage({ action: "shutdown" });
+    startupMark("collector_shutdown_posted");
   } catch {
     try { child.kill(); } catch { /* already exited */ }
     finish();
   }
 });
+
+app.on("will-quit", () => startupMark("electron_will_quit"));

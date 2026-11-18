@@ -1,0 +1,93 @@
+name: Windows signing dry run
+
+# Proves the release signing mechanics (executable resource editing, Authenticode
+# on QuotaOps.exe and the installer, checksum) with a THROWAWAY self-signed
+# certificate created inside the job. Nothing is uploaded or published, and the
+# certificate is deleted. Real signing needs the owner's certificate in a
+# protected release job; this job never sees it.
+on:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "collector/**"
+      - ".github/workflows/signing-dry-run.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signing-dry-run-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signing-dry-run:
+    name: Signed build dry run (throwaway certificate)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.21.0"
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix desktop/electron-ipc --ignore-scripts --no-audit --no-fund
+
+      - name: Create throwaway code-signing certificate
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert `
+            -Subject "CN=QuotaOps CI signing dry run (untrusted, not distributable)" `
+            -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
+          $password = [Convert]::ToBase64String((1..24 | ForEach-Object { Get-Random -Maximum 256 }))
+          Write-Output "::add-mask::$password"
+          $pfx = Join-Path $env:RUNNER_TEMP "dry-run-signing.pfx"
+          Export-PfxCertificate -Cert $cert -FilePath $pfx `
+            -Password (ConvertTo-SecureString $password -AsPlainText -Force) | Out-Null
+          "CSC_LINK=$pfx" >> $env:GITHUB_ENV
+          "CSC_KEY_PASSWORD=$password" >> $env:GITHUB_ENV
+          "QUOTAOPS_EXPECTED_SIGNER_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          "QUOTAOPS_DRY_RUN_CERT_PATH=Cert:\CurrentUser\My\$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
+      - name: Build and verify signed candidate (dry run)
+        env:
+          QUOTAOPS_SIGNING_DRY_RUN: "1"
+        run: node desktop/build-signed-candidate.mjs
+
+      - name: Branded executable icon present
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $exe = [System.Drawing.Icon]::ExtractAssociatedIcon("release/windows/win-unpacked/QuotaOps.exe").ToBitmap()
+          $brand = (New-Object System.Drawing.Icon("desktop/branding/quotaops-icon.ico", 32, 32)).ToBitmap()
+          $diff = 0
+          for ($x = 0; $x -lt 32; $x++) { for ($y = 0; $y -lt 32; $y++) {
+            if ($exe.GetPixel($x, $y).ToArgb() -ne $brand.GetPixel($x, $y).ToArgb()) { $diff++ } } }
+          "QuotaOps.exe 32x32 icon pixels differing from the QuotaOps logo: $diff of 1024"
+          if ($diff -gt 20) { throw "QuotaOps.exe does not carry the QuotaOps icon" }
+
+      # The release configuration (edited, signed executable with ASAR
+      # integrity) must also start, run its collector and quit cleanly.
+      - name: Packaged startup and Quit smoke (signed build)
+        run: |
+          node scripts/windows-packaged-startup-smoke.mjs
+          node scripts/windows-packaged-startup-smoke.mjs --quit
+
+      - name: Real tray Quit E2E, idle, repeated (signed build)
+        run: node scripts/windows-packaged-tray-quit-e2e.mjs --cycles 3
+
+      - name: Remove throwaway certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:QUOTAOPS_DRY_RUN_CERT_PATH) { Remove-Item $env:QUOTAOPS_DRY_RUN_CERT_PATH -ErrorAction SilentlyContinue }
+          if ($env:CSC_LINK) { Remove-Item $env:CSC_LINK -ErrorAction SilentlyContinue }

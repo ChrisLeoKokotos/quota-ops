@@ -3,6 +3,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
+import { createCollectorShutdown } from "./shutdown.ts";
+import {
+  AttentionHolds,
+  loadHolds,
+  persistHolds,
+  type RefreshTrigger,
+} from "./attention-hold.ts";
+import { getCollectorStatePath } from "./paths.ts";
+import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
@@ -47,15 +56,45 @@ async function main(): Promise<void> {
   // retrieved a cached /snapshot (which can be many minutes old).
   let generatedAt = new Date(0).toISOString();
 
+  // Accounts waiting for a person (challenge / signed out) are not retried by
+  // scheduled cycles; see attention-hold.ts (issue #49).
+  const holds = new AttentionHolds();
+  const statePath = getCollectorStatePath();
+  await loadHolds(holds, statePath, new Map(config.accounts.map((account) => [account.id, account.label])));
+  // Show restored holds at once (tray "Needs your attention", dashboard
+  // state) instead of waiting for a batch, which may never run when
+  // background collection is off.
+  results = holds.heldResults(config.accounts.filter((account) => account.enabled));
+  const interactiveProfiles = new Map<string, InteractiveProfile>();
+
   const monitoring = new MonitoringController(
-    async (invalidated) => {
+    async (invalidated, signal, trigger: RefreshTrigger) => {
       const current = await loadCollectorConfig();
+      // Unattended collection switched off: only a person's request collects.
+      if (trigger === "scheduled" && current.backgroundCollection === "off") return null;
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
+      // Only a consented, person-initiated refresh may show a browser window;
+      // everything else is headless and cannot take the foreground.
+      const visible = trigger === "visible";
 
-      for (const account of enabled) {
-        if (invalidated()) return null;
-        nextResults.push(await collectProviderUsage(account));
+      // Holds changed earlier in this batch are saved even when Quit or
+      // Pause stops it part-way.
+      try {
+        for (const account of enabled) {
+          if (invalidated()) return null;
+          const held = holds.skip(account, trigger);
+          if (held) {
+            nextResults.push(held);
+            continue;
+          }
+          // The signal aborts on shutdown and closes this account's profile.
+          const result = await collectProviderUsage(account, { signal, visible });
+          if (!invalidated()) holds.record(result);
+          nextResults.push(result);
+        }
+      } finally {
+        await persistHolds(holds, statePath);
       }
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
@@ -69,7 +108,12 @@ async function main(): Promise<void> {
       if (value === null) return;
       results = value.nextResults;
       tokenAnalytics = value.nextTokens;
-      generatedAt = at;
+      // Do not report a fresh collection when no account produced usage:
+      // a batch in which every account failed refreshed nothing (issue #49).
+      if (value.nextResults.length === 0 ||
+          value.nextResults.some((result) => result.status === "ok")) {
+        generatedAt = at;
+      }
     },
   );
 
@@ -79,6 +123,66 @@ async function main(): Promise<void> {
     accounts: results,
     tokens: tokenAnalytics,
   });
+
+  /**
+   * POST /accounts/verify?id=<account id>: open that account's isolated
+   * profile in the normal browser for a person to sign in or verify. Only an
+   * id from the local config is accepted; nothing else comes from the request.
+   * Automation stays off the profile until the window closes, then checks the
+   * account once.
+   */
+  const openForVerification = async (
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> => {
+    let id: string | null = null;
+    try {
+      const url = new URL(request.url ?? "", `http://${HOST}`);
+      if (url.pathname === "/accounts/verify" && [...url.searchParams.keys()].length === 1) {
+        id = url.searchParams.get("id");
+      }
+    } catch {
+      id = null;
+    }
+    if (!id || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+      sendJson(request, response, 400, { error: "invalid_account" });
+      return;
+    }
+    let account;
+    try {
+      account = (await loadCollectorConfig()).accounts.find(
+        (candidate) => candidate.id === id && candidate.enabled,
+      );
+    } catch {
+      account = undefined;
+    }
+    if (!account) {
+      sendJson(request, response, 404, { error: "unknown_account" });
+      return;
+    }
+    // Never open a profile a running collection may be using.
+    if (monitoring.status().collecting) {
+      sendJson(request, response, 409, { error: "collection_in_progress" });
+      return;
+    }
+    if (!holds.beginInteractive(account.id)) {
+      sendJson(request, response, 409, { error: "already_open" });
+      return;
+    }
+    try {
+      const opened = await openProfileForPerson(account);
+      interactiveProfiles.set(account.id, opened);
+      void opened.exited.then(() => {
+        interactiveProfiles.delete(account.id);
+        holds.endInteractive(account.id);
+        monitoring.queueRefresh("manual");
+      });
+      sendJson(request, response, 202, { status: "opened" });
+    } catch {
+      holds.endInteractive(account.id);
+      sendJson(request, response, 503, { error: "browser_unavailable" });
+    }
+  };
 
   let rateWindowStartedAt = Date.now();
   let requestCount = 0;
@@ -126,10 +230,26 @@ async function main(): Promise<void> {
         return;
       }
       if (request.url === "/monitoring/refresh") {
-        const queued = monitoring.queueRefresh();
+        // A person asked: held accounts are tried once more.
+        const queued = monitoring.queueRefresh("manual");
         sendJson(request, response, queued ? 202 : 409, {
           status: queued ? "accepted" : "paused", ...monitoring.status(),
         });
+        return;
+      }
+      if (request.url === "/monitoring/refresh-visible") {
+        // Main process asks only after the person confirmed a dialog that
+        // says browser windows will open and may take focus.
+        // Nothing is remembered when this is refused (paused): a consented
+        // visible request never runs later.
+        const queued = monitoring.queueRefresh("visible");
+        sendJson(request, response, queued ? 202 : 409, {
+          status: queued ? "accepted" : "paused", ...monitoring.status(),
+        });
+        return;
+      }
+      if (request.url?.startsWith("/accounts/verify?")) {
+        void openForVerification(request, response);
         return;
       }
       sendJson(request, response, 404, { error: "not_found" });
@@ -168,31 +288,29 @@ async function main(): Promise<void> {
     );
   });
 
-  monitoring.queueRefresh();
-  const timer = setInterval(
-    () => monitoring.queueRefresh(),
-    config.pollIntervalSeconds * 1000,
-  );
-
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    clearInterval(timer);
-    monitoring.stop();
-    // A running Playwright browser must close through its normal finally
-    // block before the utility process exits. Discard all in-flight results.
-    void monitoring.waitUntilIdle().then(() => {
-      server.close(() => {
-        // The utility parentPort may keep the event loop alive; all provider
-        // contexts have finished and the loopback listener is closed.
-        process.exit(0);
-      });
-    }).catch(() => {
-      process.exitCode = 1;
-      server.close();
-    });
+  // Scheduled ticks honour backgroundCollection at the time they fire.
+  const scheduledTick = () => {
+    void loadCollectorConfig()
+      .then((current) => {
+        if (current.backgroundCollection !== "off") monitoring.queueRefresh("scheduled");
+      })
+      .catch(() => undefined);
   };
+  scheduledTick();
+  const timer = setInterval(scheduledTick, config.pollIntervalSeconds * 1000);
+
+  // Bounded: cancels the in-flight provider browser, drains for a few
+  // seconds, closes the listener and its keep-alive sockets, then exits.
+  // The utility parentPort may keep the event loop alive, hence exit().
+  const shutdown = createCollectorShutdown({
+    monitoring,
+    server,
+    stopScheduling: () => clearInterval(timer),
+    closeInteractive: () => {
+      for (const profile of interactiveProfiles.values()) profile.close();
+    },
+    exit: (code) => process.exit(code),
+  });
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
