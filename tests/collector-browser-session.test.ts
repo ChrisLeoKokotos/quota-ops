@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BROWSER_CLOSE_TIMEOUT_MS,
   BROWSER_LAUNCH_TIMEOUT_MS,
   CollectionCancelledError,
   PAGE_EVALUATE_TIMEOUT_MS,
@@ -83,6 +84,18 @@ test("normal completion and provider errors both close the context exactly once"
     /provider/,
   );
   assert.equal(failing.closes, 1);
+});
+
+test("a close() that never settles cannot stall the collection queue", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const context = { close: () => new Promise<void>(() => {}) };
+  let settled = false;
+  const running = withCancellableContext(async () => context, async () => 1)
+    .then((value) => { settled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  t.mock.timers.tick(BROWSER_CLOSE_TIMEOUT_MS);
+  assert.equal(await running, 1);
 });
 
 test("a close() failure does not mask the collection result", async () => {

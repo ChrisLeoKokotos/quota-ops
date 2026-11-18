@@ -18,6 +18,8 @@
 export const BROWSER_LAUNCH_TIMEOUT_MS = 30_000;
 /** Upper bound for one bounded in-page read (panel text, challenge signals). */
 export const PAGE_EVALUATE_TIMEOUT_MS = 5_000;
+/** Upper bound for closing a profile; a stuck close must not stall the queue. */
+export const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 
 export class CollectionCancelledError extends Error {
   constructor() {
@@ -31,7 +33,13 @@ interface Closable {
 }
 
 function closeQuietly(context: Closable): Promise<void> {
-  return context.close().then(() => undefined, () => undefined);
+  // Playwright's exit handler still terminates the browser if the collector
+  // process exits while a close is outstanding.
+  return withTimeout(
+    context.close().then(() => undefined, () => undefined),
+    BROWSER_CLOSE_TIMEOUT_MS,
+    undefined,
+  );
 }
 
 /** Resolves with `promise`, or rejects as cancelled as soon as `signal` aborts. */
