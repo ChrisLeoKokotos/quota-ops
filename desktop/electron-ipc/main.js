@@ -747,7 +747,7 @@ function formatLastUpdate(status) {
   return status.stale ? `Last snapshot check: ${when} (stale)` : `Last snapshot check: ${when}`;
 }
 
-function buildTrayMenu() {
+function trayMenuTemplate() {
   const status = scheduler ? scheduler.status() : null;
   const updateStatus = updateManager?.status() ?? { state: "disabled", version: null };
   const offeredVersion = updateStatus.version ? ` (v${updateStatus.version})` : "";
@@ -784,11 +784,13 @@ function buildTrayMenu() {
       label: `${entry.status === "login_required" ? "Sign in" : "Manual verification required"}: ` +
         `${String(entry.label).slice(0, 40)}...`,
       enabled: !trayCommandPending,
+      // The id makes the menu key differ per account, not just per label.
+      id: `verify-${entry.id}`,
       click: () => { void runVerifyCommand(entry.id); },
     })),
   ];
 
-  return Menu.buildFromTemplate([
+  return [
     { label: "Open QuotaOps", click: () => showWindow() },
     { type: "separator" },
     {
@@ -842,12 +844,22 @@ function buildTrayMenu() {
         app.quit();
       },
     },
-  ]);
+  ];
 }
 
+// The tray ticks every 30 s; building a new native menu each time grew the
+// main process during a 2-hour idle run. Rebuild only when what the menu
+// shows (labels, enabled states, ids) has changed. Click handlers read the
+// same state the labels show, so an unchanged key means unchanged behaviour.
+let lastTrayMenuKey = null;
 function refreshTray() {
   if (!tray) return;
-  tray.setContextMenu(buildTrayMenu());
+  const template = trayMenuTemplate();
+  const key = JSON.stringify(template, (name, value) => (typeof value === "function" ? undefined : value));
+  if (key !== lastTrayMenuKey) {
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    lastTrayMenuKey = key;
+  }
   const status = scheduler ? scheduler.status() : null;
   tray.setToolTip(status?.paused ? "QuotaOps (paused)" : "QuotaOps");
 }
