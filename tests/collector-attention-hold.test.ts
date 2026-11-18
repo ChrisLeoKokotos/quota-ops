@@ -76,6 +76,11 @@ test("the verification path uses the normal browser and a config-validated accou
   const main = await readFile(new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8");
   assert.match(main, /accounts\/verify\?id=\$\{encodeURIComponent\(accountId\)\}/);
   assert.match(main, /ACCOUNT_ID_PATTERN\.test\(accountId\)/);
+  // The tray must learn a held account within its own 30 s tick, not the
+  // scheduler's 5-minute snapshot interval (found by the packaged E2E).
+  assert.match(main, /const tick = \(\) => \{ void refreshAttention\(\)\.finally\(refreshTray\); \};/);
+  assert.match(main, /setInterval\(tick, 30_000\)/);
+  assert.doesNotMatch(main, /scheduler\?\.lastResult/);
   // The renderer still has no route to collector POST operations.
   const preload = await readFile(new URL("../desktop/electron-ipc/preload.js", import.meta.url), "utf8").catch(() => "");
   assert.doesNotMatch(preload, /verify|monitoring/);

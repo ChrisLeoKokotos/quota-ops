@@ -467,13 +467,22 @@ async function collectorControl(action) {
 const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const NEEDS_PERSON_STATUSES = new Set(["verification_required", "login_required"]);
 
-/** Accounts whose last result needs a person (issue #49), from the projected snapshot. */
-function accountsNeedingPerson() {
-  const accounts = scheduler?.lastResult?.accounts;
-  if (!Array.isArray(accounts)) return [];
-  return accounts
+// Accounts whose last result needs a person (issue #49). Read from the local
+// projected snapshot on the tray's own 30 s tick: the scheduler's snapshot
+// interval (5 min) would leave the tray item missing for minutes after a
+// challenge. Local, bounded, token-authenticated; no provider access.
+let attentionAccounts = [];
+async function refreshAttention() {
+  let result;
+  try { result = await readSnapshot(); } catch { return; }
+  if (!result || result.error || !Array.isArray(result.accounts)) return;
+  attentionAccounts = result.accounts
     .filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status) && ACCOUNT_ID_PATTERN.test(entry.id))
     .slice(0, 8);
+}
+
+function accountsNeedingPerson() {
+  return attentionAccounts;
 }
 
 /** Open one isolated profile in the normal browser for manual verification. */
@@ -760,7 +769,9 @@ function createTray() {
 
   // The menu shows live state, so it is rebuilt on a slow tick rather than
   // only when something is clicked.
-  setInterval(refreshTray, 30_000).unref();
+  const tick = () => { void refreshAttention().finally(refreshTray); };
+  setTimeout(tick, 15_000).unref();
+  setInterval(tick, 30_000).unref();
 }
 
 const firstInstance = app.requestSingleInstanceLock();
