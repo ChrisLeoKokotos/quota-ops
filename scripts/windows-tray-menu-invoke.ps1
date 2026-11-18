@@ -40,17 +40,17 @@ public static class QuotaOpsTrayDriver {
     }
     return IntPtr.Zero;
   }
-  public static int VisibleWidgets(uint want) {
-    int n = 0;
+  public static long[] VisibleWidgets(uint want) {
+    var found = new System.Collections.Generic.List<long>();
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p == want && IsWindowVisible(h)) {
         var sb = new StringBuilder(64); GetClassName(h, sb, 64);
-        if (sb.ToString() == "Chrome_WidgetWin_1") n++;
+        if (sb.ToString() == "Chrome_WidgetWin_1") found.Add(h.ToInt64());
       }
       return true;
     }, IntPtr.Zero);
-    return n;
+    return found.ToArray();
   }
 }
 "@
@@ -90,15 +90,19 @@ function Find-OpenMenuItem {
 }
 
 # Electron numbers tray icons from an internal counter; probe a small range
-# and stop at the first id that opens a menu window for this PID.
+# and stop at the first id that opens a NEW menu window for this PID. A new
+# window handle (not a higher count) also covers a stale menu left open:
+# Electron closes it and opens a fresh one built from the current state.
 $WM_APP_NOTIFY = 0x8001
 $WM_CONTEXTMENU = 0x007B
-$baseline = [QuotaOpsTrayDriver]::VisibleWidgets([uint32]$TargetPid)
 $menuItem = $null
 foreach ($iconId in 2, 3, 4, 5, 6) {
+  $before = [QuotaOpsTrayDriver]::VisibleWidgets([uint32]$TargetPid)
   [void][QuotaOpsTrayDriver]::PostMessage($host_, $WM_APP_NOTIFY, [IntPtr]$iconId, [IntPtr]$WM_CONTEXTMENU)
   Start-Sleep -Milliseconds 900
-  if ([QuotaOpsTrayDriver]::VisibleWidgets([uint32]$TargetPid) -gt $baseline) {
+  $after = [QuotaOpsTrayDriver]::VisibleWidgets([uint32]$TargetPid)
+  $fresh = @($after | Where-Object { $before -notcontains $_ })
+  if ($fresh.Count -gt 0) {
     "TRAY_MENU_OPENED icon_id=$iconId"
     $until = (Get-Date).AddSeconds(8)
     while (-not $menuItem -and (Get-Date) -lt $until) {

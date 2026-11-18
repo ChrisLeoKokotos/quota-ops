@@ -232,8 +232,11 @@ async function runCycle(cycle) {
         }
       }
       // The person closes the window; QuotaOps should check the account once.
+      // QuotaOps only observes the browser process ending, so ending the
+      // test-owned browser process is the same event. (A plain WM_CLOSE via
+      // taskkill without /F did not close Chrome.)
       for (const pid of person) {
-        try { execFileSync("taskkill.exe", ["/PID", pid, "/T"], { stdio: "ignore", windowsHide: true }); } catch {}
+        try { execFileSync("taskkill.exe", ["/PID", pid, "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch {}
       }
       let rechecked = false;
       for (let i = 0; i < 60 && !rechecked; i++) {
