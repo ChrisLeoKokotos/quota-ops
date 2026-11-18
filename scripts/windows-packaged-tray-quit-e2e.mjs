@@ -10,10 +10,17 @@
 //   node scripts/windows-packaged-tray-quit-e2e.mjs --scenario inflight --allow-provider-network
 //
 // Scenarios:
-//   idle      zero accounts; collector idle at Quit.
-//   inflight  one disposable, never-signed-in Claude profile inside the test
-//             home; Quit is invoked while that collection runs. This makes an
-//             unauthenticated page request to claude.ai, so it is opt-in.
+//   idle         zero accounts; collector idle at Quit.
+//   inflight     one disposable, never-signed-in Claude profile inside the
+//                test home; Quit is invoked while that collection runs.
+//   after-error  same profile; Quit after its collection has ended in a
+//                provider error (signed out), with the account held.
+//   verify-path  same profile, held as "Sign in" after its error: invokes the
+//                tray's per-account item, checks that a NON-automated browser
+//                opens, that automation stays off the profile while it is
+//                open, and that the account is checked once after it closes.
+//                Briefly shows a browser window on the desktop.
+//   All but idle make an unauthenticated request to claude.ai (opt-in).
 //
 // Never uses real profiles, tokens or ~/.quotaops; terminates only processes
 // it started (the unpacked executable and browsers whose command line names
@@ -35,11 +42,11 @@ const option = (name) => {
 const scenario = option("--scenario") ?? "idle";
 const cycles = Number(option("--cycles") ?? "1");
 const allowNetwork = args.includes("--allow-provider-network");
-if (!["idle", "inflight"].includes(scenario) || !Number.isInteger(cycles) || cycles < 1 || cycles > 20) {
-  throw new Error("Usage: --scenario idle|inflight [--allow-provider-network] [--cycles 1..20]");
+if (!["idle", "inflight", "after-error", "verify-path"].includes(scenario) || !Number.isInteger(cycles) || cycles < 1 || cycles > 20) {
+  throw new Error("Usage: --scenario idle|inflight|after-error|verify-path [--allow-provider-network] [--cycles 1..20]");
 }
-if (scenario === "inflight" && !allowNetwork) {
-  throw new Error("The inflight scenario requests claude.ai anonymously; pass --allow-provider-network to opt in.");
+if (scenario !== "idle" && !allowNetwork) {
+  throw new Error("This scenario requests claude.ai anonymously; pass --allow-provider-network to opt in.");
 }
 if (process.platform !== "win32") throw new Error("Windows only.");
 
@@ -73,10 +80,29 @@ function census(sandboxName) {
     `$p=Get-CimInstance Win32_Process;` +
     `$a=@($p|Where-Object{$_.ExecutablePath -and $_.ExecutablePath.ToLower().StartsWith($u)});` +
     `$b=@($p|Where-Object{($_.Name -eq 'chrome.exe' -or $_.Name -eq 'msedge.exe') -and $_.CommandLine -like '*${sandboxName}*'});` +
-    `"$($a.Count)|$($b.Count)|$((@($a)+@($b)|ForEach-Object{$_.ProcessId}) -join ',')"`;
+    // Browser main processes (no --type=): automated ones carry Playwright's
+    // DevTools pipe; the person's verification window must not.
+    `$m=@($b|Where-Object{$_.CommandLine -notmatch '--type='});` +
+    `$auto=@($m|Where-Object{$_.CommandLine -match '--remote-debugging-pipe'});` +
+    `$person=@($m|Where-Object{$_.CommandLine -notmatch '--remote-debugging-pipe'});` +
+    `"$($a.Count)|$($b.Count)|$((@($a)+@($b)|ForEach-Object{$_.ProcessId}) -join ',')|$($auto.Count)|$(($person|ForEach-Object{$_.ProcessId}) -join ',')"`;
   const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true }).trim();
-  const [app, browsers, pids] = out.split("|");
-  return { app: Number(app), browsers: Number(browsers), pids: (pids ?? "").split(",").filter(Boolean) };
+  const [app, browsers, pids, automated, personPids] = out.split("|");
+  return {
+    app: Number(app),
+    browsers: Number(browsers),
+    pids: (pids ?? "").split(",").filter(Boolean),
+    automatedBrowsers: Number(automated),
+    personBrowserPids: (personPids ?? "").split(",").filter(Boolean),
+  };
+}
+
+function invokeTrayItem(pid, item) {
+  return new Promise((done) => {
+    execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", trayDriver,
+      "-TargetPid", String(pid), "-Item", item], { encoding: "utf8", windowsHide: true, timeout: 30_000 },
+    (error, stdout) => done({ ok: !error, output: String(stdout).trim().split(/\r?\n/).pop() }));
+  });
 }
 
 async function health(token) {
@@ -102,7 +128,7 @@ async function runCycle(cycle) {
   const roaming = join(sandbox, "Roaming");
   const smokeUserData = join(roaming, "QuotaOpsSmoke");
   const token = randomBytes(32).toString("base64url");
-  const accounts = scenario === "inflight"
+  const accounts = scenario !== "idle"
     ? [{
         id: "e2e-claude-1",
         label: "Disposable test profile",
@@ -170,17 +196,59 @@ async function runCycle(cycle) {
     if (!state) throw new Error("collector did not become healthy");
     // Let the in-flight browser get past launch into page work.
     if (scenario === "inflight") await sleep(2_500);
+    if (scenario === "after-error" || scenario === "verify-path") {
+      const settledBy = Date.now() + 60_000;
+      while (Date.now() < settledBy && (await health(token))?.collecting !== false) await sleep(500);
+    }
+    if (scenario === "verify-path") {
+      // The tray learns the held state on its next snapshot read.
+      const item = `Sign in: ${accounts[0].label.slice(0, 40)}...`;
+      let opened = null;
+      for (let attempt = 0; attempt < 8 && !opened?.ok; attempt++) {
+        opened = await invokeTrayItem(child.pid, item);
+        if (!opened.ok) await sleep(8_000);
+      }
+      if (!opened?.ok) throw new Error(`tray item "${item}" not available: ${opened?.output}`);
+      let person = [];
+      for (let i = 0; i < 30 && person.length === 0; i++) {
+        await sleep(500);
+        person = census(sandboxName).personBrowserPids;
+      }
+      if (person.length !== 1) throw new Error(`expected one non-automated browser, saw ${person.length}`);
+      // Ask for a refresh while it is open: automation must stay off it.
+      await fetch(`http://${HOST}:${PORT}/monitoring/refresh`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2_000),
+      }).catch(() => undefined);
+      for (let i = 0; i < 6; i++) {
+        await sleep(1_000);
+        if (census(sandboxName).automatedBrowsers > 0) {
+          failures.push("an automated browser opened the profile while the person had it open");
+          break;
+        }
+      }
+      // The person closes the window; QuotaOps should check the account once.
+      for (const pid of person) {
+        try { execFileSync("taskkill.exe", ["/PID", pid, "/T"], { stdio: "ignore", windowsHide: true }); } catch {}
+      }
+      let rechecked = false;
+      for (let i = 0; i < 60 && !rechecked; i++) {
+        await sleep(500);
+        rechecked = census(sandboxName).automatedBrowsers > 0 || (await health(token))?.collecting === true;
+      }
+      if (!rechecked) failures.push("account was not re-checked after the verification window closed");
+      const settledAgain = Date.now() + 60_000;
+      while (Date.now() < settledAgain && (await health(token))?.collecting !== false) await sleep(500);
+    }
     collectingAtQuit = (await health(token))?.collecting ?? null;
     if (scenario === "inflight" && collectingAtQuit !== true) {
       failures.push("collection was not in flight when Quit was invoked");
     }
+    if ((scenario === "after-error" || scenario === "verify-path") && collectingAtQuit !== false) {
+      failures.push("provider collection had not finished before Quit");
+    }
 
     const invokedAt = Date.now();
-    const driver = await new Promise((done) => {
-      execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", trayDriver,
-        "-TargetPid", String(child.pid), "-Item", "Quit"], { encoding: "utf8", windowsHide: true, timeout: 30_000 },
-      (error, stdout) => done({ ok: !error, output: String(stdout).trim().split(/\r?\n/).pop() }));
-    });
+    const driver = await invokeTrayItem(child.pid, "Quit");
     if (!driver.ok) failures.push(`tray driver failed: ${driver.output}`);
 
     const exitBy = invokedAt + 30_000;
