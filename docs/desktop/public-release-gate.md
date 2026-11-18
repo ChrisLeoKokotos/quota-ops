@@ -14,20 +14,18 @@ operational collector or a trustworthy Windows installer.
    Do not automate, circumvent, or disable human verification. The candidate
    `verification_required` result makes the obstacle explicit and keeps
    account data unknown, not zero. It does not guarantee scraping will work.
-2. **Quit/utility lifecycle:** Windows tray Quit reportedly left Electron
-   and collector processes running past the 45-second shutdown deadline;
-   see GitHub issue #47 and the dedicated isolated `--quit` smoke draft.
-   Determine whether the tray action fires and whether the utility drains
-   before release. Never force-kill unrelated user processes.
+2. **Quit/utility lifecycle (#47):** bounded, cancelling shutdown and a
+   real-tray E2E are in Draft PR #48 (all packaged runs PASS, see
+   `production-hardening-2026-11-18.md`). Still open: headed collection
+   takes the foreground and can dismiss the tray menu (owner decision).
 3. **Code signing and distribution:** A verified Windows Authenticode
    certificate/publisher identity, a protected build/release workflow and
    isolated signed old-to-new upgrade testing are not yet supplied. The
    updater is disabled in unsigned builds, by design.
-4. **Dependency audit:** Hosted CI identified **critical** advisories for
-   Next.js `16.3.8` (GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr,
-   GHSA-p3m5-59mp-jv5r). The code branch pins `16.4.6`, but the root
-   `package-lock.json` has NOT YET been regenerated and tested. Until the
-   lockfile is reviewed, committed and CI audit passes, the release is blocked.
+4. **Dependency audit:** resolved on this branch — `package.json` and
+   `package-lock.json` both pin Next.js `16.4.6`; `npm audit --omit=dev`
+   reports 0 vulnerabilities for the root and the desktop runtime (18 Nov
+   2026). Re-run on the release SHA.
 5. **Review:** Security and QA approval, provenance of npm dependency lock,
    CI checks on the actual proposed release SHA, and a release owner
    decision are outstanding.
@@ -83,7 +81,9 @@ operational collector or a trustworthy Windows installer.
 
 - Draft PR #46: Claude Usage layout compatibility and explicit provider
   manual verification status (candidate, **not** real-session proven).
-- Draft PR #48: isolated packaged Quit lifecycle test (candidate, **not**
+- Draft PR #48: bounded Quit, real-tray E2E, verification path and
+  locale-independent challenge detection (see
+  `production-hardening-2026-11-18.md`; candidate, **not**
   owner-executed).
 - Draft PR #40: disabled-by-default code-gated Windows auto-update.
 - Draft PR #39: Windows installer shell.
