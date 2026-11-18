@@ -61,6 +61,13 @@ async function main(): Promise<void> {
   const holds = new AttentionHolds();
   const statePath = getCollectorStatePath();
   await loadHolds(holds, statePath, new Map(config.accounts.map((account) => [account.id, account.label])));
+  // Show restored holds at once (tray "Needs your attention", dashboard
+  // state) instead of waiting for a batch, which may never run when
+  // background collection is off.
+  results = config.accounts
+    .filter((account) => account.enabled)
+    .map((account) => holds.skip(account, "scheduled"))
+    .filter((result): result is CollectorAccountResult => result !== null);
   const interactiveProfiles = new Map<string, InteractiveProfile>();
   let nextTrigger: RefreshTrigger = "scheduled";
 
