@@ -161,8 +161,12 @@ function minimizeOwnedBrowsers(pids) {
 function invokeTrayItem(pid, item) {
   return new Promise((done) => {
     execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", trayDriver,
-      "-TargetPid", String(pid), "-Item", item], { encoding: "utf8", windowsHide: true, timeout: 30_000 },
-    (error, stdout) => done({ ok: !error, output: String(stdout).trim().split(/\r?\n/).pop() }));
+      "-TargetPid", String(pid), "-Item", item], { encoding: "utf8", windowsHide: true, timeout: 45_000 },
+    (error, stdout, stderr) => {
+      const out = String(stdout).trim().split(/\r?\n/).pop() ?? "";
+      const why = error ? (error.killed ? "driver timed out" : String(stderr).trim().split(/\r?\n/)[0] ?? "") : "";
+      done({ ok: !error, output: [out, why].filter(Boolean).join(" | ").slice(0, 300) });
+    });
   });
 }
 
@@ -247,6 +251,7 @@ async function runCycle(cycle) {
   let quitLatencyMs = null;
   let collectingAtQuit = null;
   let focusSummary = "";
+  let driverRetries = 0;
   try {
     const readyBy = Date.now() + 30_000;
     let state = null;
@@ -365,10 +370,19 @@ async function runCycle(cycle) {
     }
 
     const invokedAt = Date.now();
-    const driver = await invokeTrayItem(child.pid, "Quit");
+    let driver = await invokeTrayItem(child.pid, "Quit");
+    // Harness retry only: if the scripted click never reached the app (no
+    // tray_quit_requested mark), the menu was not driven, e.g. a cold UI
+    // Automation start on a CI runner. A delivered Quit is never retried, so
+    // an app that ignores Quit still fails.
+    if (!driver.ok && !marks.has("tray_quit_requested") && exitedAt === null) {
+      driverRetries++;
+      await sleep(2_000);
+      driver = await invokeTrayItem(child.pid, "Quit");
+    }
     if (!driver.ok) failures.push(`tray driver failed: ${driver.output}`);
 
-    const exitBy = invokedAt + 30_000;
+    const exitBy = Date.now() + 30_000;
     while (exitedAt === null && Date.now() < exitBy) await sleep(100);
     await sleep(300);
     const clicked = marks.get("tray_quit_requested");
@@ -399,7 +413,7 @@ async function runCycle(cycle) {
     if (!(await portListening())) await rm(sandbox, { recursive: true, force: true }).catch(() => undefined);
   }
   const summary = `cycle ${cycle}/${cycles} scenario=${scenario} collectingAtQuit=${collectingAtQuit} ` +
-    `quitLatencyMs=${quitLatencyMs ?? "n/a"}${focusSummary} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
+    `quitLatencyMs=${quitLatencyMs ?? "n/a"}${focusSummary}${driverRetries ? ` driverRetries=${driverRetries}` : ""} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
   return { summary, failures };
 }
 
