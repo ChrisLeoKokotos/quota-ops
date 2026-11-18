@@ -556,10 +556,59 @@ async function runVisibleRefresh() {
         }).show();
       } catch { /* optional */ }
     }
+    void followVisibleRefresh();
   } finally {
     trayCommandPending = false;
     refreshTray();
   }
+}
+
+// Feedback for a person-initiated refresh: the tray says that accounts are
+// being checked until the collector is idle again, then a notification says
+// what happened. Counts only; no account names or values.
+let collectorBusy = false;
+async function collectorIsCollecting() {
+  try {
+    const token = await collectorToken();
+    const response = await fetch("http://127.0.0.1:4317/health", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(3000),
+      redirect: "error",
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return typeof body?.collecting === "boolean" ? body.collecting : null;
+  } catch {
+    return null;
+  }
+}
+
+async function followVisibleRefresh() {
+  collectorBusy = true;
+  refreshTray();
+  const deadline = Date.now() + 15 * 60_000;
+  // Give the collector a moment to start the queued batch.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  while (!quitting && Date.now() < deadline && (await collectorIsCollecting()) !== false) {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
+  collectorBusy = false;
+  if (quitting) return;
+  await refreshAttention();
+  refreshTray();
+  const snapshot = await readSnapshot();
+  if (!snapshot || snapshot.error || !Array.isArray(snapshot.accounts) || !Notification.isSupported()) return;
+  const updated = snapshot.accounts.filter((entry) => entry.status === "ok").length;
+  const attention = snapshot.accounts.filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status)).length;
+  const other = snapshot.accounts.length - updated - attention;
+  try {
+    new Notification({
+      title: "QuotaOps refresh finished",
+      body: `${updated} updated` +
+        (attention ? `, ${attention} need${attention === 1 ? "s" : ""} your attention (see tray)` : "") +
+        (other ? `, ${other} could not be read` : "") + ".",
+    }).show();
+  } catch { /* optional */ }
 }
 
 /** Open one isolated profile in the normal browser for manual verification. */
@@ -728,7 +777,7 @@ function buildTrayMenu() {
     {
       // Visible browser windows only after the person agrees, every time.
       label: "Refresh with visible browser...",
-      enabled: !trayCommandPending && !paused && collectorSettings.enabledAccounts > 0,
+      enabled: !trayCommandPending && !collectorBusy && !paused && collectorSettings.enabledAccounts > 0,
       click: () => {
         void runVisibleRefresh();
       },
@@ -741,6 +790,7 @@ function buildTrayMenu() {
       },
     },
     { type: "separator" },
+    ...(collectorBusy ? [{ label: "Checking accounts now...", enabled: false }] : []),
     { label: formatLastUpdate(status), enabled: false },
     ...(trayCommandError ? [{ label: trayCommandError, enabled: false }] : []),
     {

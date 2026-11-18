@@ -142,4 +142,7 @@ test("only a consented visible refresh opens browser windows; background is head
   assert.ok(consent > 0 && request > consent, "the visible refresh is requested only after the consent dialog");
   assert.match(body, /if \(choice\.response !== 1\) return;/);
   assert.equal((main.match(/collectorControl\("refreshVisible"\)/g) ?? []).length, 1);
+  // Clear feedback while the consented run is active and when it ends.
+  assert.match(main, /collectorBusy \? \[\{ label: "Checking accounts now\.\.\.", enabled: false \}\]/);
+  assert.match(main, /title: "QuotaOps refresh finished"/);
 });
