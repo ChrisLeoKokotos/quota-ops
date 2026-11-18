@@ -20,6 +20,13 @@
 //                opens, that automation stays off the profile while it is
 //                open, and that the account is checked once after it closes.
 //                Briefly shows a browser window on the desktop.
+//   background-focus  same profile; while the scheduled (background)
+//                collection runs, samples the foreground window owner and
+//                fails if a test-owned browser ever owns it or if any
+//                automated browser runs headed.
+//   visible-consent  tray "Refresh with visible browser...": Cancel must open
+//                nothing; after "Open browser windows" a visible browser runs,
+//                and tray Quit is invoked while it is active. Shows a window.
 //   All but idle make an unauthenticated request to claude.ai (opt-in).
 //
 // Never uses real profiles, tokens or ~/.quotaops; terminates only processes
@@ -42,8 +49,9 @@ const option = (name) => {
 const scenario = option("--scenario") ?? "idle";
 const cycles = Number(option("--cycles") ?? "1");
 const allowNetwork = args.includes("--allow-provider-network");
-if (!["idle", "inflight", "after-error", "verify-path"].includes(scenario) || !Number.isInteger(cycles) || cycles < 1 || cycles > 20) {
-  throw new Error("Usage: --scenario idle|inflight|after-error|verify-path [--allow-provider-network] [--cycles 1..20]");
+const SCENARIOS = ["idle", "inflight", "after-error", "verify-path", "background-focus", "visible-consent"];
+if (!SCENARIOS.includes(scenario) || !Number.isInteger(cycles) || cycles < 1 || cycles > 20) {
+  throw new Error(`Usage: --scenario ${SCENARIOS.join("|")} [--allow-provider-network] [--cycles 1..20]`);
 }
 if (scenario !== "idle" && !allowNetwork) {
   throw new Error("This scenario requests claude.ai anonymously; pass --allow-provider-network to opt in.");
@@ -54,6 +62,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const unpacked = join(root, "release", "windows", "win-unpacked");
 const executable = join(unpacked, "QuotaOps.exe");
 const trayDriver = join(root, "scripts", "windows-tray-menu-invoke.ps1");
+const buttonDriver = join(root, "scripts", "windows-uia-invoke-button.ps1");
 const HOST = "127.0.0.1";
 const PORT = 4317;
 const QUIT_LATENCY_LIMIT_MS = 15_000;
@@ -85,16 +94,68 @@ function census(sandboxName) {
     `$m=@($b|Where-Object{$_.CommandLine -notmatch '--type='});` +
     `$auto=@($m|Where-Object{$_.CommandLine -match '--remote-debugging-pipe'});` +
     `$person=@($m|Where-Object{$_.CommandLine -notmatch '--remote-debugging-pipe'});` +
-    `"$($a.Count)|$($b.Count)|$((@($a)+@($b)|ForEach-Object{$_.ProcessId}) -join ',')|$($auto.Count)|$(($person|ForEach-Object{$_.ProcessId}) -join ',')"`;
+    `$headed=@($auto|Where-Object{$_.CommandLine -notmatch '--headless'});` +
+    `"$($a.Count)|$($b.Count)|$((@($a)+@($b)|ForEach-Object{$_.ProcessId}) -join ',')|$($auto.Count)|$(($person|ForEach-Object{$_.ProcessId}) -join ',')|$($headed.Count)|$(($b|ForEach-Object{$_.ProcessId}) -join ',')"`;
   const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true }).trim();
-  const [app, browsers, pids, automated, personPids] = out.split("|");
+  const [app, browsers, pids, automated, personPids, headed, browserPids] = out.split("|");
   return {
     app: Number(app),
     browsers: Number(browsers),
     pids: (pids ?? "").split(",").filter(Boolean),
     automatedBrowsers: Number(automated),
     personBrowserPids: (personPids ?? "").split(",").filter(Boolean),
+    headedAutomatedBrowsers: Number(headed),
+    browserPids: (browserPids ?? "").split(",").filter(Boolean),
   };
+}
+
+/**
+ * Sample the foreground window's owning process every ~250 ms. Reports only
+ * whether the owner is a test-owned browser (its command line names our temp
+ * home) and the owner's process name otherwise; no titles, no content.
+ */
+function watchForeground(sandboxName, seconds) {
+  const script =
+    "Add-Type 'using System;using System.Runtime.InteropServices;public static class Fg{" +
+    "[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();" +
+    "[DllImport(\"user32.dll\")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);}';" +
+    `$end=(Get-Date).AddSeconds(${seconds});` +
+    "while((Get-Date) -lt $end){$h=[Fg]::GetForegroundWindow();$p=0;[void][Fg]::GetWindowThreadProcessId($h,[ref]$p);" +
+    "$c=Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue;" +
+    `if($c -and ([string]$c.CommandLine) -like '*${sandboxName}*'){'OWNED:'+$c.Name}elseif($c){'OTHER:'+$c.Name}else{'NONE'};` +
+    "Start-Sleep -Milliseconds 250}";
+  const child = spawn("powershell.exe", ["-NoProfile", "-Command", script], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += String(chunk); });
+  const finished = new Promise((done) => child.on("exit", () => done()));
+  return {
+    stop: async () => {
+      try { child.kill(); } catch {}
+      await finished;
+      return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    },
+  };
+}
+
+function invokeButton(pid, name) {
+  return new Promise((done) => {
+    execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", buttonDriver,
+      "-TargetPid", String(pid), "-Name", name], { encoding: "utf8", windowsHide: true, timeout: 30_000 },
+    (error, stdout) => done({ ok: !error, output: String(stdout).trim().split(/\r?\n/).pop() }));
+  });
+}
+
+/** Minimize test-owned browser windows so the scripted tray click can open the menu. */
+function minimizeOwnedBrowsers(pids) {
+  if (pids.length === 0) return;
+  const script =
+    "Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes;" +
+    `foreach($id in @(${pids.join(",")})){` +
+    "$c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$id);" +
+    "foreach($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,$c)){" +
+    "$p=$null;if($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$p)){" +
+    "try{$p.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)}catch{}}}}";
+  try { execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { stdio: "ignore", windowsHide: true, timeout: 20_000 }); } catch {}
 }
 
 function invokeTrayItem(pid, item) {
@@ -185,6 +246,7 @@ async function runCycle(cycle) {
   const failures = [];
   let quitLatencyMs = null;
   let collectingAtQuit = null;
+  let focusSummary = "";
   try {
     const readyBy = Date.now() + 30_000;
     let state = null;
@@ -194,6 +256,50 @@ async function runCycle(cycle) {
       await sleep(300);
     }
     if (!state) throw new Error("collector did not become healthy");
+    if (scenario === "background-focus") {
+      // The scheduled collection starts with the collector; observe all of it.
+      const watch = watchForeground(sandboxName, 60);
+      let sawBrowser = false;
+      let headed = 0;
+      const until = Date.now() + 60_000;
+      while (Date.now() < until && (await health(token))?.collecting === true) {
+        const now = census(sandboxName);
+        if (now.automatedBrowsers > 0) sawBrowser = true;
+        headed = Math.max(headed, now.headedAutomatedBrowsers);
+        await sleep(600);
+      }
+      const owners = await watch.stop();
+      const owned = owners.filter((line) => line.startsWith("OWNED:"));
+      focusSummary = ` foregroundSamples=${owners.length} browserOwnedForeground=${owned.length}`;
+      if (!sawBrowser) failures.push("no background browser was observed (collection too short to test)");
+      if (headed > 0) failures.push("background collection started a headed browser");
+      if (owned.length > 0) failures.push(`a test-owned browser took the foreground (${owned[0]})`);
+    }
+    if (scenario === "visible-consent") {
+      const settledBy = Date.now() + 60_000;
+      while (Date.now() < settledBy && (await health(token))?.collecting !== false) await sleep(500);
+      const item = "Refresh with visible browser...";
+      let opened = await invokeTrayItem(child.pid, item);
+      if (!opened.ok) throw new Error(`tray item "${item}" not available: ${opened.output}`);
+      const cancelled = await invokeButton(child.pid, "Cancel");
+      if (!cancelled.ok) throw new Error(`consent dialog Cancel not found: ${cancelled.output}`);
+      await sleep(5_000);
+      if (census(sandboxName).browsers > 0) failures.push("a browser started although the person chose Cancel");
+      opened = await invokeTrayItem(child.pid, item);
+      if (!opened.ok) throw new Error(`tray item "${item}" not available again: ${opened.output}`);
+      const agreed = await invokeButton(child.pid, "Open browser windows");
+      if (!agreed.ok) throw new Error(`consent dialog button not found: ${agreed.output}`);
+      let visibleBrowser = false;
+      for (let i = 0; i < 40 && !visibleBrowser; i++) {
+        await sleep(500);
+        visibleBrowser = census(sandboxName).headedAutomatedBrowsers > 0;
+      }
+      if (!visibleBrowser) failures.push("no visible browser ran after consent");
+      // Harness only: a real tray click gets foreground rights from the shell;
+      // a scripted one does not while another app's window is in front.
+      minimizeOwnedBrowsers(census(sandboxName).browserPids);
+      await sleep(800);
+    }
     // Let the in-flight browser get past launch into page work.
     if (scenario === "inflight") await sleep(2_500);
     if (scenario === "after-error" || scenario === "verify-path") {
@@ -251,6 +357,9 @@ async function runCycle(cycle) {
     if (scenario === "inflight" && collectingAtQuit !== true) {
       failures.push("collection was not in flight when Quit was invoked");
     }
+    if (scenario === "visible-consent" && collectingAtQuit !== true) {
+      failures.push("the visible collection had ended before Quit; Quit was not tested during it");
+    }
     if ((scenario === "after-error" || scenario === "verify-path") && collectingAtQuit !== false) {
       failures.push("provider collection had not finished before Quit");
     }
@@ -290,7 +399,7 @@ async function runCycle(cycle) {
     if (!(await portListening())) await rm(sandbox, { recursive: true, force: true }).catch(() => undefined);
   }
   const summary = `cycle ${cycle}/${cycles} scenario=${scenario} collectingAtQuit=${collectingAtQuit} ` +
-    `quitLatencyMs=${quitLatencyMs ?? "n/a"} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
+    `quitLatencyMs=${quitLatencyMs ?? "n/a"}${focusSummary} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
   return { summary, failures };
 }
 
