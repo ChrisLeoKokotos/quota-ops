@@ -9,9 +9,20 @@
  *
  * No state or tokens are persisted by this class.
  */
+/**
+ * Why a batch runs. "visible" may show browser windows and is only ever
+ * requested after a person's consent; it must never survive a Pause or be
+ * replayed later. Pending requests merge by precedence
+ * visible > manual > scheduled, so a person's request is never downgraded.
+ */
+export type CollectionTrigger = "scheduled" | "manual" | "visible";
+
+const TRIGGER_RANK: Record<CollectionTrigger, number> = { scheduled: 0, manual: 1, visible: 2 };
+
 export type CollectFn<T> = (
   invalidated: () => boolean,
   signal: AbortSignal,
+  trigger: CollectionTrigger,
 ) => Promise<T>;
 
 export class MonitoringController<T> {
@@ -21,6 +32,7 @@ export class MonitoringController<T> {
   private inFlight: Promise<void> | null = null;
   private inFlightAbort: AbortController | null = null;
   private pending = false;
+  private pendingTrigger: CollectionTrigger = "scheduled";
   private lastSuccessAt: string | null = null;
 
   private readonly collect: CollectFn<T>;
@@ -48,6 +60,8 @@ export class MonitoringController<T> {
   pause(): void {
     this.paused = true;
     this.pending = false;
+    // A consented visible request must not run after a later Resume.
+    this.pendingTrigger = "scheduled";
     this.generation++;
   }
 
@@ -88,9 +102,12 @@ export class MonitoringController<T> {
   }
 
   /** Schedule an immediate refresh. No parallel browser profile launches. */
-  queueRefresh(): boolean {
+  queueRefresh(trigger: CollectionTrigger = "scheduled"): boolean {
     if (this.paused || this.stopped) return false;
     if (this.inFlight) {
+      if (!this.pending || TRIGGER_RANK[trigger] > TRIGGER_RANK[this.pendingTrigger]) {
+        this.pendingTrigger = trigger;
+      }
       this.pending = true;
       return true;
     }
@@ -102,8 +119,9 @@ export class MonitoringController<T> {
     this.inFlightAbort = abort;
     this.inFlight = (async () => {
       try {
-        const value = await this.collect(invalidated, abort.signal);
-        if (!invalidated()) {
+        const value = await this.collect(invalidated, abort.signal, trigger);
+        // null = the batch chose not to collect (e.g. background off).
+        if (!invalidated() && value !== null) {
           const now = new Date().toISOString();
           this.publish(value, now);
           this.lastSuccessAt = now;
@@ -115,8 +133,10 @@ export class MonitoringController<T> {
         this.inFlight = null;
         if (this.inFlightAbort === abort) this.inFlightAbort = null;
         if (this.pending && !this.paused && !this.stopped) {
+          const next = this.pendingTrigger;
           this.pending = false;
-          this.queueRefresh();
+          this.pendingTrigger = "scheduled";
+          this.queueRefresh(next);
         }
       }
     })();

@@ -132,17 +132,57 @@ test("only a consented visible refresh opens browser windows; background is head
   assert.match(service, /request\.url === "\/monitoring\/refresh-visible"/);
   // Restored holds are visible immediately after a restart, also when
   // background collection is off and no batch runs.
-  assert.match(service, /\.map\(\(account\) => holds\.skip\(account, "scheduled"\)\)/);
+  assert.match(service, /results = holds\.heldResults\(config\.accounts\.filter\(\(account\) => account\.enabled\)\);/);
 
   const main = await readFile(new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8");
   const start = main.indexOf("async function runVisibleRefresh()");
-  const body = main.slice(start, main.indexOf("/** Open one isolated profile", start));
-  const consent = body.indexOf("dialog.showMessageBox(");
+  const body = main.slice(start, main.indexOf("async function askVisibleRefreshConsent", start));
+  const consent = body.indexOf("askVisibleRefreshConsent(");
   const request = body.indexOf('collectorControl("refreshVisible")');
   assert.ok(consent > 0 && request > consent, "the visible refresh is requested only after the consent dialog");
-  assert.match(body, /if \(choice\.response !== 1\) return;/);
+  assert.match(body, /if \(choice !== 1 \|\| quitting\) return;/);
+  // One dialog and one visible batch at a time (no stacked consents).
+  assert.match(body, /if \(trayCommandPending \|\| visibleConsentOpen \|\| collectorBusy\) return;/);
+  const ask = main.slice(main.indexOf("async function askVisibleRefreshConsent"));
+  assert.match(ask.slice(0, 1500), /dialog\.showMessageBox\(/);
   assert.equal((main.match(/collectorControl\("refreshVisible"\)/g) ?? []).length, 1);
   // Clear feedback while the consented run is active and when it ends.
   assert.match(main, /collectorBusy \? \[\{ label: "Checking accounts now\.\.\.", enabled: false \}\]/);
   assert.match(main, /title: "QuotaOps refresh finished"/);
+});
+
+test("restored holds are all shown at start, even past the background retry window", () => {
+  let now = Date.parse("2026-11-18T10:00:00.000Z");
+  const holds = new AttentionHolds(() => now);
+  holds.record(resultWith("verification_required"));
+  now += BACKGROUND_RETRY_MS * 3;
+  assert.equal(holds.skip(account, "scheduled"), null, "background may retry after the window");
+  const shown = holds.heldResults([account, { id: "other", label: "Other" }]);
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0]?.status, "verification_required");
+});
+
+test("a failed state rename leaves no temporary file behind", async () => {
+  const { mkdtemp, mkdir, readdir, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { persistHolds } = await import("../collector/attention-hold.ts");
+  const dir = await mkdtemp(join(tmpdir(), "quotaops-holds-"));
+  try {
+    const target = join(dir, "collector-state.json");
+    await mkdir(target); // a directory where the file should go: rename fails
+    const holds = new AttentionHolds();
+    holds.record(resultWith("verification_required"));
+    await persistHolds(holds, target);
+    assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("holds are saved even when a batch stops part-way (Quit or Pause)", async () => {
+  const service = await readFile(new URL("../collector/service.ts", import.meta.url), "utf8");
+  assert.match(service, /\} finally \{\s*await persistHolds\(holds, statePath\);\s*\}/);
+  assert.doesNotMatch(service, /nextTrigger/, "no shared mutable trigger that could be replayed later");
+  assert.match(service, /monitoring\.queueRefresh\("visible"\)/);
 });

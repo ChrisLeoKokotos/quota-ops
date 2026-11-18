@@ -519,30 +519,26 @@ async function refreshCollectorSettings() {
  * collection is headless and cannot reach a page that the provider only
  * serves to a visible browser; this is the consented alternative.
  */
+let visibleConsentOpen = false;
 async function runVisibleRefresh() {
-  if (trayCommandPending) return;
-  await refreshCollectorSettings();
-  const count = collectorSettings.enabledAccounts;
-  if (count === 0) return;
-  const choice = await dialog.showMessageBox({
-    type: "info",
-    buttons: ["Cancel", "Open browser windows"],
-    defaultId: 1,
-    cancelId: 0,
-    noLink: true,
-    title: "QuotaOps visible refresh",
-    message: `Open a browser window for each of your ${count} account${count === 1 ? "" : "s"}?`,
-    detail:
-      "QuotaOps will open one window at a time, read the usage page and close it " +
-      `(about 15 seconds each, about ${Math.max(1, Math.round((count * 15) / 60))} minute${count * 15 > 90 ? "s" : ""} in total). ` +
-      "Windows may switch to these windows; avoid typing until QuotaOps finishes. " +
-      "QuotaOps does not complete verifications for you: if a provider asks you to " +
-      "verify, use Manual verification required in this menu.",
-  });
-  if (choice.response !== 1) return;
+  // One consent dialog and one visible batch at a time.
+  if (trayCommandPending || visibleConsentOpen || collectorBusy) return;
+  visibleConsentOpen = true;
+  refreshTray();
+  let choice;
+  try {
+    await refreshCollectorSettings();
+    if (collectorSettings.enabledAccounts === 0) return;
+    choice = await askVisibleRefreshConsent(collectorSettings.enabledAccounts);
+  } finally {
+    visibleConsentOpen = false;
+    refreshTray();
+  }
+  if (choice !== 1 || quitting) return;
   trayCommandPending = true;
   trayCommandError = null;
   refreshTray();
+  const requestedAt = new Date().toISOString();
   try {
     if (!(await collectorControl("refreshVisible"))) {
       trayCommandError = "Collector command failed; nothing was opened";
@@ -556,11 +552,31 @@ async function runVisibleRefresh() {
         }).show();
       } catch { /* optional */ }
     }
-    void followVisibleRefresh();
+    void followVisibleRefresh(requestedAt);
   } finally {
     trayCommandPending = false;
     refreshTray();
   }
+}
+
+async function askVisibleRefreshConsent(count) {
+  const minutes = Math.max(1, Math.round((count * 15) / 60));
+  const result = await dialog.showMessageBox({
+    type: "info",
+    buttons: ["Cancel", "Open browser windows"],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    title: "QuotaOps visible refresh",
+    message: `Open a browser window for each of your ${count} account${count === 1 ? "" : "s"}?`,
+    detail:
+      "QuotaOps will open one window at a time, read the usage page and close it " +
+      `(about 15 seconds each, about ${minutes} minute${minutes === 1 ? "" : "s"} in total). ` +
+      "Windows may switch to these windows; avoid typing until QuotaOps finishes. " +
+      "QuotaOps does not complete verifications for you: if a provider asks you to " +
+      "verify, use Manual verification required in this menu.",
+  });
+  return result.response;
 }
 
 // Feedback for a person-initiated refresh: the tray says that accounts are
@@ -583,7 +599,7 @@ async function collectorIsCollecting() {
   }
 }
 
-async function followVisibleRefresh() {
+async function followVisibleRefresh(requestedAt) {
   collectorBusy = true;
   refreshTray();
   const deadline = Date.now() + 15 * 60_000;
@@ -598,16 +614,24 @@ async function followVisibleRefresh() {
   refreshTray();
   const snapshot = await readSnapshot();
   if (!snapshot || snapshot.error || !Array.isArray(snapshot.accounts) || !Notification.isSupported()) return;
-  const updated = snapshot.accounts.filter((entry) => entry.status === "ok").length;
-  const attention = snapshot.accounts.filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status)).length;
-  const other = snapshot.accounts.length - updated - attention;
+  // Count only accounts checked by this run, never an older snapshot.
+  const checked = snapshot.accounts.filter((entry) =>
+    typeof entry.checkedAt === "string" && entry.checkedAt >= requestedAt);
+  const updated = checked.filter((entry) => entry.status === "ok").length;
+  const attention = checked.filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status)).length;
+  const other = checked.length - updated - attention;
   try {
-    new Notification({
-      title: "QuotaOps refresh finished",
-      body: `${updated} updated` +
-        (attention ? `, ${attention} need${attention === 1 ? "s" : ""} your attention (see tray)` : "") +
-        (other ? `, ${other} could not be read` : "") + ".",
-    }).show();
+    new Notification(checked.length === 0
+      ? {
+          title: "QuotaOps refresh did not run",
+          body: "Monitoring was paused or QuotaOps was busy. Nothing was updated.",
+        }
+      : {
+          title: "QuotaOps refresh finished",
+          body: `${updated} updated` +
+            (attention ? `, ${attention} need${attention === 1 ? "s" : ""} your attention (see tray)` : "") +
+            (other ? `, ${other} could not be read` : "") + ".",
+        }).show();
   } catch { /* optional */ }
 }
 
@@ -777,7 +801,8 @@ function buildTrayMenu() {
     {
       // Visible browser windows only after the person agrees, every time.
       label: "Refresh with visible browser...",
-      enabled: !trayCommandPending && !collectorBusy && !paused && collectorSettings.enabledAccounts > 0,
+      enabled: !trayCommandPending && !collectorBusy && !visibleConsentOpen && !paused &&
+        collectorSettings.enabledAccounts > 0,
       click: () => {
         void runVisibleRefresh();
       },

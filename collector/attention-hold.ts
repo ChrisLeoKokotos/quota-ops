@@ -1,5 +1,6 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
+import type { CollectionTrigger } from "./monitoring.ts";
 import type { CollectorAccountResult } from "./types.ts";
 
 /**
@@ -19,7 +20,7 @@ import type { CollectorAccountResult } from "./types.ts";
  * - Holds survive collector restarts (a small state file), so restarting the
  *   app does not re-hit a challenge for every account.
  */
-export type RefreshTrigger = "scheduled" | "manual" | "visible";
+export type RefreshTrigger = CollectionTrigger;
 
 export const BACKGROUND_RETRY_MS = 24 * 60 * 60 * 1000;
 
@@ -77,6 +78,20 @@ export class AttentionHolds {
   record(result: CollectorAccountResult): void {
     if (needsPerson(result.status)) this.held.set(result.id, { result, heldAt: this.now() });
     else this.held.delete(result.id);
+  }
+
+  /**
+   * Every held account, regardless of the background retry window: what the
+   * tray and dashboard show at start-up, also when background collection is
+   * off and no batch will run.
+   */
+  heldResults(accounts: Array<{ id: string; label: string }>): CollectorAccountResult[] {
+    const shown: CollectorAccountResult[] = [];
+    for (const account of accounts) {
+      const record = this.held.get(account.id);
+      if (record) shown.push({ ...record.result, label: account.label });
+    }
+    return shown;
   }
 
   isHeld(id: string): boolean {
@@ -145,7 +160,9 @@ export async function persistHolds(holds: AttentionHolds, path: string): Promise
     await writeFile(temporary, holds.serialize(), { mode: 0o600 });
     await rename(temporary, path);
   } catch {
-    // State is an optimisation against re-hitting challenges, not a source of truth.
+    // State is an optimisation against re-hitting challenges, not a source of
+    // truth; never leave the temporary file behind (e.g. rename EPERM).
+    await unlink(temporary).catch(() => undefined);
   }
 }
 

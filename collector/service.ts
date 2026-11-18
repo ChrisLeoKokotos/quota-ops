@@ -64,17 +64,11 @@ async function main(): Promise<void> {
   // Show restored holds at once (tray "Needs your attention", dashboard
   // state) instead of waiting for a batch, which may never run when
   // background collection is off.
-  results = config.accounts
-    .filter((account) => account.enabled)
-    .map((account) => holds.skip(account, "scheduled"))
-    .filter((result): result is CollectorAccountResult => result !== null);
+  results = holds.heldResults(config.accounts.filter((account) => account.enabled));
   const interactiveProfiles = new Map<string, InteractiveProfile>();
-  let nextTrigger: RefreshTrigger = "scheduled";
 
   const monitoring = new MonitoringController(
-    async (invalidated, signal) => {
-      const trigger = nextTrigger;
-      nextTrigger = "scheduled";
+    async (invalidated, signal, trigger: RefreshTrigger) => {
       const current = await loadCollectorConfig();
       // Unattended collection switched off: only a person's request collects.
       if (trigger === "scheduled" && current.backgroundCollection === "off") return null;
@@ -84,19 +78,24 @@ async function main(): Promise<void> {
       // everything else is headless and cannot take the foreground.
       const visible = trigger === "visible";
 
-      for (const account of enabled) {
-        if (invalidated()) return null;
-        const held = holds.skip(account, trigger);
-        if (held) {
-          nextResults.push(held);
-          continue;
+      // Holds changed earlier in this batch are saved even when Quit or
+      // Pause stops it part-way.
+      try {
+        for (const account of enabled) {
+          if (invalidated()) return null;
+          const held = holds.skip(account, trigger);
+          if (held) {
+            nextResults.push(held);
+            continue;
+          }
+          // The signal aborts on shutdown and closes this account's profile.
+          const result = await collectProviderUsage(account, { signal, visible });
+          if (!invalidated()) holds.record(result);
+          nextResults.push(result);
         }
-        // The signal aborts on shutdown and closes this account's profile.
-        const result = await collectProviderUsage(account, { signal, visible });
-        if (!invalidated()) holds.record(result);
-        nextResults.push(result);
+      } finally {
+        await persistHolds(holds, statePath);
       }
-      await persistHolds(holds, statePath);
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
       const nextTokens = current.tokenAnalyticsEnabled
@@ -176,8 +175,7 @@ async function main(): Promise<void> {
       void opened.exited.then(() => {
         interactiveProfiles.delete(account.id);
         holds.endInteractive(account.id);
-        nextTrigger = "manual";
-        monitoring.queueRefresh();
+        monitoring.queueRefresh("manual");
       });
       sendJson(request, response, 202, { status: "opened" });
     } catch {
@@ -233,8 +231,7 @@ async function main(): Promise<void> {
       }
       if (request.url === "/monitoring/refresh") {
         // A person asked: held accounts are tried once more.
-        nextTrigger = "manual";
-        const queued = monitoring.queueRefresh();
+        const queued = monitoring.queueRefresh("manual");
         sendJson(request, response, queued ? 202 : 409, {
           status: queued ? "accepted" : "paused", ...monitoring.status(),
         });
@@ -243,8 +240,9 @@ async function main(): Promise<void> {
       if (request.url === "/monitoring/refresh-visible") {
         // Main process asks only after the person confirmed a dialog that
         // says browser windows will open and may take focus.
-        nextTrigger = "visible";
-        const queued = monitoring.queueRefresh();
+        // Nothing is remembered when this is refused (paused): a consented
+        // visible request never runs later.
+        const queued = monitoring.queueRefresh("visible");
         sendJson(request, response, queued ? 202 : 409, {
           status: queued ? "accepted" : "paused", ...monitoring.status(),
         });
@@ -294,7 +292,7 @@ async function main(): Promise<void> {
   const scheduledTick = () => {
     void loadCollectorConfig()
       .then((current) => {
-        if (current.backgroundCollection !== "off") monitoring.queueRefresh();
+        if (current.backgroundCollection !== "off") monitoring.queueRefresh("scheduled");
       })
       .catch(() => undefined);
   };
