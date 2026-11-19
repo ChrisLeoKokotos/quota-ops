@@ -164,8 +164,10 @@ async function main(): Promise<void> {
     const next = {
       claudeCode: scope === "codex" || scope === "google-antigravity" ? consent.claudeCode : value,
       codex: scope === "claude-code" || scope === "google-antigravity" ? consent.codex : value,
-      // Google is explicitly opt-in; legacy "all" does not silently enable it.
-      googleAntigravity: scope === "google-antigravity" ? value : consent.googleAntigravity === true,
+      // Google is explicitly opt-in; "all" can disable it but never silently enable it.
+      googleAntigravity: scope === "google-antigravity" ? value
+        : scope === "all" && action === "disable" ? false
+        : consent.googleAntigravity === true,
     };
 
     await saveCollectorConfig({
