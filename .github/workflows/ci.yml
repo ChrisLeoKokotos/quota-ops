@@ -87,6 +87,9 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Google statusLine hook and collector E2E on Windows
+        run: node scripts/google-statusline-e2e.mjs
+
       - name: Build production dashboard
         run: npm run build
 
