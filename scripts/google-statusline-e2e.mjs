@@ -42,5 +42,13 @@ try{
   // Duplicate event does not add tokens.
   run("collector/google-hook.ts",["google-1"],JSON.stringify(event));
   assert.equal(JSON.parse(run("collector/cli.ts",["tokens"])).totals.totalTokens,150);
+  // "Disable all" must revoke Google token recording too, while quota capture remains enabled.
+  run("collector/cli.ts",["tokens-auto","disable","all"]);
+  const changed={...event,context_window:{total_input_tokens:300,total_output_tokens:100}};
+  run("collector/google-hook.ts",["google-1"],JSON.stringify(changed));
+  const persisted=JSON.parse(await readFile(join(home,".quotaops","google-statusline","google-1.json"),"utf8"));
+  assert.equal(persisted.totals.totalTokens,150);
+  assert.equal(JSON.parse(run("collector/cli.ts",["collect","google-1"])).status,"ok");
+  assert.match(run("collector/cli.ts",["tokens-auto","status"]),/Antigravity numeric counters: disabled/);
   console.log("PASS: Antigravity CLI statusLine hook -> sanitized storage -> Google quota collector -> optional Token Analytics.");
 }finally{await rm(home,{recursive:true,force:true});}
