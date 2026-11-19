@@ -113,7 +113,7 @@ export async function ingestGoogleStatusline(id:string,payload:unknown,
   try{
     const s=(await readState(id,root))??initial();
     s.updatedAt=event.checkedAt;s.plan=event.plan;
-    if(event.windows.length)s.windows=event.windows;
+    s.windows=event.windows; // Missing quotas must not refresh older percentages as if current.
     if(event.sessionHash&&event.input!==null&&event.output!==null){
       const key=event.sessionHash,prev=s.sessions[key];
       if(prev||Object.keys(s.sessions).length<MAX_SESSIONS){

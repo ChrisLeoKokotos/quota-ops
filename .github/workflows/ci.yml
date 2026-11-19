@@ -50,6 +50,9 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Google statusLine collector E2E (no credentials)
+        run: node scripts/google-statusline-e2e.mjs
+
       - name: Google manual provider browser E2E (no credentials)
         run: node scripts/google-dashboard-e2e.mjs
 
