@@ -15,9 +15,9 @@ It has:
 - no cloud sync;
 - no QuotaOps user authentication;
 - no credential upload to a QuotaOps service;
-- an optional experimental same-PC local collector for provider-authenticated browser profiles.
+- an optional experimental same-PC collector for Claude/OpenAI browser profiles and Google/Antigravity CLI statusLine events (in Draft PR #50, not released).
 
-Non-secret quota metadata and preferences are stored in browser local storage. The collector stores isolated browser profiles under the user's local QuotaOps directory and exposes normalized snapshots only over a loopback-only HTTP service.
+Non-secret quota metadata and preferences are stored in browser local storage. Claude/OpenAI collectors use isolated browser profiles; the Antigravity CLI hook instead writes allowlisted per-account quota state, and only after separate consent hashed numeric token observations, under the local QuotaOps directory. The collector exposes normalized snapshots only over a loopback-only HTTP service.
 
 ## Security goals
 
@@ -28,7 +28,7 @@ QuotaOps should provide useful quota, reset, utilization, and capacity informati
 QuotaOps treats the following as separate trust domains:
 
 1. **Provider authentication state** — API keys, OAuth tokens, cookies, refresh tokens, private keys, passwords, and local session material.
-2. **Provider adapters / collectors** — future code that obtains usage or quota signals.
+2. **Provider adapters / collectors** — current Claude/OpenAI browser adapters and the Google statusLine hook/reader; Google account-to-CLI identity association remains user-verified, not cryptographically attested.
 3. **Normalized quota data** — utilization, reset timestamps, remaining capacity, provider identifiers, and source health.
 4. **Capacity logic** — state derivation, recommendations, notification timing, and future routing.
 5. **UI / browser capabilities** — display, local persistence, notifications, speech recognition, and user input.
@@ -172,13 +172,15 @@ Security rules:
 - background collection uses isolated provider profiles and keeps provider credentials inside the local browser execution; scheduled Claude collection does not expose a DevTools TCP port;
 - the Claude adapter observes only expected Usage-page responses;
 - the OpenAI adapter obtains the current ChatGPT access token only inside the isolated browser context, uses it to request Codex quota metadata, and does not return it to Node snapshots or browser storage;
+- the Google/Antigravity adapter reads only a sanitized CLI statusLine event file, not provider credentials; no CLI-closed refresh occurs, and state older than 15 minutes is unavailable;
+- Google numeric token observations require explicit prior consent; raw statusLine payloads and raw session IDs are not retained;
 - provider responses are size-limited and parsed into a narrow normalized quota schema;
 - unrecognized response formats fail as `unsupported`;
 - expired / missing login state fails as a collector health error rather than attempting an authentication bypass;
 - profile directories and collector state must never be committed;
 - background collection must not require exporting provider session material.
 
-Five isolated Claude profiles have passed individual real-account collection and simultaneous dashboard synchronization on Windows. The collector remains experimental until session-expiry handling, token rotation, LAN isolation, and long-running hidden scheduled refresh behavior are also verified. CI security coverage includes dependency review, repository hygiene checks, dependency auditing, and CodeQL analysis.
+Earlier Windows validation recorded successful Claude-profile collection, but the later 18 November 2026 hardening report records real-account Cloudflare challenges and an **unresolved** owner-run authenticated validation gate. Do not interpret previous success as proof of the current head's real-world reliability. The Google statusLine path has passed synthetic Linux/Windows and Chrome E2E only; real authenticated Antigravity CLI, installed-runtime setup, account attribution and independent security review remain pending. CI security coverage includes dependency review, repository hygiene, dependency auditing and CodeQL; no synthetic test replaces those gates.
 
 ## Security changes
 

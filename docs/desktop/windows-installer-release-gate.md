@@ -1,5 +1,7 @@
 # QuotaOps Windows installer — pre-release verification
 
+> **Historical unsigned 0.1.0 test-installation procedure.** The current development stack targets v0.2.0 and includes Draft PR #50. For current release acceptance and status see [public-release-gate.md](public-release-gate.md) and [../release/v0.2.0-readiness-report.md](../release/v0.2.0-readiness-report.md). This document preserves historical command names, test artifacts and observations; it is not a current distribution approval. The Google/Antigravity CLI hook is not automatically configured by the packaged installer and still needs owner-run Windows verification.
+
 This is an **unsigned x64 test installer**, not an approved public release.
 No credentials, provider profiles, personal histories or tokens are packaged.
 The installed app reuses the existing per-user `%USERPROFILE%\.quotaops`
