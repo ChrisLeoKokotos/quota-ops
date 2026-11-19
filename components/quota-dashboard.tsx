@@ -50,8 +50,8 @@ const SIDEBAR_KEY = "quotaops:sidebar-open";
 const COLLECTOR_ISSUE_LABELS: Record<string, string> = {
   verification_required: "Manual verification required",
   login_required: "Sign-in required",
-  unsupported: "Usage page could not be read",
-  unavailable: "Local browser unavailable",
+  unsupported: "Provider usage format unsupported",
+  unavailable: "Collector data unavailable",
 };
 
 type Theme = "light" | "dark";
