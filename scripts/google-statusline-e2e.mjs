@@ -14,6 +14,8 @@ function run(script,args=[],input){
 }
 try{
   run("collector/cli.ts",["add","google","google-1","Google E2E"]);
+  // Explicit opt-in must precede capturing numeric token counters.
+  run("collector/cli.ts",["tokens-auto","enable","google-antigravity"]);
   const instructions=run("collector/cli.ts",["google-hook","google-1"]);
   assert.match(instructions,/statusline/);
   const event={
@@ -33,7 +35,6 @@ try{
   assert.equal(collected.status,"ok");
   assert.equal(collected.account.provider,"google");
   assert.deepEqual(collected.account.windows.map(w=>w.usedPercent),[20,65]);
-  run("collector/cli.ts",["tokens-auto","enable","google-antigravity"]);
   const analytics=JSON.parse(run("collector/cli.ts",["tokens"]));
   assert.equal(analytics.totals.totalTokens,150);
   assert.equal(analytics.providers.find(p=>p.provider==="google").totals.inputTokens,120);
