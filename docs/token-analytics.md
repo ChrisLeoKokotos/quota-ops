@@ -2,7 +2,7 @@
 
 QuotaOps is a product created by **SO HOMELY**.
 
-Token Analytics shows locally observed token activity from supported Claude Code and Codex session history.
+Token Analytics shows locally observed token activity from supported Claude Code and Codex session history and explicitly opted-in Antigravity statusLine numeric events.
 
 ## Scope
 

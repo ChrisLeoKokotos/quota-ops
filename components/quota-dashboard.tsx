@@ -949,7 +949,7 @@ function TokenAnalyticsPanel({
                 key={source.source}
                 title={source.message ?? undefined}
               >
-                {source.source === "claude-code" ? "Claude Code" : "Codex"} ·{" "}
+                {source.source === "claude-code" ? "Claude Code" : source.source === "google-antigravity" ? "Antigravity CLI" : "Codex"} ·{" "}
                 {source.state === "ok"
                   ? `${source.files} file${source.files === 1 ? "" : "s"}`
                   : source.state === "partial"

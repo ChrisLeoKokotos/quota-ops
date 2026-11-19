@@ -20,7 +20,7 @@ export interface DailyTokenBucket extends TokenTotals {
   provider: Provider;
 }
 
-export type TokenSourceId = "claude-code" | "codex";
+export type TokenSourceId = "claude-code" | "codex" | "google-antigravity";
 /**
  * `disabled` means QuotaOps never opened the source because the user has not
  * consented to it. It is deliberately distinct from `not_found`, which would
