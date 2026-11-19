@@ -1,4 +1,6 @@
 import { collectProviderUsage, openProviderLogin } from "./provider.ts";
+import { mergeGoogleAnalytics } from "./google-analytics.ts";
+import { fileURLToPath } from "node:url";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import {
   bootstrapFiveAccounts,
@@ -24,9 +26,10 @@ function usage(): never {
       "  login <id>",
       "  collect <id> [--visible]",
       "  tokens",
-      "  tokens-auto <enable|disable|status> [claude-code|codex|all]",
+      "  tokens-auto <enable|disable|status> [claude-code|codex|google-antigravity|all]",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
+      "  google-hook <id>  (print Antigravity setup command)",
       "  security-check",
       "  rotate-token",
       "",
@@ -60,7 +63,7 @@ async function main(): Promise<void> {
     const [providerArg, id, ...labelParts] = args;
     const label = labelParts.join(" ");
     if (
-      (providerArg !== "claude" && providerArg !== "openai") ||
+      (providerArg !== "claude" && providerArg !== "openai" && providerArg !== "google") ||
       !id ||
       !label
     ) {
@@ -79,6 +82,20 @@ async function main(): Promise<void> {
 
     await saveCollectorConfig({ ...config, accounts });
     process.stdout.write(`Configured ${account.label}.\n`);
+    return;
+  }
+
+  if (command === "google-hook") {
+    const [id]=args;
+    const config=await loadCollectorConfig();
+    if(!id || args.length!==1 || !config.accounts.some(a=>a.id===id&&a.provider==="google"))usage();
+    const hook=fileURLToPath(new URL("./google-hook.ts",import.meta.url));
+    process.stdout.write(
+      "In your signed-in Antigravity CLI configure this command once:\n"+
+      "/statusline node --experimental-strip-types \\""+hook+"\\" "+id+"\n"+
+      "This replaces any existing custom statusline; preserve it first.\n"+
+      "Events arrive while the CLI runs, not when the CLI is closed.\n"
+    );
     return;
   }
 
@@ -127,7 +144,7 @@ async function main(): Promise<void> {
   if (command === "tokens-auto") {
     const [action, scope = "all"] = args;
     if (!action || !["enable", "disable", "status"].includes(action)) usage();
-    if (!["claude-code", "codex", "all"].includes(scope)) usage();
+    if (!["claude-code", "codex", "google-antigravity", "all"].includes(scope)) usage();
 
     const config = await loadCollectorConfig();
     const consent = config.tokenAnalyticsSources;
@@ -136,7 +153,8 @@ async function main(): Promise<void> {
       process.stdout.write(
         `Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\n` +
           `  Claude Code history: ${consent.claudeCode ? "enabled" : "disabled"}.\n` +
-          `  Codex history: ${consent.codex ? "enabled" : "disabled"}.\n`,
+          `  Codex history: ${consent.codex ? "enabled" : "disabled"}.\n` +
+          `  Antigravity numeric counters: ${consent.googleAntigravity === true ? "enabled" : "disabled"}.\n`,
       );
       return;
     }
@@ -144,18 +162,20 @@ async function main(): Promise<void> {
     // Each source carries its own consent; enabling one never enables the other.
     const value = action === "enable";
     const next = {
-      claudeCode: scope === "codex" ? consent.claudeCode : value,
-      codex: scope === "claude-code" ? consent.codex : value,
+      claudeCode: scope === "codex" || scope === "google-antigravity" ? consent.claudeCode : value,
+      codex: scope === "claude-code" || scope === "google-antigravity" ? consent.codex : value,
+      // Google is explicitly opt-in; legacy "all" does not silently enable it.
+      googleAntigravity: scope === "google-antigravity" ? value : consent.googleAntigravity === true,
     };
 
     await saveCollectorConfig({
       ...config,
-      tokenAnalyticsEnabled: next.claudeCode || next.codex,
+      tokenAnalyticsEnabled: next.claudeCode || next.codex || next.googleAntigravity,
       tokenAnalyticsSources: next,
     });
     process.stdout.write(
       `Background token scanning updated. Claude Code: ${next.claudeCode ? "enabled" : "disabled"}; ` +
-        `Codex: ${next.codex ? "enabled" : "disabled"}. ` +
+        `Codex: ${next.codex ? "enabled" : "disabled"}; Antigravity: ${next.googleAntigravity ? "enabled" : "disabled"}. ` +
         "Restart or wait for the next collector refresh.\n",
     );
     return;
@@ -165,7 +185,7 @@ async function main(): Promise<void> {
     const config = await loadCollectorConfig();
     const consent = config.tokenAnalyticsSources;
 
-    if (!consent.claudeCode && !consent.codex) {
+    if (!consent.claudeCode && !consent.codex && consent.googleAntigravity !== true) {
       process.stdout.write(
         "No session history source is enabled, so nothing was read.\n" +
           "Enable one explicitly, for example: collector:setup -- tokens-auto enable claude-code\n",
@@ -173,7 +193,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const analytics = await collectLocalTokenAnalytics(consent);
+    const analytics = await mergeGoogleAnalytics(await collectLocalTokenAnalytics(consent),config.accounts,consent.googleAntigravity === true);
     process.stdout.write(JSON.stringify(analytics, null, 2) + "\n");
     return;
   }
