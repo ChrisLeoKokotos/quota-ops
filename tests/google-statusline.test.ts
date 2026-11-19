@@ -60,6 +60,19 @@ test("automatic Google snapshots are privacy-scoped, monotonic, deduplicated and
     assert.equal((await readGoogleStatusline(account,dir,DATE+7000)).status,"unavailable");
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+test("quota-only Google events do not persist numeric token counters before explicit opt-in",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"qo-google-no-consent-"));
+  try{
+    assert.equal(await ingestGoogleStatusline("google-1",payload(900,100),dir,DATE,false),true);
+    assert.equal((await readGoogleStatusline(account,dir,DATE+1000)).status,"ok");
+    const snapshot=await readGoogleTokenStates([account],dir);
+    assert.equal(snapshot.totals.totalTokens,0);
+    const raw=await readFile(join(dir,"google-1.json"),"utf8");
+    assert.equal(raw.includes("session-A"),false);
+    assert.equal(Object.keys(JSON.parse(raw).sessions).length,0);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
 test("separate Google sessions contribute only their observed deltas",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"qo-google-test-"));
   try{

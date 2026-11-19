@@ -100,7 +100,7 @@ const initial=():Stored=>({version:1,updatedAt:new Date(0).toISOString(),plan:"A
   daily:Object.create(null) as Record<string,TokenTotals>});
 /** Serialized read/modify/write: repeated statusline ticks do not double-count tokens. */
 export async function ingestGoogleStatusline(id:string,payload:unknown,
-  root=getGoogleStatuslineRoot(),now=Date.now()):Promise<boolean>{
+  root=getGoogleStatuslineRoot(),now=Date.now(),includeTokens=true):Promise<boolean>{
   const event=projectGoogleStatusline(payload,now);if(!event)return false;
   const path=fileFor(id,root);
   await mkdir(root,{recursive:true,mode:0o700});await noLink(root);await noLink(path);
@@ -114,7 +114,7 @@ export async function ingestGoogleStatusline(id:string,payload:unknown,
     const s=(await readState(id,root))??initial();
     s.updatedAt=event.checkedAt;s.plan=event.plan;
     s.windows=event.windows; // Missing quotas must not refresh older percentages as if current.
-    if(event.sessionHash&&event.input!==null&&event.output!==null){
+    if(includeTokens&&event.sessionHash&&event.input!==null&&event.output!==null){
       const key=event.sessionHash,prev=s.sessions[key];
       if(prev||Object.keys(s.sessions).length<MAX_SESSIONS){
         const input=Math.max(prev?.input??0,event.input);
