@@ -2,10 +2,9 @@
 
 Nothing in this stack is merged. Each PR is based on the previous one:
 
-`main ← #36 ← #37 ← #38 ← #39 ← #40 ← #46 ← #48`
+`main ← #36 ← #37 ← #38 ← #39 ← #40 ← #46 ← #48 ← #50`
 
-Whole stack against `main`: 226 commits, 162 files, +27,480 / −473 lines
-(most of #36 is the desktop shell, static dashboard and tests).
+Historical size snapshot through #48: 226 commits, 162 files, +27,480 / −473 lines (18 Nov 2026); **not** a current size count for #50. The full review must use the latest #50 diff and actual merge base.
 
 | PR | Scope | Size vs its base | Hosted CI on its own head |
 |---|---|---|---|
@@ -15,10 +14,11 @@ Whole stack against `main`: 226 commits, 162 files, +27,480 / −473 lines
 | #39 | Unsigned NSIS installer, bundled collector utility process (the build given to 0.1.0 testers) | 70 commits, 33 files, +2,651 | none |
 | #40 | Auto-update framework, disabled by policy | 14 commits, 11 files, +818 | none |
 | #46 | Claude verification detection, Usage heading fallback | 15 commits, 7 files, +226 | none |
-| #48 | Bounded Quit, real-tray E2E, holds and verification path, locale-independent challenge detection, headless-only background, consented visible refresh, software rendering, signing dry run, 0.2.0 | 31+ commits, 46+ files | pass (App validation, Windows smoke; signing dry run new) |
+| #48 | Bounded Quit, real-tray E2E, holds and verification path, locale-independent challenge detection, headless-only background, consented visible refresh, software rendering, signing dry run, 0.2.0 | Historical counts only | PASS at `d11ba0b` |
+| #50 | Google manual and Antigravity CLI statusLine quotas, opt-in numeric Token Analytics, sanitized storage, privacy documentation and synthetic E2Es | Read current PR diff | PASS at `0234f0b` (App validation, Windows smoke, signing dry run); recheck current head |
 
 Because #37–#46 never ran hosted CI on their own, review and test the stack
-as a whole at #48's head, not PR by PR.
+as a whole at #50's **current** head, not PR by PR. Existing passing evidence on earlier SHAs is not a substitute for final-head validation.
 
 ## Recommended order (by risk, not by PR)
 
@@ -32,12 +32,16 @@ as a whole at #48's head, not PR by PR.
 3. **Browser automation** (`collector/browser.ts`, `openai.ts`, `browser-session.ts`, `claude-launch-mode.ts`, `verification-state.ts`, `manual-verification.ts`)
    - No user-agent or fingerprint change, no DevTools TCP port, no challenge interaction.
    - The verification window is launched without automation.
-4. **Lifecycle** (`collector/shutdown.ts`, `monitoring.ts`; before-quit in `main.js`): bounded shutdown, no orphans.
-5. **Packaging and release**
+4. **Google event collector & privacy** (`collector/google-hook.ts`, `google-statusline.ts`, `google-analytics.ts`, `config.ts`, `types.ts`, `PRIVACY.md`)
+   - No Google credentials or hidden endpoints; sanitized stdin projection only.
+   - Review explicit token consent before ingest, revocation behavior, hashed session IDs, stale quota handling, symlink checks, state file growth, session/account attribution.
+   - Real signed-in Antigravity CLI and installed-runtime hook wiring still require owner validation.
+5. **Lifecycle** (`collector/shutdown.ts`, `monitoring.ts`; before-quit in `main.js`): bounded shutdown, no orphans.
+6. **Packaging and release**
    - `desktop/electron-builder*.json`, `build-installer.mjs`, `build-signed-candidate.mjs`, branding hooks.
    - Updater: `update-manager.js` and `update-policy.json`, which must stay `enabled:false`.
    - `.github/workflows/*`: pinned actions, read-only permissions, nothing published.
-6. **Dashboard** (`components/quota-dashboard.tsx`, `lib/collector-client.ts`): stale values are never shown as 0 %.
+7. **Dashboard** (`components/quota-dashboard.tsx`, `lib/collector-client.ts`): stale values are never shown as 0 %.
 
 ## Security review delta for the independent reviewer
 
@@ -69,7 +73,4 @@ security review required by the release gate.
 
 ## Merge recommendation (owner decides)
 
-After review and all release gates pass, merge the stack top-down into
-`main` as one reviewed unit (merge commit, history kept): retarget #48 to
-`main` and close #36–#46 as included, or merge them in order. Squashing 226
-commits would lose the evidence trail referenced from issues #47 and #49.
+After independent security review and all release gates pass, consider the complete stack **through Draft PR #50**, not only #48. The owner decides merge order or retargeting; never merge the docs-only changes as proof that unverified real-account or signed-installer gates have passed. Preserve historical evidence and update this guide's checks/commit counts against the final head before release.

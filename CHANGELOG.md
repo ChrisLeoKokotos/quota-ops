@@ -8,15 +8,19 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 
 ### Added
 
-- Multi-provider quota architecture for Claude and OpenAI / ChatGPT Codex.
+- Multi-provider quota architecture for Claude, OpenAI / ChatGPT Codex and Google / Antigravity (Google changes in Draft PR #50, not released).
 - Provider-neutral quota windows instead of Claude-specific hardcoded fields.
 - Experimental same-PC multi-account collector with isolated Chrome / Edge profiles and loopback-only snapshot service.
 - Per-account provider-aware login, collect, enable, and disable workflows.
 - OpenAI / ChatGPT Codex quota collection through the authenticated local ChatGPT browser session.
+- Manual Google / Antigravity quota windows with multiple independently entered model groups.
+- Google Antigravity CLI `statusLine` hook for automatic event-driven (not CLI-closed background) quota snapshots, normalized quota buckets, stale detection and per-account local storage.
+- Explicitly opted-in Google numeric Token Analytics with hashed session watermarks and deduplication; no pre-consent backfill.
+- Synthetic hook-to-collector and collector-to-Chrome dashboard E2E on CI, including Windows hook E2E; real authenticated Google sessions remain unverified.
 - Local Token Analytics for Claude Code and Codex.
 - Total token activity with Input, Output, Cache read, and Cache write breakdowns.
 - Today, 7 days, 30 days, and All time token analytics views.
-- Per-provider token totals for Claude and OpenAI.
+- Per-provider token totals for Claude and OpenAI, plus locally observed Google counters with separate consent.
 - Local token analytics CLI command: `npm run collector:setup -- tokens`.
 - Claude Code deduplication for repeated local message records.
 - Codex child/fork replay suppression and archived-session scanning.
@@ -46,7 +50,7 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 
 - Collector API remains loopback-only on `127.0.0.1` and authenticated with a random 256-bit local token.
 - Strict Host / Origin validation, rate limiting, HTTP timeouts, protected profile roots, Windows ACL / Unix permission hardening, and response-size limits remain part of the collector boundary.
-- Provider credentials, cookies, access tokens, prompts, responses, and source code are excluded from normalized collector snapshots.
+- Provider credentials, cookies, access tokens, prompts, responses, and source code are excluded from normalized collector snapshots and stored Google statusLine observations.
 - Token Analytics parses local provider session files on-device and exposes only numeric aggregates, timestamps, provider labels, and source health.
 - Added replay suppression and deduplication to reduce double-counting from copied local session history.
 - GitHub Actions use least-privilege permissions and immutable action SHAs.

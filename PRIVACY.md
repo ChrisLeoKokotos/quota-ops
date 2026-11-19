@@ -10,9 +10,17 @@ QuotaOps is local-first.
 
 The current MVP has no SO HOMELY-operated backend, hosted database, user account system, or cloud synchronization. An optional same-PC collector can run locally on `127.0.0.1`. The dashboard binds a loopback port allocated by the operating system at launch rather than a fixed one.
 
-Manual quota data entered into the app is stored in browser local storage for the local QuotaOps origin. Auto-collected quota snapshots remain on the same PC and are exposed to the dashboard through a loopback-only local service. Provider authentication remains inside isolated local browser profiles.
+Manual quota data entered into the app is stored in browser local storage for the local QuotaOps origin. Auto-collected quota snapshots remain on the same PC and are exposed to the dashboard through a loopback-only local service. Claude/OpenAI authentication stays in isolated browser profiles; Google/Antigravity authentication stays in the signed-in provider CLI. QuotaOps does not request Google OAuth material.
 
 **Background Token Analytics session scanning is disabled by default, per source.** Claude Code and Codex history are consented to separately (`npm run collector:setup -- tokens-auto enable claude-code`, or `codex`, or `all`), and `tokens-auto status` reports each one. A source you have not consented to is reported as `disabled`, never as "none found" — QuotaOps does not imply it looked. After opt-in the collector reads that source's local session-history files to derive numeric token aggregates; these files can contain private prompts, responses, and code. The collector does not export their bodies, and the explicit one-off `tokens` CLI command refuses to run without consent.
+
+**Antigravity event and token consent.** A configured Google account may receive sanitized numeric quota windows from the Antigravity CLI `statusLine` hook without enabling Token Analytics. Google numeric token observation is **disabled by default**, independent of Claude Code and Codex:
+`npm run collector:setup -- tokens-auto enable google-antigravity`.
+Consent must be enabled **before** a hook event to retain that event's token counters; earlier events are not backfilled. `tokens-auto disable google-antigravity` stops subsequent numeric counter collection, and `tokens-auto disable all` disables all three sources. An unscoped `tokens-auto enable` never silently enables Google. Disabling does **not** erase previously captured Google totals.
+
+**Google local storage and deletion.** The hook receives provider JSON on stdin and writes a sanitized per-account file, for example `%USERPROFILE%\\.quotaops\\google-statusline\\google-1.json`. It retains normalized quota buckets, reset times, a bounded plan label and last-seen timestamp. Only with prior token consent does it store hashed session identifiers, cumulative numeric counters, aggregated daily tokens and cached-token approximations. It does **not** persist raw JSON, account email, transcript paths, workspace paths, prompts or authentication secrets. The stored session hashes are pseudonymous identifiers, not proof of account identity. Stale quotas older than 15 minutes fail closed; this is CLI-event collection, not polling while Antigravity is closed.
+
+To erase previous Google observations, quit QuotaOps and stop any running collector/Antigravity hook; back up non-sensitive settings if desired, then delete the matching file(s) from `%USERPROFILE%\\.quotaops\\google-statusline\\`. After restarting, the hook will create fresh files if still configured; disable the integration or remove the configured Google account to stop collection. Do not delete the whole `.quotaops` directory unless you intentionally want to remove other providers' settings, tokens and profiles too.
 
 **What consent does not do.** It controls what QuotaOps reads. It does not change the Windows permissions of those files, which remain readable by anything running under your account — another application, a dependency in any project, or malware. Turning a source off stops QuotaOps reading it; it does not protect the files from anything else. *(Residual risk B, accepted 15 October 2026.)*
 
@@ -30,7 +38,8 @@ The MVP may store:
 - local update timestamps;
 - theme preference;
 - notification preference;
-- identifiers used to avoid duplicate reset notifications.
+- identifiers used to avoid duplicate reset notifications;
+- sanitized per-account Google statusLine metadata and, only after source-specific consent, numeric token aggregates and hashed session watermarks.
 
 These values are operational metadata, not secrets.
 

@@ -4,30 +4,30 @@ QuotaOps is a product created by **SO HOMELY**.
 
 ## Goal
 
-The current MVP provides a single local view of AI-provider accounts so a user can see quota usage, know when each quota resets, decide which account has usable capacity, and inspect locally observed token activity. Claude and OpenAI / ChatGPT Codex are the first supported providers.
+The current MVP provides a single local view of AI-provider accounts so a user can see quota usage, know when each quota resets, decide which account has usable capacity, and inspect locally observed token activity. Claude and OpenAI / ChatGPT Codex have experimental authenticated browser collectors; Google / Antigravity also has manual quotas and a Draft event-driven CLI statusLine adapter.
 
 The original use case involved five accounts, but the current UI supports adding and removing account entries rather than enforcing a fixed count.
 
 ## Current architecture
 
 ```text
-Browser
+Desktop/browser UI (local origin)
   |
-  +-- Next.js UI
-  |     |
-  |     +-- quota / recommendation logic
-  |     +-- browser localStorage
-  |     +-- optional Notification API
-  |     +-- optional browser speech recognition
+  +-- Next.js / desktop IPC dashboard
+  |     +-- normalized quota and recommendation logic
+  |     +-- browser localStorage for manual metadata
+  |     +-- opt-in notifications and voice input
+  |     +-- same-origin snapshot proxy (server token stays server-side)
   |
-  +-- http://127.0.0.1:4317 (optional)
+  +-- local QuotaOps collector (127.0.0.1:4317, authenticated)
         |
-        +-- QuotaOps local collector
-              |
-              +-- isolated provider browser profiles
-              +-- Claude / OpenAI quota adapters
-              +-- Claude Code local token scanner
-              +-- Codex local token scanner
+        +-- Claude/OpenAI isolated browser profile collectors
+        +-- Claude Code and Codex local history analytics (opt-in)
+        +-- Google statusLine snapshot reader (15-minute freshness)
+              ^
+              | sanitized local file (~/.quotaops/google-statusline/<id>.json)
+        Antigravity CLI -> explicit local statusLine hook
+                            (CLI-running events; token counters opt-in)
 ```
 
 There is currently:
@@ -37,7 +37,7 @@ There is currently:
 - no QuotaOps login;
 - no cloud synchronization;
 - an optional experimental same-PC multi-provider quota collector;
-- local Token Analytics from Claude Code and Codex session history.
+- local Token Analytics from Claude Code/Codex session history and optionally from Antigravity CLI numeric statusLine events.
 
 ## Current account model
 
@@ -94,7 +94,7 @@ Browser local storage is used only for non-secret operational metadata.
 
 Token Analytics is separate from provider capacity.
 
-The collector scans supported local Claude Code and Codex session history, normalizes numeric token usage, and exposes aggregate totals to the dashboard. The dashboard supports Today, 7 days, 30 days, and All time views.
+The collector scans consented local Claude Code and Codex session history and merges separately consented Google statusLine token observations. The Google hook captures no token counters before opt-in; it does not backfill earlier usage. Input/output deltas are deduplicated per hashed session; Google cache breakdowns are best-effort. The dashboard supports Today, 7 days, 30 days, and All time views.
 
 The analytics snapshot is explicitly labeled `locally_observed`. It is not treated as a provider billing statement or guaranteed account-wide lifetime total.
 
@@ -139,7 +139,7 @@ The backend boundary should only be introduced when a concrete feature requires 
 
 The repository now contains an experimental local collector.
 
-Each collector account is assigned a provider and a separate persistent Chrome / Edge profile. The user signs in interactively to the intended provider account inside that profile. Claude collection observes the real Usage-page response. OpenAI collection reads Codex quota metadata from the authenticated ChatGPT browser session without returning the session token in the collector snapshot.
+Claude/OpenAI collector accounts use separate Chrome / Edge profiles and provider-controlled interactive sign-in. Claude collection observes the Usage-page response; OpenAI reads Codex quota metadata within the authenticated ChatGPT browser context without exporting session tokens. Google collector accounts use an explicit Antigravity CLI statusLine hook, **not** a browser profile or Google OAuth access. Each configured Google account label must be manually associated with the intended CLI login; the hook cannot attest Google identity.
 
 The collector:
 
