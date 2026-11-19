@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     const hook=fileURLToPath(new URL("./google-hook.ts",import.meta.url));
     process.stdout.write(
       "In your signed-in Antigravity CLI configure this command once:\n"+
-      "/statusline node --experimental-strip-types \\""+hook+"\\" "+id+"\n"+
+      `/statusline node --experimental-strip-types "${hook}" ${id}\n`+
       "This replaces any existing custom statusline; preserve it first.\n"+
       "Events arrive while the CLI runs, not when the CLI is closed.\n"
     );
