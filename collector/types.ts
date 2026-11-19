@@ -11,7 +11,8 @@ export type CollectorAccountStatus =
 export interface CollectorAccountConfig {
   id: string;
   label: string;
-  provider: Provider;
+  // Google / Antigravity is manual-only; never launch a Google collector session.
+  provider: Exclude<Provider, "google">;
   profileDir: string;
   enabled: boolean;
 }

@@ -165,7 +165,7 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
 export function createAccountConfig(
   id: string,
   label: string,
-  provider: Provider = "claude",
+  provider: Exclude<Provider, "google"> = "claude",
   profileDir = getDefaultProfileDir(id),
 ): CollectorAccountConfig {
   const normalizedId = id.trim().toLowerCase();
