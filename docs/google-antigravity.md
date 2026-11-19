@@ -45,12 +45,13 @@ in another program's settings; installed-runtime setup needs owner validation.
 
 ## Manual fallback
 
-## Why this is manual
+### Why manual entry is still supported
 
 Google documents Antigravity CLI `/usage` (`/quota`) as an interactive
 Models & Quota panel. It shows per-model-group remaining quotas, including
-five-hour and weekly limits. Google does not document a machine-readable
-third-party source for this panel in the reviewed documentation.
+five-hour and weekly limits. Google documents a separate statusLine JSON stream for active CLI sessions,
+but it does not document a third-party quota polling API for when the CLI is
+closed.
 
 - https://antigravity.google/docs/cli/commands/usage/
 - https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals
@@ -58,8 +59,8 @@ third-party source for this panel in the reviewed documentation.
 The old Gemini CLI / Code Assist consumer Google login was deprecated in
 June 2026. Do not reuse Google OAuth credentials, query internal endpoints,
 parse hidden local authentication files, automate CAPTCHA or emulate
-provider identities. A supported future Google adapter requires a documented
-data interface and an independent security review.
+provider identities. The statusLine adapter uses the documented interface; any future CLI-closed
+collector still requires a supported data interface and independent review.
 
 ## Use it
 
@@ -88,6 +89,8 @@ still run independently.
   sessions. Run with a temporary HOME, not an active installed QuotaOps home.
 - Synthetic automatic statusLine E2E exercises the hook, persistence,
   normalized quotas and token analytics without credentials.
+- A separate real Chromium browser E2E checks the local collector service,
+  authenticated dashboard proxy and auto-synced Google UI.
 - **Real Google-account E2E remains pending:** no signed-in Antigravity
   session was available in CI or this development environment.
 

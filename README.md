@@ -18,10 +18,10 @@ Today it supports:
 - account states such as Available, Low capacity, At limit, Max usage, Needs setup, and Refresh required;
 - best-capacity recommendations and contextual attention items;
 - experimental same-PC automatic collection for Claude and OpenAI accounts through isolated local browser profiles;
-- local Token Analytics from Claude Code and Codex session logs;
+- local Token Analytics from Claude Code and Codex session logs, plus opted-in Antigravity CLI statusLine counters;
 - total token activity with Input, Output, Cache read, and Cache write breakdowns;
 - Today, 7 days, 30 days, and All time token views;
-- per-provider token totals for Claude and OpenAI;
+- per-provider token totals for Claude, OpenAI, and opted-in Google CLI observations;
 - browser / OS reset notifications while QuotaOps is running and permission is granted;
 - optional browser voice input for quick manual usage updates;
 - keyboard shortcuts;
@@ -38,12 +38,15 @@ Google account through **Add account**, enter the model group from Antigravity
 CLI `/usage`, and enter the used percentage and reset times. Additional
 groups can be added directly on the account card.
 
-**An automatic, event-driven Antigravity CLI statusLine adapter is available
-for configured collector accounts**, but it does not refresh while the CLI
-is closed. Google's documented `/usage` is an interactive UI and does not document an API
-for third-party collection. QuotaOps does not inspect Google OAuth files,
-reuse credentials, scrape private backends, or synthesize quota values.
-Google entries are clearly marked **manual**.
+**The documented Antigravity CLI statusLine interface supports automatic,
+event-driven quota snapshots**, when a local Google collector account and
+statusLine hook have been explicitly configured. The same opt-in path can
+contribute locally observed numeric Token Analytics. It is *not* periodic
+refresh with the CLI closed. Google's `/usage` TUI is distinct from statusLine.
+
+Manual Google entries remain available as a fallback. Collector-synced
+Google entries are marked **auto-synced**, and no Google credentials, browser
+cookies or private endpoint scraping are involved.
 
 See [docs/google-antigravity.md](docs/google-antigravity.md) for validation and
 limitations.
