@@ -50,6 +50,9 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Google manual provider browser E2E (no credentials)
+        run: node scripts/google-dashboard-e2e.mjs
+
   windows-security:
     name: Windows security smoke
     runs-on: windows-latest

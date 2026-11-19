@@ -8,7 +8,7 @@ QuotaOps gives people and teams one local workspace for AI-account capacity, res
 
 ## Current product state
 
-QuotaOps is currently a local-first MVP with support for **Claude / Anthropic** and **OpenAI / ChatGPT Codex**.
+QuotaOps is currently a local-first MVP with automatic-collector integrations for **Claude / Anthropic** and **OpenAI / ChatGPT Codex**, plus **manual-only Google / Antigravity quota tracking**.
 
 Today it supports:
 
@@ -29,6 +29,23 @@ Today it supports:
 - browser-local persistence for non-secret dashboard metadata.
 
 There is **no hosted QuotaOps backend, hosted database, QuotaOps account system, or cloud sync** in the current MVP. The optional collector runs on the same PC and binds only to `127.0.0.1`.
+
+## Google / Antigravity (manual-only preview)
+
+The dashboard accepts Google / Antigravity accounts and model groups, with
+separate 5-hour and weekly windows per group and local persistence. Add a
+Google account through **Add account**, enter the model group from Antigravity
+CLI `/usage`, and enter the used percentage and reset times. Additional
+groups can be added directly on the account card.
+
+**There is no automatic Google collector or Google token-log scanner.** Google's
+documented `/usage` is an interactive UI and does not document an API
+for third-party collection. QuotaOps does not inspect Google OAuth files,
+reuse credentials, scrape private backends, or synthesize quota values.
+Google entries are clearly marked **manual**.
+
+See [docs/google-antigravity.md](docs/google-antigravity.md) for validation and
+limitations.
 
 ## Capacity vs Token Analytics
 
