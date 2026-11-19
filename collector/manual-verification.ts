@@ -15,7 +15,7 @@ import type { CollectorAccountConfig } from "./types.ts";
  *   profile root, and a fixed provider URL; nothing comes from the request.
  * - Nothing is read from the window. QuotaOps only learns when it closes.
  */
-const PROVIDER_URL: Record<CollectorAccountConfig["provider"], string> = {
+const PROVIDER_URL: Record<Exclude<CollectorAccountConfig["provider"], "google">, string> = {
   claude: "https://claude.ai/settings/usage",
   openai: "https://chatgpt.com/",
 };
@@ -30,6 +30,7 @@ export interface InteractiveProfile {
 export async function openProfileForPerson(
   account: CollectorAccountConfig,
 ): Promise<InteractiveProfile> {
+  if (account.provider === "google") throw new Error("google_verification_uses_cli_statusline");
   if (process.platform !== "win32") throw new Error("interactive_profile_unsupported_platform");
   await assertSafeProfileDirectory(account.profileDir);
   const executable = await findWindowsBrowserExecutable();

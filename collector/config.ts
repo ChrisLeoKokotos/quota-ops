@@ -35,7 +35,8 @@ function isConsent(value: unknown): value is TokenAnalyticsConsent {
 
   return (
     typeof candidate.claudeCode === "boolean" &&
-    typeof candidate.codex === "boolean"
+    typeof candidate.codex === "boolean" &&
+    (candidate.googleAntigravity === undefined || typeof candidate.googleAntigravity === "boolean")
   );
 }
 
@@ -48,7 +49,7 @@ function isAccountConfig(value: unknown): value is CollectorAccountConfig {
     ACCOUNT_ID.test(candidate.id) &&
     typeof candidate.label === "string" &&
     candidate.label.trim().length > 0 &&
-    (candidate.provider === "claude" || candidate.provider === "openai") &&
+    (candidate.provider === "claude" || candidate.provider === "openai" || candidate.provider === "google") &&
     typeof candidate.profileDir === "string" &&
     candidate.profileDir.trim().length > 0 &&
     typeof candidate.enabled === "boolean"
@@ -70,7 +71,8 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
     // The master switch may never imply consent the user has not given.
     (!candidate.tokenAnalyticsEnabled ||
       candidate.tokenAnalyticsSources.claudeCode ||
-      candidate.tokenAnalyticsSources.codex) &&
+      candidate.tokenAnalyticsSources.codex ||
+      candidate.tokenAnalyticsSources.googleAntigravity === true) &&
     Array.isArray(candidate.accounts) &&
     candidate.accounts.every(isAccountConfig) &&
     (candidate.backgroundCollection === undefined ||
@@ -165,7 +167,7 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
 export function createAccountConfig(
   id: string,
   label: string,
-  provider: Exclude<Provider, "google"> = "claude",
+  provider: Provider = "claude",
   profileDir = getDefaultProfileDir(id),
 ): CollectorAccountConfig {
   const normalizedId = id.trim().toLowerCase();

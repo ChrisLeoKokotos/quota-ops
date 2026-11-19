@@ -25,3 +25,8 @@ export function getCollectorStatePath(): string {
 export function getCollectorTokenPath(): string {
   return join(getQuotaOpsHome(), "collector.token");
 }
+
+/** Sanitized statusline snapshots only; raw CLI JSON is never written. */
+export function getGoogleStatuslineRoot(): string {
+  return join(getQuotaOpsHome(), "google-statusline");
+}
