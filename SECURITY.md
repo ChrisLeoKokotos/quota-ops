@@ -22,17 +22,20 @@ The current MVP:
 - has no QuotaOps backend or hosted database;
 - has no QuotaOps authentication system;
 - does not automatically obtain or bypass Claude credentials;
-- can reuse isolated local browser profiles for same-PC quota collection;
+- can reuse isolated local browser profiles for Claude/OpenAI quota collection;
+- accepts Google/Antigravity CLI statusLine events through a local, explicit hook rather than reading Google OAuth/session files;
 - keeps interactive provider login visible and user-controlled while scheduled Windows quota refreshes run hidden/headless;
 - does not export provider passwords, API keys, OAuth tokens, or session cookies into QuotaOps snapshots;
 - does not upload quota data to SO HOMELY infrastructure;
 - exposes the optional collector only on `127.0.0.1:4317`;
 - serves the dashboard on a loopback port allocated at launch, refuses non-loopback TCP peers before the application sees them, and authorizes snapshot access with a per-process capability rather than a request header;
 - authenticates collector API requests with a random 256-bit local token kept out of browser JavaScript;
-- rejects direct browser access, unexpected Host / Origin values, and provider responses outside the exact accepted Usage endpoint;
+- rejects direct browser access and unexpected Host / Origin values; provider-specific collectors validate only expected usage responses, while the Google hook rejects malformed input and does not access private provider APIs;
 - keeps collector profiles inside a protected local root with Windows ACL / Unix mode hardening;
 - uses browser notifications only after user permission;
 - can use browser speech recognition only after user action.
+
+The Google CLI hook runs locally under the user's operating-system account, accepts bounded JSON on stdin, projects allowlisted numeric quota data, and stores sanitized per-account state under `~/.quotaops/google-statusline/`. Google numeric Token Analytics requires a separate default-off opt-in; disabling it stops **new** token observations, not previously saved counters. The hook has no cryptographic proof that an event came from the intended signed-in Google identity, and malicious processes running as the same OS user are outside this trust boundary. See [PRIVACY.md](PRIVACY.md), [docs/google-antigravity.md](docs/google-antigravity.md), and [docs/local-collector-threat-model.md](docs/local-collector-threat-model.md).
 
 Browser speech recognition may use a remote service operated by the browser or platform vendor. QuotaOps does not relay voice audio to a SO HOMELY backend.
 
@@ -41,6 +44,7 @@ Browser speech recognition may use a remote service operated by the browser or p
 These limits are deliberate and were accepted by the maintainer on 15 October 2026. They are stated here so the guarantees above are not read more broadly than they hold.
 
 - **Code running as your own Windows user.** Such a process can reach the loopback dashboard and collector, read the collector token, and read the isolated browser profiles that hold provider sessions. The loopback boundary and the ACL hardening bound *network* and *other-user* exposure, not same-account compromise.
+- **Local Google hook state.** The per-account sanitized state file can be manipulated by a same-user process; hashed session IDs are identifiers, not authentication. Verify account-to-hook association manually before trusting cross-account labels.
 - **Session-history file permissions.** Per-source consent governs what QuotaOps reads. The files themselves stay readable by anything running under your account.
 - **A transparent local relay.** A forwarder such as `netsh interface portproxy`, a default nginx `proxy_pass`, `ssh -R` or a tunnelling tool connects to the dashboard from loopback on a remote caller's behalf and adds no forwarding header, so it is indistinguishable from a local client. Allocating the dashboard port at launch defeats a relay configured in advance against a fixed port; it does not defeat one aimed at the port currently in use. Exposing QuotaOps through any proxy or port forward is an unsupported deployment.
 

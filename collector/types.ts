@@ -11,6 +11,7 @@ export type CollectorAccountStatus =
 export interface CollectorAccountConfig {
   id: string;
   label: string;
+  // Google uses local CLI events; no provider browser sessions.
   provider: Provider;
   profileDir: string;
   enabled: boolean;
@@ -19,6 +20,7 @@ export interface CollectorAccountConfig {
 export interface TokenAnalyticsConsent {
   claudeCode: boolean;
   codex: boolean;
+  googleAntigravity?: boolean;
 }
 
 export interface CollectorConfig {

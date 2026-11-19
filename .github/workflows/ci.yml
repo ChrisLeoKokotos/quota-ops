@@ -50,6 +50,15 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Google statusLine collector E2E (no credentials)
+        run: node scripts/google-statusline-e2e.mjs
+
+      - name: Google statusLine collector to live dashboard browser E2E
+        run: node scripts/google-auto-dashboard-e2e.mjs
+
+      - name: Google manual provider browser E2E (no credentials)
+        run: node scripts/google-dashboard-e2e.mjs
+
   windows-security:
     name: Windows security smoke
     runs-on: windows-latest
@@ -77,6 +86,9 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+      - name: Google statusLine hook and collector E2E on Windows
+        run: node scripts/google-statusline-e2e.mjs
 
       - name: Build production dashboard
         run: npm run build

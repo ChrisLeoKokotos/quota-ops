@@ -13,6 +13,11 @@ import {
   type QuotaAccount,
   type QuotaWindow,
 } from "@/lib/quota";
+import {
+  createGoogleModelGroupWindows,
+  hasGoogleModelGroup,
+  normalizeGoogleModelGroup,
+} from "@/lib/google-manual";
 
 import {
   getDueResetEvents,
@@ -45,8 +50,8 @@ const SIDEBAR_KEY = "quotaops:sidebar-open";
 const COLLECTOR_ISSUE_LABELS: Record<string, string> = {
   verification_required: "Manual verification required",
   login_required: "Sign-in required",
-  unsupported: "Usage page could not be read",
-  unavailable: "Local browser unavailable",
+  unsupported: "Provider usage format unsupported",
+  unavailable: "Collector data unavailable",
 };
 
 type Theme = "light" | "dark";
@@ -211,7 +216,7 @@ function normalizeStoredAccount(value: unknown): QuotaAccount | null {
     typeof candidate.id !== "string" ||
     typeof candidate.label !== "string" ||
     (candidate.email !== undefined && typeof candidate.email !== "string") ||
-    (candidate.provider !== "claude" && candidate.provider !== "openai") ||
+    (candidate.provider !== "claude" && candidate.provider !== "openai" && candidate.provider !== "google") ||
     typeof candidate.updatedAt !== "string"
   ) {
     return null;
@@ -283,7 +288,9 @@ function normalizeStoredAccount(value: unknown): QuotaAccount | null {
         ? candidate.plan
         : candidate.provider === "claude"
           ? "Team"
-          : "ChatGPT",
+          : candidate.provider === "google"
+            ? "Antigravity"
+            : "ChatGPT",
     windows,
     updatedAt: candidate.updatedAt,
     ...(source ? { source } : {}),
@@ -506,6 +513,8 @@ function AccountCard({
   onDelete: () => void;
 }) {
   const status = getAccountStatus(account, nowMs);
+  const [newGoogleGroup, setNewGoogleGroup] = useState("");
+  const [googleGroupError, setGoogleGroupError] = useState("");
 
   const updateWindow = (windowId: string, nextWindow: QuotaWindow) => {
     onChange({
@@ -549,6 +558,45 @@ function AccountCard({
           />
         ))}
       </div>
+
+      {account.provider === "google" && account.source !== "collector" ? (
+        <form className="form-section" onSubmit={(event) => {
+          event.preventDefault();
+          const group = normalizeGoogleModelGroup(newGoogleGroup);
+          if (!group) {
+            setGoogleGroupError("Enter a model-group name (up to 60 characters).");
+            return;
+          }
+          if (hasGoogleModelGroup(account.windows, group)) {
+            setGoogleGroupError("This model group is already tracked.");
+            return;
+          }
+          onChange({
+            ...account,
+            windows: [...account.windows, ...createGoogleModelGroupWindows(group, 0, null, 0, null)],
+            updatedAt: new Date().toISOString(),
+          });
+          setNewGoogleGroup("");
+          setGoogleGroupError("");
+        }}>
+          <label>
+            Track another Antigravity model group (manual)
+            <input
+              aria-label="New Antigravity model group"
+              maxLength={60}
+              placeholder="Gemini Flash"
+              required
+              value={newGoogleGroup}
+              onChange={(event) => {
+                setNewGoogleGroup(event.target.value);
+                setGoogleGroupError("");
+              }}
+            />
+          </label>
+          {googleGroupError ? <span role="alert">{googleGroupError}</span> : null}
+          <button className="secondary-button" type="submit">Add model group</button>
+        </form>
+      ) : null}
 
       <details className="account-editor">
         <summary>Account details</summary>
@@ -616,7 +664,8 @@ function AddAccountDialog({
   onAdd: (account: QuotaAccount) => void;
 }) {
   const [label, setLabel] = useState("");
-  const [provider, setProvider] = useState<"claude" | "openai">("claude");
+  const [provider, setProvider] = useState<"claude" | "openai" | "google">("claude");
+  const [googleModelGroup, setGoogleModelGroup] = useState("Gemini Pro");
   const [fiveHourUsed, setFiveHourUsed] = useState("0");
   const [fiveHourReset, setFiveHourReset] = useState("");
   const [weeklyUsed, setWeeklyUsed] = useState("0");
@@ -626,6 +675,7 @@ function AddAccountDialog({
     if (!open) return;
     setLabel("");
     setProvider("claude");
+    setGoogleModelGroup("Gemini Pro");
     setFiveHourUsed("0");
     setFiveHourReset("");
     setWeeklyUsed("0");
@@ -638,14 +688,23 @@ function AddAccountDialog({
     event.preventDefault();
     const trimmedLabel = label.trim();
     if (!trimmedLabel) return;
+    const modelGroup = provider === "google" ? normalizeGoogleModelGroup(googleModelGroup) : null;
+    if (provider === "google" && !modelGroup) return;
 
     const now = new Date().toISOString();
     onAdd({
       id: globalThis.crypto?.randomUUID?.() ?? `account-${Date.now()}`,
       label: trimmedLabel,
       provider,
-      plan: provider === "claude" ? "Team" : "ChatGPT",
-      windows: [
+      plan: provider === "claude" ? "Team" : provider === "google" ? "Antigravity" : "ChatGPT",
+      ...(provider === "google" ? { source: "manual" as const } : {}),
+      windows: provider === "google" && modelGroup
+        ? createGoogleModelGroupWindows(
+            modelGroup,
+            Number(fiveHourUsed), localInputToIso(fiveHourReset),
+            Number(weeklyUsed), localInputToIso(weeklyReset),
+          )
+        : [
         {
           id: "five-hour",
           label: "5-hour",
@@ -689,11 +748,12 @@ function AddAccountDialog({
             <select
               value={provider}
               onChange={(event) =>
-                setProvider(event.target.value === "openai" ? "openai" : "claude")
+                setProvider(event.target.value === "google" ? "google" : event.target.value === "openai" ? "openai" : "claude")
               }
             >
               <option value="claude">Claude</option>
               <option value="openai">OpenAI / Codex</option>
+              <option value="google">Google / Antigravity (manual)</option>
             </select>
           </label>
 
@@ -702,15 +762,35 @@ function AddAccountDialog({
             <input
               autoFocus
               maxLength={40}
-              placeholder={provider === "claude" ? "Dev 1" : "OpenAI 1"}
+              placeholder={provider === "claude" ? "Dev 1" : provider === "google" ? "Google AI Pro" : "OpenAI 1"}
               required
               value={label}
               onChange={(event) => setLabel(event.target.value)}
             />
           </label>
 
+          {provider === "google" ? (
+            <>
+              <label>
+                Antigravity model group
+                <input
+                  required
+                  maxLength={60}
+                  placeholder="Gemini Pro"
+                  value={googleModelGroup}
+                  onChange={(event) => setGoogleModelGroup(event.target.value)}
+                />
+              </label>
+              <p>
+                Manual values only. Open Antigravity CLI /usage and enter the used
+                percentage (100 minus the remaining percentage) and reset time
+                for this model group. QuotaOps does not access Google sessions.
+              </p>
+            </>
+          ) : null}
+
           <div className="form-section">
-            <span>5-hour window</span>
+            <span>{provider === "google" ? "Model-group 5-hour window" : "5-hour window"}</span>
             <div className="form-grid">
               <label>
                 Usage %
@@ -735,7 +815,7 @@ function AddAccountDialog({
           </div>
 
           <div className="form-section">
-            <span>Weekly window</span>
+            <span>{provider === "google" ? "Model-group weekly window" : "Weekly window"}</span>
             <div className="form-grid">
               <label>
                 Usage %
@@ -869,7 +949,7 @@ function TokenAnalyticsPanel({
                 key={source.source}
                 title={source.message ?? undefined}
               >
-                {source.source === "claude-code" ? "Claude Code" : "Codex"} ·{" "}
+                {source.source === "claude-code" ? "Claude Code" : source.source === "google-antigravity" ? "Antigravity CLI" : "Codex"} ·{" "}
                 {source.state === "ok"
                   ? `${source.files} file${source.files === 1 ? "" : "s"}`
                   : source.state === "partial"

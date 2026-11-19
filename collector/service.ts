@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
 import {
@@ -99,7 +100,10 @@ async function main(): Promise<void> {
       if (invalidated()) return null;
       // Local private histories are read only with the stored consent.
       const nextTokens = current.tokenAnalyticsEnabled
-        ? await collectLocalTokenAnalytics(current.tokenAnalyticsSources)
+        ? await mergeGoogleAnalytics(
+            await collectLocalTokenAnalytics(current.tokenAnalyticsSources),
+            current.accounts, current.tokenAnalyticsSources.googleAntigravity === true,
+          )
         : null;
       if (invalidated()) return null;
       return { nextResults, nextTokens };

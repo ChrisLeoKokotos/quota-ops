@@ -45,7 +45,7 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
   return (
     typeof account.id === "string" &&
     typeof account.label === "string" &&
-    (account.provider === "claude" || account.provider === "openai") &&
+    (account.provider === "claude" || account.provider === "openai" || account.provider === "google") &&
     typeof account.plan === "string" &&
     typeof account.updatedAt === "string" &&
     Array.isArray(account.windows) &&
@@ -87,7 +87,7 @@ function isProviderTokenTotals(value: unknown): value is ProviderTokenTotals {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<ProviderTokenTotals>;
   return (
-    (item.provider === "claude" || item.provider === "openai") &&
+    (item.provider === "claude" || item.provider === "openai" || item.provider === "google") &&
     isTokenTotals(item.totals)
   );
 }
@@ -98,7 +98,7 @@ function isDailyTokenBucket(value: unknown): value is DailyTokenBucket {
   return (
     typeof item.date === "string" &&
     /^\d{4}-\d{2}-\d{2}$/.test(item.date) &&
-    (item.provider === "claude" || item.provider === "openai") &&
+    (item.provider === "claude" || item.provider === "openai" || item.provider === "google") &&
     isTokenTotals(item)
   );
 }
@@ -107,8 +107,8 @@ function isTokenSourceStatus(value: unknown): value is TokenSourceStatus {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<TokenSourceStatus>;
   return (
-    (item.source === "claude-code" || item.source === "codex") &&
-    (item.provider === "claude" || item.provider === "openai") &&
+    (item.source === "claude-code" || item.source === "codex" || item.source === "google-antigravity") &&
+    (item.provider === "claude" || item.provider === "openai" || item.provider === "google") &&
     (item.state === "ok" ||
       item.state === "not_found" ||
       item.state === "partial" ||

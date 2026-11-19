@@ -6,6 +6,18 @@
 as a stable download. A successful unit suite is not equivalent to an
 operational collector or a trustworthy Windows installer.
 
+## Draft PR #50 scope (20 Nov 2026)
+
+The branch now includes event-driven Antigravity CLI statusLine quotas plus
+manual fallback and opt-in numeric Token Analytics. The GitHub checks on
+`0234f0b` passed **App validation**, **Windows security smoke** and
+**signed-build dry run with a throwaway certificate**. Those checks use
+synthetic Google payloads, not a real signed-in Google account. Real Google
+CLI integration, installed-runtime hook path, account identity attribution
+and independent privacy/security review remain release blockers. The
+readiness report dated 18 Nov is historical evidence for #48 and must not be
+interpreted as a fresh review of #50. No release, merge or deployment occurred.
+
 ## Known blockers
 
 1. **Claude collector:** Five enabled Claude profiles returned
@@ -87,6 +99,7 @@ operational collector or a trustworthy Windows installer.
   locale-independent challenge detection (see
   `production-hardening-2026-11-18.md`; candidate, **not**
   owner-executed).
+- Draft PR #50: Google statusLine adapter and privacy opt-in; synthetic Windows/browser E2E PASS at `0234f0b`, real Google account and installed hook BLOCKED.
 - Draft PR #40: disabled-by-default code-gated Windows auto-update.
 - Draft PR #39: Windows installer shell.
 
