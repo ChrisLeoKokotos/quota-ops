@@ -48,8 +48,8 @@ Manual Google entries remain available as a fallback. Collector-synced
 Google entries are marked **auto-synced**, and no Google credentials, browser
 cookies or private endpoint scraping are involved.
 
-See [docs/google-antigravity.md](docs/google-antigravity.md) for validation and
-limitations.
+See [docs/google-antigravity.md](docs/google-antigravity.md) for setup, validation,
+privacy options and limitations. The PR #50 integration is a **Draft candidate**, not a released feature; real authenticated Google CLI E2E and packaged setup validation are still pending.
 
 ## Capacity vs Token Analytics
 
@@ -57,7 +57,7 @@ QuotaOps intentionally separates two different signals.
 
 **Capacity** represents provider quota windows, utilization, and reset times.
 
-**Token Analytics** represents token usage observed in local Claude Code and Codex session logs. It is explicitly labeled **Locally observed** because it is not a provider-wide billing statement or guaranteed lifetime total.
+**Token Analytics** represents token usage observed in local Claude Code / Codex session logs and, after separate opt-in, numeric Antigravity CLI `statusLine` events. It is explicitly labeled **Locally observed** because it is not a provider-wide billing statement or guaranteed lifetime total.
 
 For Codex, cached input is already part of reported input and is shown as a breakdown without being counted twice in total tokens. Claude Code cache reads and cache creation are surfaced as observed token work alongside input and output.
 
@@ -74,7 +74,7 @@ Browser-local application state may include:
 - theme and notification preferences;
 - reset-notification deduplication state.
 
-The local collector may also read provider-managed local session files to calculate Token Analytics. QuotaOps parses those files locally and exposes only numeric usage aggregates, timestamps, provider labels, and source health through its collector snapshot.
+The collector may also read provider-managed Claude Code and Codex session files, or ingest an opted-in Antigravity CLI numeric `statusLine` event stream, to calculate Token Analytics. QuotaOps parses those files locally and exposes only numeric usage aggregates, timestamps, provider labels, and source health through its collector snapshot.
 
 QuotaOps does not intentionally export or persist prompts, responses, source code, provider passwords, API keys, OAuth tokens, session cookies, private keys, or provider authentication state in its dashboard data.
 
@@ -109,7 +109,7 @@ npm run build
 
 ## Local collector
 
-QuotaOps includes an **experimental same-PC collector** for multiple Claude and OpenAI accounts. Each account uses its own persistent local Chrome / Edge profile. Interactive login remains visible and provider-controlled; background collection uses those isolated local profiles and exposes normalized snapshots only on `127.0.0.1:4317`.
+QuotaOps includes an **experimental same-PC collector** for Claude, OpenAI/Codex, and Google/Antigravity. Claude and OpenAI accounts use separate persistent Chrome / Edge profiles: login and human verification are visible and user-controlled; unattended browser collection is **headless** (and may be blocked by provider verification). Google accounts instead use an explicitly configured **Antigravity CLI `statusLine` hook** that publishes events only while the CLI runs—there is no automated Google browser login or CLI-closed polling. Normalized snapshots stay on `127.0.0.1:4317`.
 
 The local API is authenticated with a random local token that stays server-side. Browser-direct collector access is rejected, profile paths are constrained to the protected QuotaOps home, and provider adapters normalize quota metadata before it reaches the dashboard.
 
@@ -119,7 +119,14 @@ Canonical setup and operations guide: [docs/local-collector.md](docs/local-colle
 
 ## Privacy-first Token Analytics opt-in
 
-The collector does not automatically read private Claude Code or Codex histories. To enable background Token Analytics locally after reviewing the [privacy policy](PRIVACY.md), run `npm run collector:setup -- tokens-auto enable`. To disable, run `npm run collector:setup -- tokens-auto disable`. The manual `tokens` command remains an explicit one-time scan. These histories may contain prompts, replies and project source code, even though snapshots contain only numeric aggregates.
+Background Token Analytics is **off by default**. After reviewing [PRIVACY.md](PRIVACY.md), enable only the source needed:
+```powershell
+npm run collector:setup -- tokens-auto enable claude-code
+npm run collector:setup -- tokens-auto enable codex
+npm run collector:setup -- tokens-auto enable google-antigravity
+npm run collector:setup -- tokens-auto status
+```
+The legacy `tokens-auto enable` (no scope) enables Claude Code + Codex but **does not** opt in to Google. `tokens-auto disable all` disables all three sources and blocks new Google numeric counter persistence; it does **not** delete previously stored data. The `tokens` command reads only consented sources. Claude/Codex histories may contain prompts, replies, and project source code even though snapshots expose numeric aggregates.
 
 ## Token Analytics
 
@@ -132,7 +139,8 @@ npm run collector:setup -- tokens
 QuotaOps currently scans:
 
 - Claude Code logs under the user's local Claude project history;
-- Codex active and archived local session logs.
+- Codex active and archived local session logs;
+- optionally, **event-driven** numeric Antigravity CLI observations (not a session-log scan and not provider-wide billing).
 
 The scanner includes deduplication and child/fork replay suppression so copied session history is not intentionally counted as new work.
 
@@ -159,7 +167,7 @@ Voice input updates usage percentages only. Reset timestamps are still entered m
 
 ## Stack
 
-- Next.js 16.3.8
+- Next.js 16.4.6
 - React 19.3
 - TypeScript 6.0
 - Playwright Core 1.63
@@ -197,4 +205,4 @@ QuotaOps was created by **SO HOMELY** and is maintained through this public repo
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Claude, Anthropic, OpenAI, ChatGPT, and Codex are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic or OpenAI.
+Claude, Anthropic, OpenAI, ChatGPT, Codex, Google, Gemini, and Antigravity are third-party names and products. QuotaOps is not affiliated with or endorsed by Anthropic, OpenAI, or Google.

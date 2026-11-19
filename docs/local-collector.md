@@ -6,9 +6,9 @@ This document is the canonical setup and operations guide for the current same-P
 
 ## What the collector does
 
-QuotaOps can track several Claude and OpenAI accounts on one Windows PC without combining their browser sessions.
+QuotaOps can track several Claude, OpenAI/Codex and Google/Antigravity accounts on one PC. **Claude and OpenAI** use isolated browser sessions; **Google** uses CLI `statusLine` events instead of a browser login. Google account labels in the local config do not independently attest which signed-in Google identity emitted an event.
 
-Each account gets its own persistent Chrome / Edge profile under:
+Each Claude/OpenAI account gets its own persistent Chrome / Edge profile under:
 
 ```text
 %USERPROFILE%\.quotaops\browser-profiles\
@@ -22,7 +22,7 @@ The collector snapshot contains normalized capacity metadata plus locally observ
 - collection time and health state;
 - local Token Analytics totals, daily buckets, provider totals, and source health.
 
-Provider login state remains inside the isolated browser profile. QuotaOps does not copy provider passwords, cookies, or provider access credentials into collector snapshots.
+Claude/OpenAI authentication stays inside each browser profile. Google authentication stays inside the provider CLI. QuotaOps neither reads Google credentials nor copies provider passwords, cookies or access tokens into collector snapshots.
 
 ## Requirements
 
@@ -31,7 +31,8 @@ Recommended environment:
 - Windows 11;
 - Node.js 22.21.0;
 - current Google Chrome or Microsoft Edge;
-- one or more Claude accounts that can open `Settings > Usage`, and/or ChatGPT accounts with Codex quota available.
+- one or more Claude accounts with `Settings > Usage` and/or ChatGPT accounts with Codex quota available;
+- optionally, an authenticated Antigravity CLI with the `statusLine` feature for Google event collection. No browser is needed for the Google hook itself.
 
 Install the repository dependencies from the committed lockfile:
 
@@ -43,23 +44,27 @@ npm ci --ignore-scripts --no-audit --no-fund
 
 Background scans of local Claude Code and Codex session histories are **off by default**, including existing collector configurations migrated to this version. Session history can contain private prompts, responses and source code; only numeric usage aggregates belong in QuotaOps snapshots.
 
-To opt in locally:
+To opt in to **one source at a time**:
 
 ```powershell
-npm run collector:setup -- tokens-auto enable
+npm run collector:setup -- tokens-auto enable claude-code
+npm run collector:setup -- tokens-auto enable codex
+npm run collector:setup -- tokens-auto enable google-antigravity
 ```
 
-To turn future background scanning off:
-
-```powershell
-npm run collector:setup -- tokens-auto disable
-```
-
-Check without changing configuration using `npm run collector:setup -- tokens-auto status`. The original `npm run collector:setup -- tokens` is a one-time, user-initiated session scan. An enabled collector changes behavior on the next polling cycle (or after restart).
+Run `npm run collector:setup -- tokens-auto status` to review consent, or
+`npm run collector:setup -- tokens-auto disable all` to revoke it for all
+three. The no-scope `enable` command enables **only Claude Code and Codex**;
+it never silently enables Google. The `tokens` command reads only consented
+sources. Disabling stops future observation but does not delete previously
+stored `google-statusline` counters; see [PRIVACY.md](../PRIVACY.md) for
+local deletion. Google quota collection is independent of this token consent.
+To count Google tokens from a session, enable consent **before** its first
+statusLine event; pre-consent events are not recovered automatically.
 
 ## First-time setup
 
-Create the default five account profiles:
+Optionally create **five default Claude** accounts (not a global account limit):
 
 ```powershell
 npm run collector:setup -- bootstrap-five
@@ -81,9 +86,9 @@ A configured account is either `enabled` or `disabled`. Disabled accounts remain
 
 ## Connect an account
 
-Connect accounts one at a time.
+Connect Claude/OpenAI browser accounts one at a time. **Do not use `login` for Google**: follow the [Antigravity CLI hook setup](google-antigravity.md) instead.
 
-For Dev 1:
+For Claude Dev 1:
 
 ```powershell
 npm run collector:setup -- login dev-1
@@ -188,15 +193,15 @@ the URL the start command prints (an OS-allocated loopback port)
 
 The dashboard polls the local collector every 30 seconds.
 
-The collector refreshes enabled provider profiles every five minutes by default and processes accounts sequentially.
+The scheduler checks enabled account snapshots every five minutes by default and processes them sequentially. Claude/OpenAI checks may launch headless browsers. Google checks read the most recent sanitized local statusLine event; Google CLI state is generated independently when that CLI is active.
 
 ## Visible login vs hidden scheduled refresh
 
 Interactive login is intentionally visible because provider authentication and verification must remain user-controlled.
 
-Background collection is different: QuotaOps opens the isolated provider profile off-screen or minimized, reads only the quota metadata needed for the configured provider, then closes the browser process. Claude collection observes the real Usage-page API response. OpenAI collection obtains the current ChatGPT session inside the isolated browser context and requests Codex quota metadata without exporting the access token into the collector snapshot.
+Background Claude/OpenAI collection runs **headless** (not off-screen/minimized); provider human-verification challenges are not bypassed. The tray offers a consented visible refresh and a manual verification path. Claude collection observes the Usage-page response; OpenAI uses the authenticated ChatGPT browser context for Codex quota metadata without returning the provider token in the snapshot. Google collection does not launch Chrome or Edge: its CLI invokes a locally configured `statusLine` hook; QuotaOps then reads only sanitized quota state. A Google event older than **15 minutes** or without recognized quota buckets is `unavailable`, never a fabricated fresh sync.
 
-If a provider requires a fresh login, run the explicit `login <id>` command again. QuotaOps does not bypass provider authentication.
+If Claude/OpenAI requires a fresh login, run explicit `login <id>` and complete provider authentication. Google sign-in is performed directly in Antigravity CLI; `login google-1` is intentionally unsupported. QuotaOps does not bypass provider authentication.
 
 ## Local account details
 
@@ -220,6 +225,8 @@ npm run collector:setup -- add <provider> <id> <label>
 npm run collector:setup -- login <id>
 npm run collector:setup -- collect <id>
 npm run collector:setup -- tokens
+npm run collector:setup -- tokens-auto <enable|disable|status> [claude-code|codex|google-antigravity|all]
+npm run collector:setup -- google-hook <id>
 npm run collector:setup -- enable <id> [id...]
 npm run collector:setup -- disable <id> [id...]
 npm run collector:setup -- security-check
@@ -235,6 +242,10 @@ npm run collector:setup -- add openai openai-1 "OpenAI 1"
 npm run collector:setup -- login openai-1
 npm run collector:setup -- collect openai-1
 npm run collector:setup -- enable openai-1
+npm run collector:setup -- add google google-1 "Antigravity 1"
+npm run collector:setup -- google-hook google-1
+npm run collector:setup -- collect google-1
+npm run collector:setup -- tokens-auto enable google-antigravity
 ```
 
 ## Collector health states
@@ -244,7 +255,8 @@ Possible per-account statuses are:
 - `ok` — normalized usage was collected;
 - `login_required` — the isolated profile needs normal provider authentication;
 - `unsupported` — the Usage page loaded but the expected provider response could not be recognized;
-- `unavailable` — the local browser collection path could not complete.
+- `verification_required` — a Claude browser challenge needs human attention;
+- `unavailable` — local browser collection failed **or** Google statusLine state is absent, stale or has no usable quota buckets.
 
 QuotaOps fails closed: a failed refresh does not invent capacity.
 
@@ -277,6 +289,7 @@ Important paths include:
 %USERPROFILE%\.quotaops\collector.token
 %USERPROFILE%\.quotaops\browser-profiles\dev-1
 %USERPROFILE%\.quotaops\browser-profiles\dev-2
+%USERPROFILE%\.quotaops\google-statusline\google-1.json
 ...
 ```
 
@@ -308,7 +321,7 @@ If `collect <id>` returns `login_required`, run `login <id>` and complete normal
 
 If it returns `unsupported`, open that isolated profile with `login <id>`. For Claude, confirm `Settings > Usage` is available. For OpenAI, confirm chatgpt.com is signed in and the account has Codex quota available. Provider response formats are not treated as stable public APIs and can change.
 
-If it returns `unavailable`, confirm Chrome or Edge is installed and current, close any stale isolated profile window, then retry.
+If Claude/OpenAI returns `unavailable`, confirm Chrome/Edge is current and close stale isolated profile windows. If Google returns `unavailable`, verify the signed-in Antigravity CLI has the correct `/statusline` command, emitted a recent event, and exposed quota buckets; Chrome/Edge is not part of that path.
 
 For Token Analytics verification, run `npm run collector:setup -- tokens`. The result is explicitly locally observed and can differ from provider-wide billing or account totals.
 
@@ -318,15 +331,17 @@ If port `4317` is already in use, stop the older collector process before starti
 
 Do not attempt to bypass provider verification or anti-bot checks.
 
-## Current validation status
+## Current validation status (PR #50 candidate, 19–20 Nov 2026)
 
-The Claude collector path has been exercised end to end with five isolated Claude profiles. OpenAI / Codex support is newer and should be validated per account with `collect <id>` before enabling background refresh:
+The GitHub CI has passed TypeScript, unit tests, production build, Windows security checks, the statusLine hook-to-collector E2E on Windows, and a synthetic Google event → collector → dashboard → Chrome E2E. The Windows signing run uses a **throwaway test certificate** and is not approval for a public release.
 
-- each account passed individual `collect <id>` validation;
-- all five accounts were enabled together;
-- all five appeared as auto-synced in the dashboard;
-- the collector remained local-first and returned normalized quota metadata.
+- **Google:** synthetic integration passes, but real signed-in Antigravity CLI collection, installed hook configuration, multi-account identity binding, and packaged-Windows end-to-end behavior are **not yet validated**.
+- **Claude:** historical five-profile evidence exists, but the newer headless build encountered Cloudflare/human verification; the final five real signed-in profiles remain an **owner-run blocker**.
+- **OpenAI/Codex:** parser and CI tests pass; authenticated end-to-end quota collection on the release candidate must still be confirmed.
+- **All providers:** 24-hour real-account soak, independent security review and release-signing checks remain outstanding.
 
-The collector remains experimental because the Claude web Usage response and ChatGPT/Codex quota surfaces are internal product APIs. Session-expiry handling, token rotation, LAN-isolation verification, and background-refresh behavior remain release-gate checks before calling the collector fully production-ready.
+The provider adapters and Google CLI event shapes can change. Do not equate green synthetic tests with proven reliability on real authenticated accounts.
 
 See [token-analytics.md](token-analytics.md) for token counting semantics and [local-collector-threat-model.md](local-collector-threat-model.md) for the formal trust boundaries and residual risks.
+
+Historical test reports describe their *as-of dates*; use [the current Draft PR #50](https://github.com/ChrisLeoKokotos/quota-ops/pull/50) and [release gates](release/v0.2.0-readiness-report.md) for the current candidate rather than treating old results as new evidence.

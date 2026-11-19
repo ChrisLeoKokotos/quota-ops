@@ -17,15 +17,23 @@ npm run collector:setup -- google-hook google-1
 2. Configure the displayed `/statusline` command in the signed-in Antigravity
 CLI. This **replaces** any existing custom statusline command. Preserve
 existing customizations first and do not install without consent.
-3. Trigger a CLI state change. The hook accepts Google JSON on stdin and
-writes only sanitized quota windows, plan label, hashed session counters and
-numeric token totals beneath `~/.quotaops/google-statusline/`.
-4. Run `npm run collector:setup -- collect google-1` to verify the snapshot.
-5. Separately opt in to numeric Token Analytics:
+3. To collect **numeric token counters**, explicitly opt in **before**
+   generating any events:
 
 ```powershell
 npm run collector:setup -- tokens-auto enable google-antigravity
 ```
+
+   If you do not opt in, the hook still records **quota snapshots only**,
+   without adding session counters. Pre-consent token activity is not backfilled.
+4. Trigger an Antigravity CLI state change. The hook consumes JSON on stdin and
+   stores allowlisted quota windows, reset timestamps and plan data under
+   `~/.quotaops/google-statusline/`. Only with prior consent are hashed
+   session watermarks and numeric counters retained.
+5. Run `npm run collector:setup -- collect google-1` to verify the local quota
+   snapshot; use `npm run collector:setup -- tokens` to inspect consented
+   numeric analytics. The app refreshes from the local snapshot, not directly
+   from Google's servers.
 
 It is **event-driven**, not a 24/7 background poll. When the CLI is closed
 or emits no events for 15 minutes, QuotaOps marks quota availability stale.
@@ -39,9 +47,29 @@ statements. Cache breakdown from `current_usage` is best-effort and capped
 to the newly observed input delta. Raw email, working directories, transcript
 paths, prompts, original session IDs, and credentials are never saved.
 
-The hook requires Node.js 22+ and access to the collector runtime files.
+The hook requires Node.js 22+ and access to the collector runtime files. Configure one collector account ID for each **known, signed-in CLI context**; the hook does not securely infer or attest the Google identity from an email field.
 The packaged Windows installer does not yet automatically install the hook
 in another program's settings; installed-runtime setup needs owner validation.
+
+## Consent, retention and deletion
+
+Run `npm run collector:setup -- tokens-auto status` to inspect consent and
+`npm run collector:setup -- tokens-auto disable google-antigravity` to stop
+new Google numeric token observations. `tokens-auto disable all` disables
+all three analytics sources. **Neither command deletes previously saved
+numeric counters.** To erase one Google account's local state, exit the
+Antigravity CLI hook and stop QuotaOps collection, then delete
+`%USERPROFILE%\\.quotaops\\google-statusline\\google-1.json` (replace the
+ID). This also deletes that account's last quota snapshot; a new event will
+create a fresh quota-only file while consent is off. Deleting the browser's
+manual account does not delete this collector file.
+
+The local state is capped (up to 512 KiB per account, at most 512 tracked
+sessions and 800 daily buckets). The original JSON, raw session identifiers,
+transcripts, prompts and account email are not persisted by the hook. A
+hashed session identifier and **numeric** counters are stored only if token
+consent was enabled before ingestion. The local machine's own account
+permissions remain a residual risk; this is not an encrypted vault.
 
 ## Manual fallback
 
@@ -87,10 +115,16 @@ still run independently.
   browser-based, local UI flow through adding two model groups, persistence
   after reload, and manual provenance. Uses synthetic values and no Google
   sessions. Run with a temporary HOME, not an active installed QuotaOps home.
+- `node scripts/google-statusline-e2e.mjs` exercises real hook processes,
+  persistence, consent revocation and normalized quotas with synthetic JSON.
 - Synthetic automatic statusLine E2E exercises the hook, persistence,
   normalized quotas and token analytics without credentials.
+- `node scripts/google-auto-dashboard-e2e.mjs` after `npm run build`
+  checks the collector service and trusted dashboard in real Chromium.
 - A separate real Chromium browser E2E checks the local collector service,
   authenticated dashboard proxy and auto-synced Google UI.
+- CI includes Windows hook-to-collector and packaged desktop smoke tests,
+  not an authenticated Google session or verified installed hook.
 - **Real Google-account E2E remains pending:** no signed-in Antigravity
   session was available in CI or this development environment.
 
