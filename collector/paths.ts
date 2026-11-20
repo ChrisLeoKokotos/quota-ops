@@ -20,3 +20,8 @@ export function getDefaultProfileDir(id: string): string {
 export function getCollectorTokenPath(): string {
   return join(getQuotaOpsHome(), "collector.token");
 }
+
+// Narrow, independently rotatable read-only capability used only by Lily.
+export function getLilyReadTokenPath(): string {
+  return join(getQuotaOpsHome(), "lily-read.token");
+}
