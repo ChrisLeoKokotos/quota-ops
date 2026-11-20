@@ -23,6 +23,7 @@ import {
   getCollectorTokenPath,
   getProfileRoot,
   getQuotaOpsHome,
+  getLilyReadTokenPath,
 } from "./paths.ts";
 
 const execFileAsync = promisify(execFile);
@@ -190,6 +191,39 @@ export async function getOrCreateCollectorToken(): Promise<string> {
       return existing;
     }
   }
+}
+
+/** Lily can only read sanitized quota summaries: NEVER reuse collector.token. */
+export async function getOrCreateLilyReadToken(): Promise<string> {
+  await ensureCollectorHomeSecurity();
+  const path = getLilyReadTokenPath();
+  await rejectSymlink(path);
+  try {
+    const existing = (await readFile(path, "utf8")).trim();
+    if (!isValidCollectorToken(existing)) throw Error("Invalid Lily read-only token; rotate it before starting.");
+    return existing;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const created = generateToken();
+    try {
+      await writeFile(path, created + "\n", {encoding:"utf8", flag:"wx", mode:0o600});
+      if(process.platform!=="win32") await chmod(path,0o600);
+      return created;
+    } catch (createError) {
+      if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+      const raced = (await readFile(path,"utf8")).trim();
+      if (!isValidCollectorToken(raced)) throw Error("Invalid Lily token created concurrently.");
+      return raced;
+    }
+  }
+}
+
+export async function rotateLilyReadToken(): Promise<void> {
+  await ensureCollectorHomeSecurity();
+  const path = getLilyReadTokenPath();
+  await rejectSymlink(path);
+  await writeFile(path, generateToken()+"\n", {encoding:"utf8", flag:"w", mode:0o600});
+  if(process.platform!=="win32") await chmod(path,0o600);
 }
 
 export async function rotateCollectorToken(): Promise<string> {
