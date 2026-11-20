@@ -21,9 +21,9 @@
 //                open, and that the account is checked once after it closes.
 //                Briefly shows a browser window on the desktop.
 //   background-focus  same profile; while the scheduled (background)
-//                collection runs, samples the foreground window owner and
-//                fails if a test-owned browser ever owns it or if any
-//                automated browser runs headed.
+//                collection runs (Windows: browser on a hidden desktop),
+//                samples the foreground window owner and fails if a
+//                test-owned browser ever owns it.
 //   visible-consent  tray "Refresh with visible browser...": Cancel must open
 //                nothing; after "Open browser windows" a visible browser runs,
 //                and tray Quit is invoked while it is active. Shows a window.
@@ -275,9 +275,11 @@ async function runCycle(cycle) {
       }
       const owners = await watch.stop();
       const owned = owners.filter((line) => line.startsWith("OWNED:"));
-      focusSummary = ` foregroundSamples=${owners.length} browserOwnedForeground=${owned.length}`;
+      focusSummary = ` foregroundSamples=${owners.length} browserOwnedForeground=${owned.length} headedOnHiddenDesktop=${headed > 0}`;
       if (!sawBrowser) failures.push("no background browser was observed (collection too short to test)");
-      if (headed > 0) failures.push("background collection started a headed browser");
+      // Windows default "hidden": an ordinary (headed) browser on a separate,
+      // never-shown desktop. What must never happen is that it reaches the
+      // person's foreground.
       if (owned.length > 0) failures.push(`a test-owned browser took the foreground (${owned[0]})`);
     }
     if (scenario === "visible-consent") {
