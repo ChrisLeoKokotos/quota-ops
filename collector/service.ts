@@ -6,12 +6,14 @@ import { loadCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
   getOrCreateCollectorToken,
+  getOrCreateLilyReadToken,
 } from "./security.ts";
 import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
 } from "./types.ts";
 import { emptyTokenTotals, type TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
+import { lilySnapshot } from "./lily-snapshot.ts";
 
 const HOST = "127.0.0.1";
 const MAX_REQUESTS_PER_MINUTE = 120;
@@ -28,7 +30,9 @@ function sendJson(
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Cross-Origin-Resource-Policy", "same-site");
   response.setHeader("Referrer-Policy", "no-referrer");
-  response.end(JSON.stringify(value));
+  const body = JSON.stringify(value);
+  response.setHeader("Content-Length", Buffer.byteLength(body, "utf8"));
+  response.end(body);
 }
 
 function suppliedBearerToken(request: IncomingMessage): string {
@@ -40,6 +44,7 @@ function suppliedBearerToken(request: IncomingMessage): string {
 async function main(): Promise<void> {
   const config = await loadCollectorConfig();
   const collectorToken = await getOrCreateCollectorToken();
+  const lilyToken = await getOrCreateLilyReadToken();
   let results: CollectorAccountResult[] = [];
   let tokenAnalytics: TokenAnalyticsSnapshot = {
     generatedAt: new Date(0).toISOString(),
@@ -93,7 +98,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (!collectorTokenMatches(collectorToken, suppliedBearerToken(request))) {
+    const lilyOnly = request.url === "/lily/v1/snapshot";
+    const required = lilyOnly ? lilyToken : collectorToken;
+    if (!collectorTokenMatches(required, suppliedBearerToken(request))) {
       sendJson(request, response, 401, { error: "unauthorized" });
       return;
     }
@@ -120,6 +127,16 @@ async function main(): Promise<void> {
         status: "ok",
         collecting,
       });
+      return;
+    }
+
+    if (lilyOnly) {
+      const view = lilySnapshot(results, tokenAnalytics);
+      if (Buffer.byteLength(JSON.stringify(view), "utf8") > 64 * 1024) {
+        sendJson(request, response, 503, {error:"snapshot_too_large"});
+      } else {
+        sendJson(request, response, 200, view);
+      }
       return;
     }
 
