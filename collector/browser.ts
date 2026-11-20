@@ -175,7 +175,8 @@ function claudeUsageOrganizationId(url: string): string | null {
     if (
       parsed.protocol !== "https:" ||
       parsed.hostname !== "claude.ai" ||
-      parsed.search !== "" ||
+      // Query parameters are allowed (Claude's page now sends them); the
+      // host and path stay exact.
       parsed.hash !== "" ||
       !match
     ) {
@@ -195,7 +196,6 @@ function isClaudeOrganizationsUrl(url: string): boolean {
       parsed.protocol === "https:" &&
       parsed.hostname === "claude.ai" &&
       parsed.pathname === "/api/organizations" &&
-      parsed.search === "" &&
       parsed.hash === ""
     );
   } catch {
