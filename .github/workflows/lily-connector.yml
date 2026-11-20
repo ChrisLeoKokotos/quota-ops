@@ -1,0 +1,47 @@
+name: Lily Connector Validation
+
+# Narrow engineering diagnostics; this is NOT a substitute for the main CI
+# production dependency audit, which must be green before merge/release.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "collector/**"
+      - "lib/**"
+      - "tests/lily*.test.ts"
+      - ".github/workflows/lily-connector.yml"
+  push:
+    branches: [feat/lily-local-readonly-v1]
+    paths:
+      - "collector/**"
+      - "lib/**"
+      - "tests/lily*.test.ts"
+      - ".github/workflows/lily-connector.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: QuotaOps read-only contract / HTTP E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.21.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Privacy projection + real loopback collector
+        run: node --test --experimental-strip-types tests/lily-snapshot.test.ts tests/lily-http.e2e.test.ts
+      - name: Production bundle compilation (no deploy)
+        run: npm run build
