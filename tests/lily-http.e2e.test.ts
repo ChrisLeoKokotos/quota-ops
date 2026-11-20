@@ -5,7 +5,6 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
-import { getCollectorTokenPath, getLilyReadTokenPath } from "../collector/paths.ts";
 
 // An actual Node HTTP server with an empty isolated QuotaOps home. No logins,
 // browser profiles, external provider requests, or real user data are used.
