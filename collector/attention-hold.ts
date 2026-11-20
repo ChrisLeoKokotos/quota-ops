@@ -33,10 +33,20 @@ export function needsPerson(status: CollectorAccountResult["status"]): boolean {
   return NEEDS_PERSON.has(status);
 }
 
+/**
+ * How the browser ran when the obstacle was met. A hold is evidence about
+ * that presentation only: Claude challenged every headless session while the
+ * same verified profile passed in an ordinary browser, so a hold recorded
+ * headless must not stop a hidden-desktop attempt.
+ */
+export type HoldPresentation = "hidden" | "headless" | "visible";
+const PRESENTATIONS = new Set<HoldPresentation>(["hidden", "headless", "visible"]);
+
 interface HoldRecord {
   result: CollectorAccountResult;
   /** When automation last met this obstacle (ms since epoch). */
   heldAt: number;
+  presentation: HoldPresentation;
 }
 
 export class AttentionHolds {
@@ -49,7 +59,11 @@ export class AttentionHolds {
   }
 
   /** A result to report instead of collecting, or null to collect. */
-  skip(account: { id: string; label: string }, trigger: RefreshTrigger): CollectorAccountResult | null {
+  skip(
+    account: { id: string; label: string },
+    trigger: RefreshTrigger,
+    presentation: HoldPresentation = "headless",
+  ): CollectorAccountResult | null {
     const record = this.held.get(account.id);
     if (this.interactive.has(account.id)) {
       return {
@@ -62,7 +76,8 @@ export class AttentionHolds {
           "This profile is open for manual verification. QuotaOps checks it again after that browser window is closed.",
       };
     }
-    if (record && trigger === "scheduled" && this.now() - record.heldAt < BACKGROUND_RETRY_MS) {
+    if (record && trigger === "scheduled" && record.presentation === presentation &&
+        this.now() - record.heldAt < BACKGROUND_RETRY_MS) {
       return {
         ...record.result,
         label: account.label,
@@ -75,8 +90,8 @@ export class AttentionHolds {
     return null;
   }
 
-  record(result: CollectorAccountResult): void {
-    if (needsPerson(result.status)) this.held.set(result.id, { result, heldAt: this.now() });
+  record(result: CollectorAccountResult, presentation: HoldPresentation = "headless"): void {
+    if (needsPerson(result.status)) this.held.set(result.id, { result, heldAt: this.now(), presentation });
     else this.held.delete(result.id);
   }
 
@@ -119,6 +134,7 @@ export class AttentionHolds {
       status: record.result.status,
       checkedAt: record.result.checkedAt,
       heldAt: record.heldAt,
+      presentation: record.presentation,
     }));
     return JSON.stringify({ version: 1, holds }) + "\n";
   }
@@ -131,13 +147,16 @@ export class AttentionHolds {
     if (!Array.isArray(holds)) return;
     for (const entry of holds.slice(0, 64)) {
       if (!entry || typeof entry !== "object") continue;
-      const { id, status, checkedAt, heldAt } = entry as Record<string, unknown>;
+      const { id, status, checkedAt, heldAt, presentation } = entry as Record<string, unknown>;
       if (typeof id !== "string" || !labels.has(id)) continue;
       if (status !== "verification_required" && status !== "login_required") continue;
       if (typeof checkedAt !== "string" || Number.isNaN(Date.parse(checkedAt))) continue;
       if (typeof heldAt !== "number" || !Number.isFinite(heldAt) || heldAt > this.now()) continue;
       this.held.set(id, {
         heldAt,
+        // Holds written before presentations existed came from headless runs.
+        presentation: PRESENTATIONS.has(presentation as HoldPresentation)
+          ? presentation as HoldPresentation : "headless",
         result: {
           id,
           label: labels.get(id) ?? id,

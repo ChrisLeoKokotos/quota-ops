@@ -88,11 +88,11 @@ async function main(): Promise<void> {
           const browserAccounts: typeof enabled = [];
           for (const account of enabled) {
             if (invalidated()) return null;
-            const held = holds.skip(account, trigger);
+            const held = holds.skip(account, trigger, "hidden");
             if (held) { slots.push({ account, result: held }); continue; }
             if (account.provider === "google") {
               const result = await collectProviderUsage(account, { signal });
-              if (!invalidated()) holds.record(result);
+              if (!invalidated()) holds.record(result, "hidden");
               slots.push({ account, result });
               continue;
             }
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
           for (const slot of slots) {
             const result = slot.result ?? byId.get(slot.account.id);
             if (!result) continue;
-            if (!slot.result) holds.record(result);
+            if (!slot.result) holds.record(result, "hidden");
             nextResults.push(result);
           }
         } catch (error) {
@@ -121,14 +121,14 @@ async function main(): Promise<void> {
       if (!hidden) try {
         for (const account of enabled) {
           if (invalidated()) return null;
-          const held = holds.skip(account, trigger);
+          const held = holds.skip(account, trigger, "headless");
           if (held) {
             nextResults.push(held);
             continue;
           }
           // The signal aborts on shutdown and closes this account's profile.
           const result = await collectProviderUsage(account, { signal, visible });
-          if (!invalidated()) holds.record(result);
+          if (!invalidated()) holds.record(result, visible ? "visible" : "headless");
           nextResults.push(result);
         }
       } finally {
