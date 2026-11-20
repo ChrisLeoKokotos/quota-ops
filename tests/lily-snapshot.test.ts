@@ -25,7 +25,7 @@ test("Lily view is strictly versioned and contains no email, paths, source diagn
   const result=lilySnapshot([quota],analytics,instant);
   assert.equal(result.version,1);
   assert.equal(result.scope,"lily_readonly");
-  assert.equal(result.accounts[0].state,"available");
+  assert.equal(result.accounts[0]!.state,"available");
   assert.deepEqual(result.recommendation,{accountId:"dev-1",provider:"claude"});
   assert.equal(result.tokens.ranges.length,4);
   assert.equal(result.tokens.ranges[0].totals.totalTokens,155);
@@ -38,7 +38,7 @@ test("Lily view is strictly versioned and contains no email, paths, source diagn
 test("stale or unsupported provider data must not be recommended as current",()=>{
   const stale={...quota,checkedAt:"2026-11-20T08:00:00.000Z"};
   const result=lilySnapshot([stale],analytics,instant);
-  assert.equal(result.accounts[0].state,"stale");
+  assert.equal(result.accounts[0]!.state,"stale");
   assert.equal(result.recommendation,null);
 });
 test("unknown account source does not leak, and token telemetry is explicitly locally observed",()=>{
