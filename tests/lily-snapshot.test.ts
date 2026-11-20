@@ -53,3 +53,19 @@ test("manual-only browser accounts are intentionally absent from collector-only 
   assert.deepEqual(result.accounts,[]);
   assert.equal(result.recommendation,null);
 });
+
+test("Lily surfaces login-required configured accounts without exposing browser profile paths",()=>{
+  const row: CollectorAccountResult = {
+    ...quota,status:"login_required",account:null,
+    checkedAt:"2026-11-20T09:59:00.000Z",message:"sensitive local error path",
+  };
+  const projection=lilySnapshot([row],analytics,instant,[{
+    id:"dev-1",label:"Dev 1",provider:"claude",enabled:true,
+    profileDir:"C:/private/auth/browser-profile",
+  }]);
+  assert.equal(projection.accounts[0]!.state,"login_required");
+  assert.equal(projection.accounts[0]!.windows.length,0);
+  assert.equal(projection.recommendation,null);
+  assert.ok(!JSON.stringify(projection).includes("private/auth"));
+  assert.ok(!JSON.stringify(projection).includes("sensitive local error"));
+});
