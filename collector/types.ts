@@ -32,10 +32,12 @@ export interface CollectorConfig {
   tokenAnalyticsSources: TokenAnalyticsConsent;
   accounts: CollectorAccountConfig[];
   /**
-   * Unattended (scheduled) collection. "headless" (default when absent) never
-   * opens a window; "off" collects only when a person asks.
+   * Unattended (scheduled) collection, never on the person's screen:
+   * "hidden" (Windows default when absent): an ordinary browser on a
+   *   separate, never-shown desktop; "headless": no browser window at all
+   *   (Claude challenges it); "off": collect only when a person asks.
    */
-  backgroundCollection?: "headless" | "off";
+  backgroundCollection?: "hidden" | "headless" | "off";
 }
 
 export interface CollectorAccountResult {

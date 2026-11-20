@@ -17,6 +17,11 @@ export function getDefaultProfileDir(id: string): string {
   return join(getProfileRoot(), id);
 }
 
+/** Request/result files of the hidden-desktop worker (overwritten each batch). */
+export function getCollectorRunDir(): string {
+  return join(getQuotaOpsHome(), "run");
+}
+
 /** Attention holds only (statuses, timestamps); see attention-hold.ts. */
 export function getCollectorStatePath(): string {
   return join(getQuotaOpsHome(), "collector-state.json");

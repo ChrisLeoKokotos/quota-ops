@@ -11,7 +11,9 @@ import {
   persistHolds,
   type RefreshTrigger,
 } from "./attention-hold.ts";
-import { getCollectorStatePath } from "./paths.ts";
+import { getCollectorRunDir, getCollectorStatePath } from "./paths.ts";
+import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
+import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
 import { loadCollectorConfig } from "./config.ts";
 import {
@@ -75,13 +77,48 @@ async function main(): Promise<void> {
       if (trigger === "scheduled" && current.backgroundCollection === "off") return null;
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
-      // Only a consented, person-initiated refresh may show a browser window;
-      // everything else is headless and cannot take the foreground.
+      // Only a consented, person-initiated refresh may show a browser window
+      // on the person's screen. Everything else is "hidden" (Windows: an
+      // ordinary browser on a never-shown desktop) or headless.
       const visible = trigger === "visible";
+      const hidden = !visible && current.backgroundCollection !== "headless" && hiddenDesktopSupported();
+      if (hidden) {
+        try {
+          const slots: Array<{ result: CollectorAccountResult | null; account: (typeof enabled)[number] }> = [];
+          const browserAccounts: typeof enabled = [];
+          for (const account of enabled) {
+            if (invalidated()) return null;
+            const held = holds.skip(account, trigger);
+            if (held) { slots.push({ account, result: held }); continue; }
+            if (account.provider === "google") {
+              const result = await collectProviderUsage(account, { signal });
+              if (!invalidated()) holds.record(result);
+              slots.push({ account, result });
+              continue;
+            }
+            slots.push({ account, result: null });
+            browserAccounts.push(account);
+          }
+          const collected = await collectInHiddenDesktop(browserAccounts, { signal, runDir: getCollectorRunDir() });
+          if (invalidated()) return null;
+          const byId = new Map(collected.map((result) => [result.id, result]));
+          for (const slot of slots) {
+            const result = slot.result ?? byId.get(slot.account.id);
+            if (!result) continue;
+            if (!slot.result) holds.record(result);
+            nextResults.push(result);
+          }
+        } catch (error) {
+          if (error instanceof CollectionCancelledError) return null;
+          throw error;
+        } finally {
+          await persistHolds(holds, statePath);
+        }
+      }
 
       // Holds changed earlier in this batch are saved even when Quit or
       // Pause stops it part-way.
-      try {
+      if (!hidden) try {
         for (const account of enabled) {
           if (invalidated()) return null;
           const held = holds.skip(account, trigger);

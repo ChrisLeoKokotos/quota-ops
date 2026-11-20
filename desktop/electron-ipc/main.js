@@ -496,7 +496,7 @@ function accountsNeedingPerson() {
 
 // What the tray needs from collector.json: the background mode and how many
 // accounts a visible refresh would open. Read-only, bounded; nothing else.
-let collectorSettings = { background: "headless", enabledAccounts: 0 };
+let collectorSettings = { background: process.platform === "win32" ? "hidden" : "headless", enabledAccounts: 0 };
 async function refreshCollectorSettings() {
   try {
     const file = path.join(homedir(), ".quotaops", "collector.json");
@@ -504,7 +504,9 @@ async function refreshCollectorSettings() {
     if (raw.length > 1_048_576) return;
     const parsed = JSON.parse(raw);
     collectorSettings = {
-      background: parsed?.backgroundCollection === "off" ? "off" : "headless",
+      background: parsed?.backgroundCollection === "off" ? "off"
+        : parsed?.backgroundCollection === "headless" || process.platform !== "win32" ? "headless"
+          : "hidden",
       enabledAccounts: Array.isArray(parsed?.accounts)
         ? parsed.accounts.filter((account) => account && account.enabled === true).length
         : 0,
@@ -827,7 +829,9 @@ function trayMenuTemplate() {
     {
       label: collectorSettings.background === "off"
         ? "Background checks: off (refresh manually)"
-        : "Background checks: hidden, no windows",
+        : collectorSettings.background === "hidden"
+          ? "Background checks: on, nothing shown on screen"
+          : "Background checks: headless (Claude may require verification)",
       enabled: false,
     },
     ...attentionRows,
