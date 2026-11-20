@@ -10,6 +10,7 @@ import {
   ensureCollectorHomeSecurity,
   getOrCreateCollectorToken,
   rotateCollectorToken,
+  rotateLilyReadToken,
 } from "./security.ts";
 
 function usage(): never {
@@ -28,6 +29,7 @@ function usage(): never {
       "  disable <id> [id...]",
       "  security-check",
       "  rotate-token",
+      "  rotate-lily-token",
       "",
     ].join("\n"),
   );
@@ -88,6 +90,12 @@ async function main(): Promise<void> {
     process.stdout.write(
       `Security check passed for ${config.accounts.length} configured account profile(s).\n`,
     );
+    return;
+  }
+
+  if (command === "rotate-lily-token") {
+    await rotateLilyReadToken();
+    process.stdout.write("Lily read-only token rotated. Restart collector; Lily reconnects on next poll.\\n");
     return;
   }
 
