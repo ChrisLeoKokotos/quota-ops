@@ -28,7 +28,7 @@ test("Lily view is strictly versioned and contains no email, paths, source diagn
   assert.equal(result.accounts[0]!.state,"available");
   assert.deepEqual(result.recommendation,{accountId:"dev-1",provider:"claude"});
   assert.equal(result.tokens.ranges.length,4);
-  assert.equal(result.tokens.ranges[0].totals.totalTokens,155);
+  assert.equal(result.tokens.ranges[0]!.totals.totalTokens,155);
   const body=JSON.stringify(result);
   for(const secret of ["private@example.com","SECRET","/user/profile/path","source","profileDir","authorization"]){
     if(secret==="source")continue; // scope is deliberately exposed; raw source diagnostics are not.
