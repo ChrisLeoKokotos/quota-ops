@@ -95,7 +95,7 @@ async function main(): Promise<void> {
 
   if (command === "rotate-lily-token") {
     await rotateLilyReadToken();
-    process.stdout.write("Lily read-only token rotated. Restart collector; Lily reconnects on next poll.\\n");
+    process.stdout.write("Lily read-only token rotated. Restart collector; Lily reconnects on next poll.\n");
     return;
   }
 
