@@ -3,7 +3,7 @@
 // provider response bodies, local paths, source error messages or raw sessions.
 import { getAccountStatus, getRecommendedAccount, type QuotaAccount } from "../lib/quota.ts";
 import { summarizeTokenRange, type TokenAnalyticsSnapshot, type TokenRange } from "../lib/token-analytics.ts";
-import type { CollectorAccountResult } from "./types.ts";
+import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 
 export const LILY_SCHEMA_VERSION = 1;
 const MAX_ACCOUNT_AGE_MS = 15 * 60_000;
@@ -36,25 +36,27 @@ export function lilySnapshot(
   results: CollectorAccountResult[],
   analytics: TokenAnalyticsSnapshot,
   at = new Date(),
+  configured: CollectorAccountConfig[] = [],
 ) {
   const now = at.getTime();
   const validAccounts: QuotaAccount[] = [];
   const accounts = results.slice(0, 32).flatMap((row) => {
     const account = row.account;
-    const provider = account?.provider;
-    if (!account || (provider !== "claude" && provider !== "openai") || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(row.id)) return [];
+    const profile = configured.find(c => c.id === row.id);
+    const provider = account?.provider ?? profile?.provider;
+    if ((provider !== "claude" && provider !== "openai") || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(row.id)) return [];
     const stale = age(row.checkedAt, now, MAX_ACCOUNT_AGE_MS);
-    const valid = row.status === "ok" && !stale;
+    const valid = row.status === "ok" && !stale && account !== null;
     if (valid) validAccounts.push(account);
     return [{
       id: row.id,
       provider,
       label: label(row.label || row.id),
-      plan: label(account.plan),
-      state: !valid ? stale ? "stale" : row.status : getAccountStatus(account, now),
+      plan: label(account?.plan ?? "Unknown"),
+      state: !valid ? row.status === "ok" && stale ? "stale" : row.status : getAccountStatus(account, now),
       checkedAt: row.checkedAt,
       stale,
-      windows: account.windows.slice(0, 8).filter(w =>
+      windows: (account?.windows ?? []).slice(0, 8).filter(w =>
         /^[a-z0-9][a-z0-9_-]{0,31}$/.test(w.id) &&
         Number.isFinite(w.usedPercent) && w.usedPercent >= 0 && w.usedPercent <= 100 &&
         (w.resetAt === null || Number.isFinite(Date.parse(w.resetAt)))
