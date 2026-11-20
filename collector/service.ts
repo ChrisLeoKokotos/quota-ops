@@ -46,6 +46,7 @@ async function main(): Promise<void> {
   const collectorToken = await getOrCreateCollectorToken();
   const lilyToken = await getOrCreateLilyReadToken();
   let results: CollectorAccountResult[] = [];
+  let configured = (await loadCollectorConfig()).accounts;
   let tokenAnalytics: TokenAnalyticsSnapshot = {
     generatedAt: new Date(0).toISOString(),
     scope: "locally_observed",
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
     try {
       const current = await loadCollectorConfig();
       const enabled = current.accounts.filter((account) => account.enabled);
+      configured = enabled;
       const nextResults: CollectorAccountResult[] = [];
 
       for (const account of enabled) {
@@ -131,7 +133,7 @@ async function main(): Promise<void> {
     }
 
     if (lilyOnly) {
-      const view = lilySnapshot(results, tokenAnalytics);
+      const view = lilySnapshot(results, tokenAnalytics, new Date(), configured);
       if (Buffer.byteLength(JSON.stringify(view), "utf8") > 64 * 1024) {
         sendJson(request, response, 503, {error:"snapshot_too_large"});
       } else {
