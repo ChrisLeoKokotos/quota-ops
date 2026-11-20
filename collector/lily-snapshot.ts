@@ -47,13 +47,13 @@ export function lilySnapshot(
     if ((provider !== "claude" && provider !== "openai") || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(row.id)) return [];
     const stale = age(row.checkedAt, now, MAX_ACCOUNT_AGE_MS);
     const valid = row.status === "ok" && !stale && account !== null;
-    if (valid) validAccounts.push(account);
+    if (valid && account) validAccounts.push(account);
     return [{
       id: row.id,
       provider,
       label: label(row.label || row.id),
       plan: label(account?.plan ?? "Unknown"),
-      state: !valid ? row.status === "ok" && stale ? "stale" : row.status : getAccountStatus(account, now),
+      state: valid && account ? getAccountStatus(account, now) : row.status === "ok" && stale ? "stale" : row.status,
       checkedAt: row.checkedAt,
       stale,
       windows: (account?.windows ?? []).slice(0, 8).filter(w =>
