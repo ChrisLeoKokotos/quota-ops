@@ -42,7 +42,7 @@ export function lilySnapshot(
   const accounts = results.slice(0, 32).flatMap((row) => {
     const account = row.account;
     const provider = account?.provider;
-    if (!account || !PROVIDERS.has(provider) || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(row.id)) return [];
+    if (!account || (provider !== "claude" && provider !== "openai") || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(row.id)) return [];
     const stale = age(row.checkedAt, now, MAX_ACCOUNT_AGE_MS);
     const valid = row.status === "ok" && !stale;
     if (valid) validAccounts.push(account);
