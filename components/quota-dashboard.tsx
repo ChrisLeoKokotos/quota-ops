@@ -917,11 +917,14 @@ function TokenAnalyticsPanel({
   range,
   nowMs,
   onRangeChange,
+  collectorConnected,
 }: {
   analytics: TokenAnalyticsSnapshot | null;
   range: TokenRange;
   nowMs: number;
   onRangeChange: (range: TokenRange) => void;
+  /** Connected collector without a token snapshot means analytics is off. */
+  collectorConnected: boolean;
 }) {
   const summary = analytics
     ? summarizeTokenRange(analytics, range, nowMs)
@@ -1019,11 +1022,23 @@ function TokenAnalyticsPanel({
               </span>
             ))}
           </div>
+          {analytics ? (
+            <p className="token-source-note">
+              Scanned {formatUpdatedAt(analytics.generatedAt)}. Counts cover only sessions on this PC.
+              {analytics.sources
+                .filter((source) => source.state === "partial" && source.message)
+                .map((source) => ` ${source.message}`)
+                .join("")}
+            </p>
+          ) : null}
         </>
       ) : (
         <div className="token-empty-state">
-          Start the local collector to read numeric token usage from Claude Code
-          and Codex session logs on this PC.
+          {collectorConnected
+            ? getDesktopBridge()
+              ? "Token analytics is off. Turn it on from the QuotaOps tray menu (Turn on token analytics...)."
+              : "Token analytics is off. Turn it on with: npm run collector:setup -- tokens-auto enable claude-code"
+            : "Start the local collector to read numeric token usage from Claude Code and Codex session logs on this PC."}
         </div>
       )}
     </section>
@@ -1610,6 +1625,7 @@ export function QuotaDashboard() {
             range={tokenRange}
             nowMs={nowMs}
             onRangeChange={setTokenRange}
+            collectorConnected={collectorState === "connected"}
           />
 
           {collectorIssues.length > 0 ? (

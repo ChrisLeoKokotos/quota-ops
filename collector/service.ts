@@ -15,7 +15,7 @@ import { getCollectorRunDir, getCollectorStatePath } from "./paths.ts";
 import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
 import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
-import { loadCollectorConfig } from "./config.ts";
+import { loadCollectorConfig, saveCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
   getOrCreateCollectorToken,
@@ -244,6 +244,50 @@ async function main(): Promise<void> {
     }
   };
 
+  /**
+   * POST /token-analytics/consent?claude-code=0|1&codex=0|1: the person's
+   * choice from the desktop app (after a dialog that says what is read).
+   * Antigravity numeric counters keep their own, separate opt-in. The new
+   * totals are computed at once instead of waiting for the next check.
+   */
+  const setTokenConsent = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    let claudeCode: boolean | null = null;
+    let codex: boolean | null = null;
+    try {
+      const url = new URL(request.url ?? "", `http://${HOST}`);
+      const keys = [...url.searchParams.keys()].sort().join(",");
+      const flag = (value: string | null) => (value === "1" ? true : value === "0" ? false : null);
+      if (url.pathname === "/token-analytics/consent" && keys === "claude-code,codex") {
+        claudeCode = flag(url.searchParams.get("claude-code"));
+        codex = flag(url.searchParams.get("codex"));
+      }
+    } catch {
+      claudeCode = null;
+    }
+    if (claudeCode === null || codex === null) {
+      sendJson(request, response, 400, { error: "invalid_consent" });
+      return;
+    }
+    try {
+      const current = await loadCollectorConfig();
+      const sources = { ...current.tokenAnalyticsSources, claudeCode, codex };
+      await saveCollectorConfig({
+        ...current,
+        tokenAnalyticsSources: sources,
+        tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
+      });
+      tokenAnalytics = claudeCode || codex || sources.googleAntigravity === true
+        ? await mergeGoogleAnalytics(
+            await collectLocalTokenAnalytics(sources),
+            current.accounts, sources.googleAntigravity === true,
+          )
+        : null;
+      sendJson(request, response, 200, { status: "ok", claudeCode, codex });
+    } catch {
+      sendJson(request, response, 500, { error: "consent_not_saved" });
+    }
+  };
+
   let rateWindowStartedAt = Date.now();
   let requestCount = 0;
 
@@ -295,6 +339,10 @@ async function main(): Promise<void> {
         sendJson(request, response, queued ? 202 : 409, {
           status: queued ? "accepted" : "paused", ...monitoring.status(),
         });
+        return;
+      }
+      if (request.url?.startsWith("/token-analytics/consent?")) {
+        void setTokenConsent(request, response);
         return;
       }
       if (request.url === "/monitoring/refresh-visible") {

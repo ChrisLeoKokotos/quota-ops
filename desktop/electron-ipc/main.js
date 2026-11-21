@@ -496,7 +496,11 @@ function accountsNeedingPerson() {
 
 // What the tray needs from collector.json: the background mode and how many
 // accounts a visible refresh would open. Read-only, bounded; nothing else.
-let collectorSettings = { background: process.platform === "win32" ? "hidden" : "headless", enabledAccounts: 0 };
+let collectorSettings = {
+  background: process.platform === "win32" ? "hidden" : "headless",
+  enabledAccounts: 0,
+  tokenAnalyticsOn: false,
+};
 async function refreshCollectorSettings() {
   try {
     const file = path.join(homedir(), ".quotaops", "collector.json");
@@ -510,6 +514,8 @@ async function refreshCollectorSettings() {
       enabledAccounts: Array.isArray(parsed?.accounts)
         ? parsed.accounts.filter((account) => account && account.enabled === true).length
         : 0,
+      tokenAnalyticsOn: parsed?.tokenAnalyticsSources?.claudeCode === true ||
+        parsed?.tokenAnalyticsSources?.codex === true,
     };
   } catch {
     // Keep the last known settings.
@@ -635,6 +641,48 @@ async function followVisibleRefresh(requestedAt) {
             (other ? `, ${other} could not be read` : "") + ".",
         }).show();
   } catch { /* optional */ }
+}
+
+/**
+ * Token analytics is off until the person turns it on here. The dialog says
+ * exactly what is read; turning it off needs no dialog.
+ */
+async function runTokenAnalyticsToggle() {
+  if (trayCommandPending) return;
+  await refreshCollectorSettings();
+  const turnOn = !collectorSettings.tokenAnalyticsOn;
+  if (turnOn) {
+    const choice = await dialog.showMessageBox({
+      type: "question",
+      buttons: ["Cancel", "Turn on"],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      title: "QuotaOps token analytics",
+      message: "Count tokens from Claude Code and Codex session logs on this PC?",
+      detail:
+        "QuotaOps reads only numeric token counts (input, output, cache) and dates " +
+        "from the local session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
+        "(%USERPROFILE%\\.codex). Prompts, responses and file contents are not read into " +
+        "QuotaOps and nothing leaves this PC. Totals cover only sessions on this PC. " +
+        "You can turn this off at any time from this menu.",
+    });
+    if (choice.response !== 1) return;
+  }
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const flag = turnOn ? "1" : "0";
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/token-analytics/consent?claude-code=${flag}&codex=${flag}`,
+    );
+    if (status !== 200) trayCommandError = "Could not change token analytics";
+    await refreshCollectorSettings();
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
 }
 
 /** Open one isolated profile in the normal browser for manual verification. */
@@ -836,6 +884,11 @@ function trayMenuTemplate() {
     },
     ...attentionRows,
     { type: "separator" },
+    {
+      label: collectorSettings.tokenAnalyticsOn ? "Token analytics: on (turn off)" : "Turn on token analytics...",
+      enabled: !trayCommandPending,
+      click: () => { void runTokenAnalyticsToggle(); },
+    },
     { label: "Settings", click: () => showWindow() },
     { type: "separator" },
     ...updateRows,
