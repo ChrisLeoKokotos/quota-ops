@@ -34,6 +34,11 @@
 //                explains it, stays usable and still quits cleanly.
 //   main-killed  the main process is killed (Task Manager style); no
 //                collector, browser or listener may survive it.
+//   token-consent  synthetic Claude Code history with a known total in the
+//                test home: tray "Turn on token analytics..." -> Cancel keeps
+//                it off; -> "Turn on" saves consent and the snapshot carries
+//                exactly that total (no prompt text); the dashboard shows the
+//                token panel; tray "Token analytics: on (turn off)" -> off.
 //   inflight, after-error, verify-path, background-focus and visible-consent
 //   make an unauthenticated request to claude.ai (opt-in).
 //
@@ -43,7 +48,7 @@
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -58,9 +63,9 @@ const scenario = option("--scenario") ?? "idle";
 const cycles = Number(option("--cycles") ?? "1");
 const allowNetwork = args.includes("--allow-provider-network");
 const SCENARIOS = ["idle", "inflight", "after-error", "verify-path", "background-focus", "visible-consent",
-  "lifecycle", "crash-recovery", "port-foreign", "main-killed"];
+  "lifecycle", "crash-recovery", "port-foreign", "main-killed", "token-consent"];
 // Scenarios that need no provider account and no network.
-const OFFLINE_SCENARIOS = new Set(["idle", "lifecycle", "crash-recovery", "port-foreign", "main-killed"]);
+const OFFLINE_SCENARIOS = new Set(["idle", "lifecycle", "crash-recovery", "port-foreign", "main-killed", "token-consent"]);
 if (!SCENARIOS.includes(scenario) || !Number.isInteger(cycles) || cycles < 1 || cycles > 20) {
   throw new Error(`Usage: --scenario ${SCENARIOS.join("|")} [--allow-provider-network] [--cycles 1..20]`);
 }
@@ -217,6 +222,21 @@ function mainWindowVisible(pid) {
   }
 }
 
+const TOKEN_PROMPT = "PRIVATE E2E PROMPT that must never reach the snapshot";
+
+async function snapshot(token) {
+  try {
+    const response = await fetch(`http://${HOST}:${PORT}/snapshot`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    return response.status === 200 ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function health(token) {
   try {
     const response = await fetch(`http://${HOST}:${PORT}/health`, {
@@ -266,6 +286,19 @@ async function runCycle(cycle) {
     mkdir(join(home, "AppData", "Roaming"), { recursive: true }),
   ]);
   await writeFile(join(home, ".quotaops", "collector.token"), token + "\n", { flag: "wx", mode: 0o600 });
+  if (scenario === "token-consent") {
+    // One assistant message written twice (streaming duplicate): counts once.
+    // 100 input + 50 output + 1000 cache read + 200 cache write = 1350.
+    const project = join(home, ".claude", "projects", "e2e-project");
+    await mkdir(project, { recursive: true });
+    const message = {
+      type: "assistant", uuid: "u-1", sessionId: "s-1", timestamp: new Date().toISOString(),
+      message: { id: "msg_e2e_1", content: [{ type: "text", text: TOKEN_PROMPT }],
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 1000, cache_creation_input_tokens: 200 } },
+    };
+    const user = { type: "user", uuid: "u-0", timestamp: new Date().toISOString(), message: { content: TOKEN_PROMPT } };
+    await writeFile(join(project, "s-1.jsonl"), [user, message, message].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  }
   await writeFile(join(home, ".quotaops", "collector.json"), JSON.stringify({
     version: 1, port: PORT, pollIntervalSeconds: 300, tokenAnalyticsEnabled: false,
     tokenAnalyticsSources: { claudeCode: false, codex: false }, accounts,
@@ -279,6 +312,8 @@ async function runCycle(cycle) {
     QUOTAOPS_SMOKE_USER_DATA: smokeUserData,
     QUOTAOPS_STARTUP_DIAGNOSTICS: "1",
     QUOTAOPS_SMOKE_REQUEST_QUIT: "0",
+    // Shape-only trace of what crosses IPC (counts and presence, no values).
+    ...(scenario === "token-consent" ? { QUOTAOPS_IPC_TRACE: "1" } : {}),
   };
   delete env.ELECTRON_RUN_AS_NODE;
   const probe = spawnSync(process.execPath, ["-p", "require('node:os').homedir()"], { env, encoding: "utf8", windowsHide: true });
@@ -292,10 +327,17 @@ async function runCycle(cycle) {
   const child = spawn(executable, [], { cwd: unpacked, env, stdio: ["ignore", "pipe", "pipe"] });
   child.on("exit", (code) => { exitedAt = Date.now(); exitCode = code; });
   let buffer = "";
+  let partialLine = "";
+  const ipcTrace = [];
   const onData = (chunk) => {
     buffer = (buffer + String(chunk)).slice(-16_384);
     for (const match of buffer.matchAll(/\[quotaops-startup\] ([a-z0-9_]+)/g)) {
       if (!marks.has(match[1])) marks.set(match[1], Date.now());
+    }
+    const lines = (partialLine + String(chunk)).split(/\r?\n/);
+    partialLine = lines.pop().slice(-4_096);
+    for (const line of lines) {
+      if (line.startsWith("[ipc] snapshot -> ")) ipcTrace.push(line);
     }
   };
   child.stdout.on("data", onData);
@@ -305,6 +347,7 @@ async function runCycle(cycle) {
   let quitLatencyMs = null;
   let collectingAtQuit = null;
   let focusSummary = "";
+  let tokenDisplay = "";
   let driverRetries = 0;
   try {
     const readyBy = Date.now() + 30_000;
@@ -340,6 +383,59 @@ async function runCycle(cycle) {
       await sleep(1_500);
       if (!resumed.ok || (await health(token))?.paused !== false) failures.push("tray Resume did not resume the collector");
       if (census(sandboxName).app < 3) failures.push("app processes missing after lifecycle steps");
+    }
+    if (scenario === "token-consent") {
+      const consent = async () => JSON.parse(await readFile(join(home, ".quotaops", "collector.json"), "utf8")).tokenAnalyticsSources;
+      if ((await snapshot(token))?.tokens !== null) failures.push("token analytics ran before consent");
+      let opened = await invokeTrayItem(child.pid, "Turn on token analytics...");
+      if (!opened.ok) throw new Error(`tray token item not available: ${opened.output}`);
+      const cancelled = await invokeButton(child.pid, "Cancel");
+      if (!cancelled.ok) throw new Error(`token dialog Cancel not found: ${cancelled.output}`);
+      await sleep(2_000);
+      if ((await consent()).claudeCode !== false || (await snapshot(token))?.tokens !== null) {
+        failures.push("Cancel turned token analytics on");
+      }
+      opened = await invokeTrayItem(child.pid, "Turn on token analytics...");
+      if (!opened.ok) throw new Error(`tray token item not available again: ${opened.output}`);
+      const agreed = await invokeButton(child.pid, "Turn on");
+      if (!agreed.ok) throw new Error(`token dialog "Turn on" not found: ${agreed.output}`);
+      let body = null;
+      for (let i = 0; i < 30; i++) {
+        await sleep(500);
+        body = await snapshot(token);
+        if (body?.tokens) break;
+      }
+      const sources = await consent();
+      if (sources.claudeCode !== true || sources.codex !== true) failures.push("consent was not saved after Turn on");
+      const claudeSource = body?.tokens?.sources?.find?.((source) => source.source === "claude-code");
+      if (!body?.tokens) failures.push("no token analytics after Turn on");
+      else if (claudeSource?.state !== "ok") failures.push(`claude-code source state ${claudeSource?.state}`);
+      if (body?.tokens && body.tokens.totals?.totalTokens !== 1350) {
+        failures.push(`token total ${body.tokens.totals?.totalTokens} instead of 1350`);
+      }
+      if (JSON.stringify(body ?? {}).includes(TOKEN_PROMPT)) failures.push("prompt text reached the snapshot");
+      // The renderer must RECEIVE the totals through IPC (the projection
+      // once dropped every real token snapshot). Hide and show the window,
+      // as a person would, so the dashboard reads the snapshot again; the
+      // shape-only IPC trace says whether tokens crossed into the renderer.
+      const traceStart = ipcTrace.length;
+      setMainWindowState(child.pid, "close");
+      await sleep(1_200);
+      const shown = await invokeTrayItem(child.pid, "Open QuotaOps");
+      if (!shown.ok) failures.push(`tray "Open QuotaOps" did not run: ${shown.output}`);
+      let received = false;
+      for (let i = 0; i < 40 && !received; i++) {
+        await sleep(500);
+        received = ipcTrace.slice(traceStart).some((line) => line.includes("tokens=present"));
+      }
+      if (!received) failures.push("the dashboard did not receive token analytics through IPC after Turn on");
+      else tokenDisplay = " rendererTokens=present total=1350";
+      const off = await invokeTrayItem(child.pid, "Token analytics: on (turn off)");
+      if (!off.ok) failures.push(`tray "turn off" item not available: ${off.output}`);
+      await sleep(2_000);
+      if ((await consent()).claudeCode !== false || (await snapshot(token))?.tokens !== null) {
+        failures.push("turning token analytics off did not stop it");
+      }
     }
     if (scenario === "crash-recovery") {
       const collectorPid = utilityCollectorPid();
@@ -521,7 +617,7 @@ async function runCycle(cycle) {
     if (!(await portListening())) await rm(sandbox, { recursive: true, force: true }).catch(() => undefined);
   }
   const summary = `cycle ${cycle}/${cycles} scenario=${scenario} collectingAtQuit=${collectingAtQuit} ` +
-    `quitLatencyMs=${quitLatencyMs ?? "n/a"}${focusSummary}${driverRetries ? ` driverRetries=${driverRetries}` : ""} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
+    `quitLatencyMs=${quitLatencyMs ?? "n/a"}${focusSummary}${tokenDisplay}${driverRetries ? ` driverRetries=${driverRetries}` : ""} marks=${[...marks.keys()].filter((m) => /quit|collector_shutdown|collector_exited/.test(m)).join(",")}`;
   return { summary, failures };
 }
 

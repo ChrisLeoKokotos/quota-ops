@@ -1091,7 +1091,8 @@ if (!firstInstance) {
           // Shape only, never contents: a trace must not become a data leak.
           const shape = result && result.error
             ? `error=${result.error}`
-            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}`;
+            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}` +
+              ` tokens=${result.tokens ? "present" : "none"}`;
           process.stdout.write(`[ipc] snapshot -> ${shape}
 `);
         }

@@ -107,7 +107,11 @@ test("token totals from local files match hand-computed values for every range",
     // Numbers only: no prompt text and no local paths in what the UI receives.
     const json = JSON.stringify(snapshot);
     assert.doesNotMatch(json, /PRIVATE PROMPT/);
-    assert.doesNotMatch(json, new RegExp(home.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&").slice(0, 20)));
+    // Plain substring checks: the home path raw and as it would appear
+    // JSON-escaped (doubled backslashes). A regex built from a sliced,
+    // escaped path broke on short paths (CI: C:\Users\RUNNER~1\...).
+    assert.equal(json.includes(home), false);
+    assert.equal(json.includes(JSON.stringify(home).slice(1, -1)), false);
   });
 });
 

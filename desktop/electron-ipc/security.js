@@ -282,8 +282,18 @@ function projectTokenTotals(raw) {
   return result;
 }
 function validProvider(value) {
-  return value === "claude" || value === "openai";
+  return value === "claude" || value === "openai" || value === "google";
 }
+/**
+ * Each token source belongs to exactly one provider. The collector always
+ * reports google-antigravity (state "disabled" without its separate consent);
+ * rejecting it here once dropped every real token snapshot.
+ */
+const TOKEN_SOURCE_PROVIDER = {
+  "claude-code": "claude",
+  codex: "openai",
+  "google-antigravity": "google",
+};
 function projectTokens(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
       raw.scope !== "locally_observed" ||
@@ -313,7 +323,8 @@ function projectTokens(raw) {
   const sources = [];
   for (const item of raw.sources) {
     if (!item || !validProvider(item.provider) ||
-        !["claude-code", "codex"].includes(item.source) ||
+        !Object.hasOwn(TOKEN_SOURCE_PROVIDER, item.source) ||
+        TOKEN_SOURCE_PROVIDER[item.source] !== item.provider ||
         !["ok", "not_found", "partial", "disabled"].includes(item.state) ||
         !Number.isSafeInteger(item.files) || item.files < 0) return null;
     sources.push({

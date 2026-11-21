@@ -632,6 +632,68 @@ test("token analytics cannot smuggle private history or extra keys through IPC",
   }
 });
 
+test("the Google source the collector always reports does not drop token analytics over IPC", () => {
+  // Regression (21 Nov 2026): the collector appends a google-antigravity
+  // source (state "disabled" without Google consent) to every token
+  // snapshot. The IPC projection accepted only claude-code/codex and
+  // claude/openai, so it returned null for every real snapshot and the
+  // desktop app said "Token analytics is off" even after consent.
+  const totals = {
+    inputTokens: 100, outputTokens: 50, cacheReadTokens: 1000,
+    cacheWriteTokens: 200, totalTokens: 1350,
+  };
+  const google = {
+    inputTokens: 120, outputTokens: 30, cacheReadTokens: 20,
+    cacheWriteTokens: 0, totalTokens: 150,
+  };
+  const base = {
+    scope: "locally_observed",
+    generatedAt: "2026-11-21T00:00:00Z",
+    totals,
+    providers: [{ provider: "claude", totals }],
+    daily: [{ provider: "claude", date: "2026-11-21", ...totals }],
+  };
+  const disabled = security.projectSnapshot({
+    version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [],
+    tokens: {
+      ...base,
+      sources: [
+        { source: "claude-code", provider: "claude", state: "ok", files: 1, message: null },
+        { source: "codex", provider: "openai", state: "not_found", files: 0, message: null },
+        { source: "google-antigravity", provider: "google", state: "disabled", files: 0,
+          message: "Google CLI token observations are not enabled." },
+      ],
+    },
+  });
+  assert.ok(disabled.tokens, "token analytics must reach the renderer");
+  assert.equal((disabled.tokens as { totals: { totalTokens: number } }).totals.totalTokens, 1350);
+
+  const withGoogle = security.projectSnapshot({
+    version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [],
+    tokens: {
+      ...base,
+      totals: { ...totals, totalTokens: 1500, inputTokens: 220, outputTokens: 80, cacheReadTokens: 1020 },
+      providers: [{ provider: "claude", totals }, { provider: "google", totals: google }],
+      daily: [...base.daily, { provider: "google", date: "2026-11-21", ...google }],
+      sources: [
+        { source: "claude-code", provider: "claude", state: "ok", files: 1, message: null },
+        { source: "google-antigravity", provider: "google", state: "ok", files: 1, message: null },
+      ],
+    },
+  });
+  const projected = withGoogle.tokens as { providers: { provider: string }[]; daily: unknown[]; sources: { source: string }[] };
+  assert.deepEqual(projected.providers.map((item) => item.provider), ["claude", "google"]);
+  assert.equal(projected.daily.length, 2);
+  assert.deepEqual(projected.sources.map((item) => item.source), ["claude-code", "google-antigravity"]);
+
+  // A source must still match its own provider.
+  const mismatched = security.projectSnapshot({
+    version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [],
+    tokens: { ...base, sources: [{ source: "google-antigravity", provider: "claude", state: "ok", files: 1, message: null }] },
+  });
+  assert.equal(mismatched.tokens, null);
+});
+
 test("malformed token analytics fail closed instead of fabricating totals", () => {
   const valid = {
     scope: "locally_observed", generatedAt: "2026-10-20T00:00:00Z",
