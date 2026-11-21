@@ -22,7 +22,9 @@ export function createDefaultCollectorConfig(): CollectorConfig {
   return {
     version: 1,
     port: 4317,
-    pollIntervalSeconds: 300,
+    // 15 minutes: each check runs a full browser per account; usage windows
+    // are hours long, so fresher reads cost resources without adding value.
+    pollIntervalSeconds: 900,
     tokenAnalyticsEnabled: false,
     tokenAnalyticsSources: { claudeCode: false, codex: false },
     accounts: [],
@@ -76,6 +78,7 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
     Array.isArray(candidate.accounts) &&
     candidate.accounts.every(isAccountConfig) &&
     (candidate.backgroundCollection === undefined ||
+      candidate.backgroundCollection === "hidden" ||
       candidate.backgroundCollection === "headless" ||
       candidate.backgroundCollection === "off")
   );

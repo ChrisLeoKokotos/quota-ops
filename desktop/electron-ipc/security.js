@@ -282,8 +282,18 @@ function projectTokenTotals(raw) {
   return result;
 }
 function validProvider(value) {
-  return value === "claude" || value === "openai";
+  return value === "claude" || value === "openai" || value === "google";
 }
+/**
+ * Each token source belongs to exactly one provider. The collector always
+ * reports google-antigravity (state "disabled" without its separate consent);
+ * rejecting it here once dropped every real token snapshot.
+ */
+const TOKEN_SOURCE_PROVIDER = {
+  "claude-code": "claude",
+  codex: "openai",
+  "google-antigravity": "google",
+};
 function projectTokens(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
       raw.scope !== "locally_observed" ||
@@ -313,7 +323,8 @@ function projectTokens(raw) {
   const sources = [];
   for (const item of raw.sources) {
     if (!item || !validProvider(item.provider) ||
-        !["claude-code", "codex"].includes(item.source) ||
+        !Object.hasOwn(TOKEN_SOURCE_PROVIDER, item.source) ||
+        TOKEN_SOURCE_PROVIDER[item.source] !== item.provider ||
         !["ok", "not_found", "partial", "disabled"].includes(item.state) ||
         !Number.isSafeInteger(item.files) || item.files < 0) return null;
     sources.push({
@@ -324,10 +335,49 @@ function projectTokens(raw) {
       message: boundedText(item.message, 256),
     });
   }
+  // Per-account split: salted short hashes only, never an account id.
+  const accounts = [];
+  if (raw.accounts !== undefined) {
+    if (!Array.isArray(raw.accounts) || raw.accounts.length > 16) return null;
+    for (const item of raw.accounts) {
+      if (!item || !Object.hasOwn(TOKEN_SOURCE_PROVIDER, item.source) ||
+          !TOKEN_ATTRIBUTIONS.includes(item.attribution) ||
+          !(item.account === null || (typeof item.account === "string" && /^[0-9a-f]{12}$/.test(item.account))) ||
+          (item.attribution === "attributed") !== (item.account !== null) ||
+          typeof item.current !== "boolean" ||
+          !Number.isSafeInteger(item.sessions) || item.sessions < 0) return null;
+      const itemTotals = projectTokenTotals(item.totals);
+      if (!itemTotals) return null;
+      accounts.push({
+        source: item.source,
+        account: item.account,
+        attribution: item.attribution,
+        current: item.current,
+        sessions: item.sessions,
+        totals: itemTotals,
+      });
+    }
+  }
   return {
     generatedAt: raw.generatedAt.slice(0, 64),
     scope: "locally_observed",
-    totals, providers, daily, sources,
+    totals, providers, daily, sources, accounts,
+  };
+}
+
+const TOKEN_ATTRIBUTIONS = ["attributed", "no_account_record", "several_accounts"];
+const TOKEN_SCAN_STATES = ["disabled", "scanning", "ready", "unavailable"];
+
+/** Token analytics progress; an unknown or malformed value becomes null. */
+function projectTokenStatus(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+      !TOKEN_SCAN_STATES.includes(raw.state) ||
+      typeof raw.pending !== "boolean" ||
+      !(raw.scannedAt === null || typeof raw.scannedAt === "string")) return null;
+  return {
+    state: raw.state,
+    scannedAt: raw.scannedAt === null ? null : raw.scannedAt.slice(0, 64),
+    pending: raw.pending,
   };
 }
 
@@ -359,6 +409,7 @@ function projectSnapshot(parsed) {
         status: boundedText(source.status, 32),
         checkedAt: boundedText(source.checkedAt, 64),
         message: boundedText(source.message, 512),
+        lastSuccessAt: boundedText(source.lastSuccessAt, 64),
         account: account
           ? {
               id: boundedText(account.id, 64),
@@ -390,6 +441,7 @@ function projectSnapshot(parsed) {
     // Reconstruct token analytics as well: passing the original object across
     // the IPC boundary would leak unknown collector-supplied keys.
     tokens: projectTokens(parsed.tokens),
+    tokenStatus: projectTokenStatus(parsed.tokenStatus),
   };
 }
 

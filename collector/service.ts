@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { collectProviderUsage } from "./provider.ts";
-import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { collectLocalTokenAnalytics, tokenScanPending } from "./token-analytics.ts";
+import { TokenRunner } from "./token-runner.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
@@ -11,9 +12,11 @@ import {
   persistHolds,
   type RefreshTrigger,
 } from "./attention-hold.ts";
-import { getCollectorStatePath } from "./paths.ts";
+import { getCollectorRunDir, getCollectorStatePath } from "./paths.ts";
+import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
+import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
-import { loadCollectorConfig } from "./config.ts";
+import { loadCollectorConfig, saveCollectorConfig } from "./config.ts";
 import {
   collectorTokenMatches,
   getOrCreateCollectorToken,
@@ -22,7 +25,6 @@ import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
 } from "./types.ts";
-import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 
 const HOST = "127.0.0.1";
 const MAX_REQUESTS_PER_MINUTE = 120;
@@ -52,7 +54,22 @@ async function main(): Promise<void> {
   const config = await loadCollectorConfig();
   const collectorToken = await getOrCreateCollectorToken();
   let results: CollectorAccountResult[] = [];
-  let tokenAnalytics: TokenAnalyticsSnapshot | null = null;
+  // Token analytics has its own clock (token-runner.ts): provider checks that
+  // fail, wait for a person, are paused or switched off never hold it back.
+  // Local private histories are read only with the stored consent.
+  const tokens = new TokenRunner({
+    scan: async () => {
+      const current = await loadCollectorConfig();
+      if (!current.tokenAnalyticsEnabled) return null;
+      const sources = current.tokenAnalyticsSources;
+      if (!sources.claudeCode && !sources.codex && sources.googleAntigravity !== true) return null;
+      const snapshot = await mergeGoogleAnalytics(
+        await collectLocalTokenAnalytics(sources),
+        current.accounts, sources.googleAntigravity === true,
+      );
+      return { snapshot, pending: tokenScanPending() };
+    },
+  });
   // generatedAt is a provider collection timestamp, not the time a client
   // retrieved a cached /snapshot (which can be many minutes old).
   let generatedAt = new Date(0).toISOString();
@@ -65,7 +82,26 @@ async function main(): Promise<void> {
   // Show restored holds at once (tray "Needs your attention", dashboard
   // state) instead of waiting for a batch, which may never run when
   // background collection is off.
-  results = holds.heldResults(config.accounts.filter((account) => account.enabled));
+  // Every enabled account is visible from the first snapshot: restored
+  // holds as they were, everything else as "configured" (not checked yet).
+  // A failed or pending check never turns into a usage value.
+  const configuredResult = (account: { id: string; label: string }): CollectorAccountResult => ({
+    id: account.id,
+    label: account.label,
+    status: "configured",
+    account: null,
+    checkedAt: new Date(0).toISOString(),
+    message: "Not checked yet in this session.",
+  });
+  const withLastSuccess = (result: CollectorAccountResult): CollectorAccountResult => ({
+    ...result,
+    lastSuccessAt: holds.lastSuccessAt(result.id),
+  });
+  {
+    const enabledAtStart = config.accounts.filter((account) => account.enabled);
+    const held = new Map(holds.heldResults(enabledAtStart).map((result) => [result.id, result]));
+    results = enabledAtStart.map((account) => withLastSuccess(held.get(account.id) ?? configuredResult(account)));
+  }
   const interactiveProfiles = new Map<string, InteractiveProfile>();
 
   const monitoring = new MonitoringController(
@@ -75,43 +111,69 @@ async function main(): Promise<void> {
       if (trigger === "scheduled" && current.backgroundCollection === "off") return null;
       const enabled = current.accounts.filter((account) => account.enabled);
       const nextResults: CollectorAccountResult[] = [];
-      // Only a consented, person-initiated refresh may show a browser window;
-      // everything else is headless and cannot take the foreground.
+      // Only a consented, person-initiated refresh may show a browser window
+      // on the person's screen. Everything else is "hidden" (Windows: an
+      // ordinary browser on a never-shown desktop) or headless.
       const visible = trigger === "visible";
+      const hidden = !visible && current.backgroundCollection !== "headless" && hiddenDesktopSupported();
+      if (hidden) {
+        try {
+          const slots: Array<{ result: CollectorAccountResult | null; account: (typeof enabled)[number] }> = [];
+          const browserAccounts: typeof enabled = [];
+          for (const account of enabled) {
+            if (invalidated()) return null;
+            const held = holds.skip(account, trigger, "hidden");
+            if (held) { slots.push({ account, result: held }); continue; }
+            if (account.provider === "google") {
+              const result = await collectProviderUsage(account, { signal });
+              if (!invalidated()) holds.record(result, "hidden");
+              slots.push({ account, result });
+              continue;
+            }
+            slots.push({ account, result: null });
+            browserAccounts.push(account);
+          }
+          const collected = await collectInHiddenDesktop(browserAccounts, { signal, runDir: getCollectorRunDir() });
+          if (invalidated()) return null;
+          const byId = new Map(collected.map((result) => [result.id, result]));
+          for (const slot of slots) {
+            const result = slot.result ?? byId.get(slot.account.id);
+            if (!result) continue;
+            if (!slot.result) holds.record(result, "hidden");
+            nextResults.push(result);
+          }
+        } catch (error) {
+          if (error instanceof CollectionCancelledError) return null;
+          throw error;
+        } finally {
+          await persistHolds(holds, statePath);
+        }
+      }
 
       // Holds changed earlier in this batch are saved even when Quit or
       // Pause stops it part-way.
-      try {
+      if (!hidden) try {
         for (const account of enabled) {
           if (invalidated()) return null;
-          const held = holds.skip(account, trigger);
+          const held = holds.skip(account, trigger, "headless");
           if (held) {
             nextResults.push(held);
             continue;
           }
           // The signal aborts on shutdown and closes this account's profile.
           const result = await collectProviderUsage(account, { signal, visible });
-          if (!invalidated()) holds.record(result);
+          if (!invalidated()) holds.record(result, visible ? "visible" : "headless");
           nextResults.push(result);
         }
       } finally {
         await persistHolds(holds, statePath);
       }
       if (invalidated()) return null;
-      // Local private histories are read only with the stored consent.
-      const nextTokens = current.tokenAnalyticsEnabled
-        ? await mergeGoogleAnalytics(
-            await collectLocalTokenAnalytics(current.tokenAnalyticsSources),
-            current.accounts, current.tokenAnalyticsSources.googleAntigravity === true,
-          )
-        : null;
-      if (invalidated()) return null;
-      return { nextResults, nextTokens };
+      return { nextResults };
     },
     (value, at) => {
       if (value === null) return;
-      results = value.nextResults;
-      tokenAnalytics = value.nextTokens;
+      results = value.nextResults.map(withLastSuccess);
       // Do not report a fresh collection when no account produced usage:
       // a batch in which every account failed refreshed nothing (issue #49).
       if (value.nextResults.length === 0 ||
@@ -125,7 +187,8 @@ async function main(): Promise<void> {
     version: 1,
     generatedAt,
     accounts: results,
-    tokens: tokenAnalytics,
+    tokens: tokens.snapshot,
+    tokenStatus: tokens.status,
   });
 
   /**
@@ -188,6 +251,48 @@ async function main(): Promise<void> {
     }
   };
 
+  /**
+   * POST /token-analytics/consent?claude-code=0|1&codex=0|1: the person's
+   * choice from the desktop app (after a dialog that says what is read).
+   * Antigravity numeric counters keep their own, separate opt-in. The new
+   * totals are computed at once instead of waiting for the next check.
+   */
+  const setTokenConsent = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    let claudeCode: boolean | null = null;
+    let codex: boolean | null = null;
+    try {
+      const url = new URL(request.url ?? "", `http://${HOST}`);
+      const keys = [...url.searchParams.keys()].sort().join(",");
+      const flag = (value: string | null) => (value === "1" ? true : value === "0" ? false : null);
+      if (url.pathname === "/token-analytics/consent" && keys === "claude-code,codex") {
+        claudeCode = flag(url.searchParams.get("claude-code"));
+        codex = flag(url.searchParams.get("codex"));
+      }
+    } catch {
+      claudeCode = null;
+    }
+    if (claudeCode === null || codex === null) {
+      sendJson(request, response, 400, { error: "invalid_consent" });
+      return;
+    }
+    try {
+      const current = await loadCollectorConfig();
+      const sources = { ...current.tokenAnalyticsSources, claudeCode, codex };
+      await saveCollectorConfig({
+        ...current,
+        tokenAnalyticsSources: sources,
+        tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
+      });
+      // Start (or stop) at once; the first pass of a large history can take
+      // several seconds, so the reply does not wait for it. The snapshot says
+      // "scanning" until the pass returns.
+      void tokens.trigger();
+      sendJson(request, response, 200, { status: "ok", claudeCode, codex });
+    } catch {
+      sendJson(request, response, 500, { error: "consent_not_saved" });
+    }
+  };
+
   let rateWindowStartedAt = Date.now();
   let requestCount = 0;
 
@@ -241,6 +346,10 @@ async function main(): Promise<void> {
         });
         return;
       }
+      if (request.url?.startsWith("/token-analytics/consent?")) {
+        void setTokenConsent(request, response);
+        return;
+      }
       if (request.url === "/monitoring/refresh-visible") {
         // Main process asks only after the person confirmed a dialog that
         // says browser windows will open and may take focus.
@@ -286,6 +395,12 @@ async function main(): Promise<void> {
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 32;
 
+  // Port 4317 already taken (another QuotaOps collector, or something else):
+  // exit with a code the desktop app understands instead of crashing.
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    process.stderr.write(`QuotaOps collector could not listen: ${error.code ?? "error"}\n`);
+    process.exit(error.code === "EADDRINUSE" ? 5 : 6);
+  });
   server.listen(config.port, HOST, () => {
     process.stdout.write(
       `QuotaOps collector listening on http://${HOST}:${config.port}\n`,
@@ -302,6 +417,7 @@ async function main(): Promise<void> {
   };
   scheduledTick();
   const timer = setInterval(scheduledTick, config.pollIntervalSeconds * 1000);
+  void tokens.trigger();
 
   // Bounded: cancels the in-flight provider browser, drains for a few
   // seconds, closes the listener and its keep-alive sockets, then exits.
@@ -309,7 +425,10 @@ async function main(): Promise<void> {
   const shutdown = createCollectorShutdown({
     monitoring,
     server,
-    stopScheduling: () => clearInterval(timer),
+    stopScheduling: () => {
+      clearInterval(timer);
+      tokens.stop();
+    },
     closeInteractive: () => {
       for (const profile of interactiveProfiles.values()) profile.close();
     },

@@ -11,6 +11,7 @@
     ".next",
     ".next/dev",
     ".next-static/dev",
-    "desktop/static-dist"
+    "desktop/static-dist",
+    "release"
   ]
 }

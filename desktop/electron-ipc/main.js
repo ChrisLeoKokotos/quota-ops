@@ -496,7 +496,11 @@ function accountsNeedingPerson() {
 
 // What the tray needs from collector.json: the background mode and how many
 // accounts a visible refresh would open. Read-only, bounded; nothing else.
-let collectorSettings = { background: "headless", enabledAccounts: 0 };
+let collectorSettings = {
+  background: process.platform === "win32" ? "hidden" : "headless",
+  enabledAccounts: 0,
+  tokenAnalyticsOn: false,
+};
 async function refreshCollectorSettings() {
   try {
     const file = path.join(homedir(), ".quotaops", "collector.json");
@@ -504,10 +508,14 @@ async function refreshCollectorSettings() {
     if (raw.length > 1_048_576) return;
     const parsed = JSON.parse(raw);
     collectorSettings = {
-      background: parsed?.backgroundCollection === "off" ? "off" : "headless",
+      background: parsed?.backgroundCollection === "off" ? "off"
+        : parsed?.backgroundCollection === "headless" || process.platform !== "win32" ? "headless"
+          : "hidden",
       enabledAccounts: Array.isArray(parsed?.accounts)
         ? parsed.accounts.filter((account) => account && account.enabled === true).length
         : 0,
+      tokenAnalyticsOn: parsed?.tokenAnalyticsSources?.claudeCode === true ||
+        parsed?.tokenAnalyticsSources?.codex === true,
     };
   } catch {
     // Keep the last known settings.
@@ -635,6 +643,71 @@ async function followVisibleRefresh(requestedAt) {
   } catch { /* optional */ }
 }
 
+/**
+ * Token analytics is off until the person turns it on here. The dialog says
+ * exactly what is read; turning it off needs no dialog.
+ */
+async function runTokenAnalyticsToggle() {
+  if (trayCommandPending) return;
+  await refreshCollectorSettings();
+  await setTokenAnalytics(!collectorSettings.tokenAnalyticsOn, null);
+}
+
+/**
+ * The one place token analytics is switched, from the tray or from the
+ * dashboard button. Turning it on always shows this native dialog first:
+ * the renderer can ask, but only the person's click here gives consent.
+ * Returns "on" | "off" | "cancelled" | "busy" | "error".
+ */
+async function setTokenAnalytics(turnOn, parentWindow) {
+  if (trayCommandPending) return "busy";
+  if (turnOn) {
+    trayCommandPending = true;
+    let choice;
+    try {
+      const options = {
+        type: "question",
+        buttons: ["Cancel", "Turn on"],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true,
+        title: "QuotaOps token analytics",
+        message: "Count tokens from Claude Code and Codex session logs on this PC?",
+        detail:
+          "QuotaOps reads only numeric token counts (input, output, cache), their dates, " +
+          "and the Claude account each Claude Code session ran under, from the local " +
+          "session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
+          "(%USERPROFILE%\\.codex). Account ids are kept only as a one-way hash. " +
+          "Prompts, responses and file contents are not read into QuotaOps and nothing " +
+          "leaves this PC. Totals cover only sessions on this PC. You can turn this off " +
+          "at any time in the dashboard or the tray menu.",
+      };
+      choice = parentWindow && !parentWindow.isDestroyed()
+        ? await dialog.showMessageBox(parentWindow, options)
+        : await dialog.showMessageBox(options);
+    } finally {
+      trayCommandPending = false;
+    }
+    if (choice.response !== 1) return "cancelled";
+  }
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const flag = turnOn ? "1" : "0";
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/token-analytics/consent?claude-code=${flag}&codex=${flag}`,
+    );
+    if (status !== 200) trayCommandError = "Could not change token analytics";
+    await refreshCollectorSettings();
+    if (status !== 200) return "error";
+    return turnOn ? "on" : "off";
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
 /** Open one isolated profile in the normal browser for manual verification. */
 async function runVerifyCommand(accountId) {
   if (trayCommandPending || !ACCOUNT_ID_PATTERN.test(accountId)) return;
@@ -723,16 +796,61 @@ function startBundledCollector() {
     ownedCollector.once("exit", (code) => {
       startupMark(`collector_exited_${Number.isInteger(code) ? code : "unknown"}`);
       ownedCollector = null;
-      if (!quitting) {
-        trayCommandError = "Collector stopped; data may be stale";
-        refreshTray();
-      }
+      if (!quitting) onCollectorStoppedUnexpectedly(code);
     });
   } catch {
     startupMark("collector_fork_threw");
     ownedCollector = null;
     trayCommandError = "Bundled collector could not start";
   }
+}
+
+// Collector supervision. Exit code 5: port 4317 already in use. Anything
+// else while not quitting is unexpected: restart with backoff, but stop
+// after 3 restarts in 10 minutes instead of looping.
+const COLLECTOR_EXIT_PORT_IN_USE = 5;
+const COLLECTOR_RESTART_DELAYS_MS = [2_000, 10_000, 30_000];
+const COLLECTOR_RESTART_WINDOW_MS = 10 * 60_000;
+const collectorRestartTimes = [];
+
+function onCollectorStoppedUnexpectedly(code) {
+  if (code === COLLECTOR_EXIT_PORT_IN_USE) {
+    void explainCollectorPortInUse();
+    return;
+  }
+  const now = Date.now();
+  while (collectorRestartTimes.length > 0 && now - collectorRestartTimes[0] > COLLECTOR_RESTART_WINDOW_MS) {
+    collectorRestartTimes.shift();
+  }
+  if (collectorRestartTimes.length >= COLLECTOR_RESTART_DELAYS_MS.length) {
+    startupMark("collector_restart_gave_up");
+    trayCommandError = "Collector stopped repeatedly; quit and reopen QuotaOps";
+    refreshTray();
+    return;
+  }
+  const delay = COLLECTOR_RESTART_DELAYS_MS[collectorRestartTimes.length];
+  collectorRestartTimes.push(now);
+  startupMark("collector_restart_scheduled");
+  trayCommandError = "Collector stopped; restarting...";
+  refreshTray();
+  setTimeout(() => {
+    if (quitting) return;
+    collectorStarted = false;
+    trayCommandError = null;
+    startBundledCollector();
+    refreshTray();
+  }, delay);
+}
+
+/** Port 4317 taken: tell "another QuotaOps collector" from "some other program". */
+async function explainCollectorPortInUse() {
+  // /health answers only with this PC's QuotaOps token.
+  const otherQuotaOpsCollector = (await collectorIsCollecting()) !== null;
+  startupMark(otherQuotaOpsCollector ? "collector_external_in_use" : "collector_port_blocked");
+  trayCommandError = otherQuotaOpsCollector
+    ? "Using the QuotaOps collector already running on this PC"
+    : "Port 4317 is used by another program; QuotaOps cannot collect usage";
+  refreshTray();
 }
 
 function formatLastUpdate(status) {
@@ -827,11 +945,18 @@ function trayMenuTemplate() {
     {
       label: collectorSettings.background === "off"
         ? "Background checks: off (refresh manually)"
-        : "Background checks: hidden, no windows",
+        : collectorSettings.background === "hidden"
+          ? "Background checks: on, nothing shown on screen"
+          : "Background checks: headless (Claude may require verification)",
       enabled: false,
     },
     ...attentionRows,
     { type: "separator" },
+    {
+      label: collectorSettings.tokenAnalyticsOn ? "Token analytics: on (turn off)" : "Turn on token analytics...",
+      enabled: !trayCommandPending,
+      click: () => { void runTokenAnalyticsToggle(); },
+    },
     { label: "Settings", click: () => showWindow() },
     { type: "separator" },
     ...updateRows,
@@ -965,6 +1090,17 @@ if (!firstInstance) {
   startupMark("electron_ready");
   registerStaticProtocol();
   hardenSession();
+  // The dashboard's "Turn on token analytics" / "Turn off" button. Same
+  // sender check as the snapshot; exactly one boolean argument; turning on
+  // still needs the person's click in the native consent dialog.
+  ipcMain.handle("quotaops:token-analytics", async (event, enabled) => {
+    if (!isTrustedIpcSender(event, trustedSender)) return { error: "forbidden" };
+    if (typeof enabled !== "boolean") return { error: "invalid" };
+    const result = await setTokenAnalytics(enabled, mainWindow);
+    startupMark(`token_analytics_${result}`);
+    return { status: result };
+  });
+
   ipcMain.handle("quotaops:snapshot", async (event) => {
     // Identity comes from Electron, never from a value the renderer sends.
     // Without this, any frame the renderer can create could reach the
@@ -989,7 +1125,8 @@ if (!firstInstance) {
           // Shape only, never contents: a trace must not become a data leak.
           const shape = result && result.error
             ? `error=${result.error}`
-            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}`;
+            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}` +
+              ` tokens=${result.tokens ? "present" : "none"}`;
           process.stdout.write(`[ipc] snapshot -> ${shape}
 `);
         }

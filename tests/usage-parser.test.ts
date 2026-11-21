@@ -60,16 +60,31 @@ test("accepts only the exact Claude organization usage endpoint", () => {
     looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage"),
     true,
   );
+  // Regression (20 Nov 2026): Claude's page now requests this endpoint with
+  // query parameters. Rejecting them made every real response invisible and
+  // left only the page-text fallback, which has no reset times.
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage?include=limits&v=2"),
+    true,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai.evil.example/api/organizations/org_123/usage?x=1"),
+    false,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage#frag"),
+    false,
+  );
+  assert.equal(
+    looksLikeClaudeUsageUrl("https://user:pw@claude.ai/api/organizations/org_123/usage"),
+    false,
+  );
   assert.equal(
     looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/members"),
     false,
   );
   assert.equal(
     looksLikeClaudeUsageUrl("https://evil.example/api/organizations/org_123/usage"),
-    false,
-  );
-  assert.equal(
-    looksLikeClaudeUsageUrl("https://claude.ai/api/organizations/org_123/usage?redirect=https://evil.example"),
     false,
   );
 });

@@ -69,7 +69,8 @@ test("the verification path uses the normal browser and a config-validated accou
   assert.match(service, /\/\^\[a-z0-9\]\[a-z0-9_-\]\{0,31\}\$\/\.test\(id\)/);
   assert.match(service, /candidate\.id === id && candidate\.enabled/);
   assert.match(service, /collection_in_progress/);
-  assert.match(service, /holds\.skip\(account, trigger\)/);
+  assert.match(service, /holds\.skip\(account, trigger, "hidden"\)/);
+  assert.match(service, /holds\.skip\(account, trigger, "headless"\)/);
   // No fresh-collection claim when every account failed.
   assert.match(service, /some\(\(result\) => result\.status === "ok"\)/);
 
@@ -132,7 +133,7 @@ test("only a consented visible refresh opens browser windows; background is head
   assert.match(service, /request\.url === "\/monitoring\/refresh-visible"/);
   // Restored holds are visible immediately after a restart, also when
   // background collection is off and no batch runs.
-  assert.match(service, /results = holds\.heldResults\(config\.accounts\.filter\(\(account\) => account\.enabled\)\);/);
+  assert.match(service, /const held = new Map\(holds\.heldResults\(enabledAtStart\)/);
 
   const main = await readFile(new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8");
   const start = main.indexOf("async function runVisibleRefresh()");
@@ -185,4 +186,24 @@ test("holds are saved even when a batch stops part-way (Quit or Pause)", async (
   assert.match(service, /\} finally \{\s*await persistHolds\(holds, statePath\);\s*\}/);
   assert.doesNotMatch(service, /nextTrigger/, "no shared mutable trigger that could be replayed later");
   assert.match(service, /monitoring\.queueRefresh\("visible"\)/);
+});
+
+test("a hold recorded headless does not stop a hidden-desktop attempt", () => {
+  const holds = new AttentionHolds();
+  holds.record(resultWith("verification_required"), "headless");
+  assert.ok(holds.skip(account, "scheduled", "headless"), "same presentation: still held");
+  assert.equal(holds.skip(account, "scheduled", "hidden"), null, "different presentation: one new attempt");
+  holds.record(resultWith("verification_required"), "hidden");
+  assert.ok(holds.skip(account, "scheduled", "hidden"));
+});
+
+test("holds saved before presentations existed restore as headless", () => {
+  const now = Date.parse("2026-11-20T13:00:00.000Z");
+  const holds = new AttentionHolds(() => now);
+  holds.restore(JSON.stringify({ version: 1, holds: [
+    { id: account.id, status: "verification_required", checkedAt: "2026-11-20T12:21:01.751Z", heldAt: now - 60_000 },
+  ] }), new Map([[account.id, account.label]]));
+  assert.ok(holds.skip(account, "scheduled", "headless"));
+  assert.equal(holds.skip(account, "scheduled", "hidden"), null);
+  assert.match(holds.serialize(), /"presentation":"headless"/);
 });

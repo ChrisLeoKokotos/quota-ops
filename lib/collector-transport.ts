@@ -26,6 +26,30 @@ export interface SnapshotTransport {
 export interface QuotaOpsBridge {
   readonly version: 1;
   getSnapshot(): Promise<unknown>;
+  /**
+   * Ask to switch token analytics. Turning it on opens the native consent
+   * dialog; resolves to { status: "on" | "off" | "cancelled" | "busy" | "error" }.
+   * Missing on older desktop builds.
+   */
+  setTokenAnalytics?(enabled: boolean): Promise<unknown>;
+}
+
+export type TokenAnalyticsSwitchResult = "on" | "off" | "cancelled" | "busy" | "error";
+
+/** Desktop only: null in the browser dashboard or an older desktop build. */
+export async function requestTokenAnalytics(enabled: boolean): Promise<TokenAnalyticsSwitchResult | null> {
+  const bridge = getDesktopBridge();
+  if (!bridge || typeof bridge.setTokenAnalytics !== "function") return null;
+  const reply = (await bridge.setTokenAnalytics(enabled)) as { status?: unknown } | null;
+  const status = reply && typeof reply === "object" ? reply.status : null;
+  return status === "on" || status === "off" || status === "cancelled" || status === "busy"
+    ? status
+    : "error";
+}
+
+export function canSwitchTokenAnalytics(): boolean {
+  const bridge = getDesktopBridge();
+  return Boolean(bridge && typeof bridge.setTokenAnalytics === "function");
 }
 
 declare global {

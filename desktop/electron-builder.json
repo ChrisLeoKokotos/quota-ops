@@ -27,7 +27,8 @@
       "from": "collector",
       "to": "collector-runtime/collector",
       "filter": [
-        "**/*.ts"
+        "**/*.ts",
+        "hidden-desktop-run.ps1"
       ]
     },
     {

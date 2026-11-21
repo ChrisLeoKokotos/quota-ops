@@ -3,7 +3,9 @@ import type { QuotaAccount } from "./quota";
 import type {
   DailyTokenBucket,
   ProviderTokenTotals,
+  TokenAccountTotals,
   TokenAnalyticsSnapshot,
+  TokenScanStatus,
   TokenSourceStatus,
   TokenTotals,
 } from "./token-analytics";
@@ -15,13 +17,23 @@ export type CollectorConnectionState =
   | "connected"
   | "offline";
 
-interface CollectorAccountResult {
+export type CollectorAccountState =
+  | "ok"
+  | "configured"
+  | "login_required"
+  | "verification_required"
+  | "unavailable"
+  | "unsupported";
+
+export interface CollectorAccountResult {
   id: string;
   label: string;
-  status: "ok" | "login_required" | "verification_required" | "unavailable" | "unsupported";
+  status: CollectorAccountState;
   account: QuotaAccount | null;
   checkedAt: string;
   message: string | null;
+  /** Last time this account returned usage, or null: never on this PC. */
+  lastSuccessAt?: string | null;
 }
 
 interface CollectorSnapshotResponse {
@@ -29,6 +41,7 @@ interface CollectorSnapshotResponse {
   generatedAt: string;
   accounts: CollectorAccountResult[];
   tokens?: unknown;
+  tokenStatus?: unknown;
 }
 
 export interface CollectorSnapshot {
@@ -36,6 +49,8 @@ export interface CollectorSnapshot {
   accounts: QuotaAccount[];
   issues: CollectorAccountResult[];
   tokens: TokenAnalyticsSnapshot | null;
+  /** Null from an older collector that does not report it. */
+  tokenStatus: TokenScanStatus | null;
 }
 
 function isQuotaAccount(value: unknown): value is QuotaAccount {
@@ -120,6 +135,36 @@ function isTokenSourceStatus(value: unknown): value is TokenSourceStatus {
   );
 }
 
+function isTokenAccountTotals(value: unknown): value is TokenAccountTotals {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TokenAccountTotals>;
+  return (
+    (item.source === "claude-code" || item.source === "codex" || item.source === "google-antigravity") &&
+    (item.attribution === "attributed" || item.attribution === "no_account_record" ||
+      item.attribution === "several_accounts") &&
+    (item.attribution === "attributed"
+      ? typeof item.account === "string" && /^[0-9a-f]{12}$/.test(item.account)
+      : item.account === null) &&
+    typeof item.current === "boolean" &&
+    typeof item.sessions === "number" && Number.isSafeInteger(item.sessions) && item.sessions >= 0 &&
+    isTokenTotals(item.totals)
+  );
+}
+
+export function parseTokenScanStatus(value: unknown): TokenScanStatus | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<TokenScanStatus>;
+  if (
+    (item.state !== "disabled" && item.state !== "scanning" && item.state !== "ready" &&
+      item.state !== "unavailable") ||
+    typeof item.pending !== "boolean" ||
+    !(item.scannedAt === null || typeof item.scannedAt === "string")
+  ) {
+    return null;
+  }
+  return { state: item.state, scannedAt: item.scannedAt, pending: item.pending };
+}
+
 function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<TokenAnalyticsSnapshot>;
@@ -138,7 +183,12 @@ function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
     return null;
   }
 
-  return item as TokenAnalyticsSnapshot;
+  // A malformed per-account split is dropped on its own; it never changes
+  // the totals and is never guessed.
+  const accounts = Array.isArray(item.accounts) && item.accounts.every(isTokenAccountTotals)
+    ? item.accounts
+    : [];
+  return { ...(item as TokenAnalyticsSnapshot), accounts };
 }
 
 /**
@@ -230,5 +280,6 @@ export async function fetchCollectorSnapshot(
     accounts,
     issues: payload.accounts.filter((result) => result.status !== "ok"),
     tokens: parseTokenAnalytics(payload.tokens),
+    tokenStatus: parseTokenScanStatus(payload.tokenStatus),
   };
 }
