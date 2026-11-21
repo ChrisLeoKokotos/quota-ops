@@ -390,6 +390,12 @@ async function main(): Promise<void> {
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 32;
 
+  // Port 4317 already taken (another QuotaOps collector, or something else):
+  // exit with a code the desktop app understands instead of crashing.
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    process.stderr.write(`QuotaOps collector could not listen: ${error.code ?? "error"}\n`);
+    process.exit(error.code === "EADDRINUSE" ? 5 : 6);
+  });
   server.listen(config.port, HOST, () => {
     process.stdout.write(
       `QuotaOps collector listening on http://${HOST}:${config.port}\n`,

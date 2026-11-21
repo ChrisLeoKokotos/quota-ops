@@ -773,16 +773,61 @@ function startBundledCollector() {
     ownedCollector.once("exit", (code) => {
       startupMark(`collector_exited_${Number.isInteger(code) ? code : "unknown"}`);
       ownedCollector = null;
-      if (!quitting) {
-        trayCommandError = "Collector stopped; data may be stale";
-        refreshTray();
-      }
+      if (!quitting) onCollectorStoppedUnexpectedly(code);
     });
   } catch {
     startupMark("collector_fork_threw");
     ownedCollector = null;
     trayCommandError = "Bundled collector could not start";
   }
+}
+
+// Collector supervision. Exit code 5: port 4317 already in use. Anything
+// else while not quitting is unexpected: restart with backoff, but stop
+// after 3 restarts in 10 minutes instead of looping.
+const COLLECTOR_EXIT_PORT_IN_USE = 5;
+const COLLECTOR_RESTART_DELAYS_MS = [2_000, 10_000, 30_000];
+const COLLECTOR_RESTART_WINDOW_MS = 10 * 60_000;
+const collectorRestartTimes = [];
+
+function onCollectorStoppedUnexpectedly(code) {
+  if (code === COLLECTOR_EXIT_PORT_IN_USE) {
+    void explainCollectorPortInUse();
+    return;
+  }
+  const now = Date.now();
+  while (collectorRestartTimes.length > 0 && now - collectorRestartTimes[0] > COLLECTOR_RESTART_WINDOW_MS) {
+    collectorRestartTimes.shift();
+  }
+  if (collectorRestartTimes.length >= COLLECTOR_RESTART_DELAYS_MS.length) {
+    startupMark("collector_restart_gave_up");
+    trayCommandError = "Collector stopped repeatedly; quit and reopen QuotaOps";
+    refreshTray();
+    return;
+  }
+  const delay = COLLECTOR_RESTART_DELAYS_MS[collectorRestartTimes.length];
+  collectorRestartTimes.push(now);
+  startupMark("collector_restart_scheduled");
+  trayCommandError = "Collector stopped; restarting...";
+  refreshTray();
+  setTimeout(() => {
+    if (quitting) return;
+    collectorStarted = false;
+    trayCommandError = null;
+    startBundledCollector();
+    refreshTray();
+  }, delay);
+}
+
+/** Port 4317 taken: tell "another QuotaOps collector" from "some other program". */
+async function explainCollectorPortInUse() {
+  // /health answers only with this PC's QuotaOps token.
+  const otherQuotaOpsCollector = (await collectorIsCollecting()) !== null;
+  startupMark(otherQuotaOpsCollector ? "collector_external_in_use" : "collector_port_blocked");
+  trayCommandError = otherQuotaOpsCollector
+    ? "Using the QuotaOps collector already running on this PC"
+    : "Port 4317 is used by another program; QuotaOps cannot collect usage";
+  refreshTray();
 }
 
 function formatLastUpdate(status) {
