@@ -48,8 +48,13 @@ to the newly observed input delta. Raw email, working directories, transcript
 paths, prompts, original session IDs, and credentials are never saved.
 
 The hook requires Node.js 22+ and access to the collector runtime files. Configure one collector account ID for each **known, signed-in CLI context**; the hook does not securely infer or attest the Google identity from an email field.
-The packaged Windows installer does not yet automatically install the hook
-in another program's settings; installed-runtime setup needs owner validation.
+The packaged Windows installer does not install the hook in another
+program's settings. The packaged hook is
+`%LOCALAPPDATA%\Programs\QuotaOps\resources\collector-runtime\collector\google-hook.ts`.
+On 21 Nov 2026 it was checked with synthetic events: it works with system
+Node 22 and with `QuotaOps.exe` in Node mode (`ELECTRON_RUN_AS_NODE=1`). The
+printed `/statusline` command calls `node`, so Node.js 22+ must be on `PATH`.
+A real signed-in Antigravity CLI using the installed hook has not been tested.
 
 ## Consent, retention and deletion
 

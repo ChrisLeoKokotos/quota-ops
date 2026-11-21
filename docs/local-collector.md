@@ -193,13 +193,13 @@ the URL the start command prints (an OS-allocated loopback port)
 
 The dashboard polls the local collector every 30 seconds.
 
-The scheduler checks enabled account snapshots every five minutes by default and processes them sequentially. Claude/OpenAI checks may launch headless browsers. Google checks read the most recent sanitized local statusLine event; Google CLI state is generated independently when that CLI is active.
+The scheduler checks enabled account snapshots every 15 minutes by default (`pollIntervalSeconds: 900` in new configs) and processes them sequentially. Claude/OpenAI checks launch a browser on a hidden Windows desktop (Windows default) or a headless browser (other platforms, or `backgroundCollection: "headless"`). Google checks read the most recent sanitized local statusLine event; Google CLI state is generated independently when that CLI is active.
 
 ## Visible login vs hidden scheduled refresh
 
 Interactive login is intentionally visible because provider authentication and verification must remain user-controlled.
 
-Background Claude/OpenAI collection runs **headless** (not off-screen/minimized); provider human-verification challenges are not bypassed. The tray offers a consented visible refresh and a manual verification path. Claude collection observes the Usage-page response; OpenAI uses the authenticated ChatGPT browser context for Codex quota metadata without returning the provider token in the snapshot. Google collection does not launch Chrome or Edge: its CLI invokes a locally configured `statusLine` hook; QuotaOps then reads only sanitized quota state. A Google event older than **15 minutes** or without recognized quota buckets is `unavailable`, never a fabricated fresh sync.
+On Windows, background Claude/OpenAI collection runs by default (`backgroundCollection: "hidden"`) in an ordinary browser on a **separate Windows desktop that is never shown or switched to**. It runs inside a job object, so the worker and its browsers end with the batch, and nothing takes focus. Browser identity and settings are unchanged. `"headless"` keeps the earlier headless mode, and `"off"` turns background checks off. Claude's Cloudflare protection challenges headless browsers even for verified profiles. Each Claude profile must pass the human check once in a visible window (tray: **Manual verification required: <account>**). Provider human-verification challenges are never bypassed, clicked or solved by QuotaOps. The tray offers a consented visible refresh and a manual verification path. Claude collection observes the Usage-page response; OpenAI uses the authenticated ChatGPT browser context for Codex quota metadata without returning the provider token in the snapshot. Google collection does not launch Chrome or Edge: its CLI invokes a locally configured `statusLine` hook; QuotaOps then reads only sanitized quota state. A Google event older than **15 minutes** or without recognized quota buckets is `unavailable`, never a fabricated fresh sync.
 
 If Claude/OpenAI requires a fresh login, run explicit `login <id>` and complete provider authentication. Google sign-in is performed directly in Antigravity CLI; `login google-1` is intentionally unsupported. QuotaOps does not bypass provider authentication.
 
@@ -256,7 +256,8 @@ Possible per-account statuses are:
 - `login_required` — the isolated profile needs normal provider authentication;
 - `unsupported` — the Usage page loaded but the expected provider response could not be recognized;
 - `verification_required` — a Claude browser challenge needs human attention;
-- `unavailable` — local browser collection failed **or** Google statusLine state is absent, stale or has no usable quota buckets.
+- `unavailable` — local browser collection failed **or** Google statusLine state is absent, stale or has no usable quota buckets;
+- `configured` — the account is configured and enabled but has not been checked yet in this collector session (shown as "Not checked yet", with the last successful check time if one is known).
 
 QuotaOps fails closed: a failed refresh does not invent capacity.
 
@@ -327,11 +328,18 @@ For Token Analytics verification, run `npm run collector:setup -- tokens`. The r
 
 If the dashboard shows `Manual fallback`, confirm `npm run collector:start` is still running.
 
-If port `4317` is already in use, stop the older collector process before starting another instance.
+If port `4317` is already in use, the collector exits with code 5. The desktop app then reports either "Using the QuotaOps collector already running on this PC" or "Port 4317 is used by another program". Stop the other process before you start another instance.
 
 Do not attempt to bypass provider verification or anti-bot checks.
 
-## Current validation status (PR #50 candidate, 19–20 Nov 2026)
+## Current validation status (PR #52 on PR #50, updated 21 Nov 2026)
+
+Update 21 Nov 2026 (Draft PR #52, local unsigned test build):
+
+- **Claude:** all five of the owner's real profiles were verified once by the owner in a visible window. After that, the hidden-desktop background mode read all five from the usage API, with reset times. Headless mode is still challenged for all five, which is a documented limitation.
+- **Google:** the synthetic statusLine, live-dashboard and manual E2E scripts pass. The packaged hook (`resources\collector-runtime\collector\google-hook.ts`) works with system Node 22 and with `QuotaOps.exe` in Node mode. The printed hook command needs Node.js 22+ on `PATH`. A real signed-in Antigravity CLI has still not been tested.
+
+Earlier status (PR #50 candidate, 19–20 Nov 2026):
 
 The GitHub CI has passed TypeScript, unit tests, production build, Windows security checks, the statusLine hook-to-collector E2E on Windows, and a synthetic Google event → collector → dashboard → Chrome E2E. The Windows signing run uses a **throwaway test certificate** and is not approval for a public release.
 

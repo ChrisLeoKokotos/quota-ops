@@ -32,6 +32,18 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 - Unit tests covering quota logic, provider parsers, reset notifications, voice commands, and token analytics.
 - Repository Guard, Dependency Review, CI validation, and CodeQL analysis.
 - Repository governance, contribution, privacy, security, support, branding, and release-process documentation.
+- Windows desktop (Draft PR #52, unsigned test build): background Claude/OpenAI checks in a separate hidden Windows desktop that is never shown or focused, inside a job object that ends the worker and its browsers with the batch.
+- Windows desktop: tray switch for token analytics, with a dialog that explains what is read before anything is read (off by default).
+- Windows desktop: `QuotaOps.exe` carries the QuotaOps icon and version information (applied before the ASAR integrity resource and checked after packing), so shortcuts and the taskbar show QuotaOps.
+- Windows desktop: the collector restarts after an unexpected stop (at most 3 times in 10 minutes), and a taken port 4317 is explained in the tray instead of failing silently.
+- Dashboard: every configured account is visible with its real state (not checked yet, sign-in needed, verification needed, unavailable, unsupported, OK), the last known values with their time, and "Never successfully synced" when there are none.
+- Packaged lifecycle E2E scenarios: close/reopen, Pause/Resume, crash recovery, a foreign program on port 4317, and a killed main process.
+
+### Fixed
+
+- Claude usage responses with query parameters were rejected, so reset times were missing. The usage endpoint check still requires the exact host and path.
+- Claude Code token totals were incomplete for large histories, because large session files were cut off. Scanning is now incremental, newest first, with per-file offsets, and partial totals say from which date they are complete.
+- Attention holds from headless attempts blocked hidden-desktop attempts. Holds now record how the check ran.
 
 ### Changed
 

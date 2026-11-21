@@ -30,6 +30,109 @@ Today it supports:
 
 There is **no hosted QuotaOps backend, hosted database, QuotaOps account system, or cloud sync** in the current MVP. The optional collector runs on the same PC and binds only to `127.0.0.1`.
 
+## Windows desktop app (unsigned test build)
+
+QuotaOps runs as a native Windows app: `QuotaOps.exe` with the collector
+bundled inside. It does not need VS Code, a terminal or `npm` to run.
+**The installer is an unsigned local test build**, not a published release.
+
+### Build and install
+
+```powershell
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+npm run desktop:installer:win
+```
+
+The installer is written to `release\windows\QuotaOps-Setup-<version>-x64.exe`,
+and its SHA-256 is printed at the end of the build. Run it. Windows SmartScreen
+warns about an unknown publisher because the file is not code-signed. Choose
+**More info → Run anyway** only for a build you made yourself or got from someone
+you trust.
+
+The installer works per user and does not need administrator rights. By default it
+installs to `%LOCALAPPDATA%\Programs\QuotaOps` and creates desktop and Start Menu
+shortcuts. Installing over an older build keeps your accounts, browser profiles and
+settings, because they live in `%USERPROFILE%\.quotaops`, outside the install folder.
+
+### First run
+
+- Open **QuotaOps** from the Start Menu or the desktop shortcut. The window opens
+  and the QuotaOps icon appears in the notification area (tray).
+- Closing the window hides QuotaOps to the tray. Use the tray icon's
+  **Open QuotaOps** to show it again. **Quit** in the tray menu stops the app, the
+  collector and any browser it started.
+- The tray menu also has **Pause monitoring / Resume monitoring**,
+  **Refresh with visible browser...**, a token analytics switch and, when an
+  account needs you, one **Sign in** or **Manual verification required** entry for each
+  such account.
+- If another program already uses port `4317`, the tray explains it and QuotaOps
+  stays open without collecting. If the collector process stops unexpectedly,
+  QuotaOps restarts it, up to 3 times in 10 minutes.
+
+### Accounts
+
+The desktop app has **no account setup screen yet**. You add Claude and OpenAI
+accounts with the collector command line, which shares the same
+`%USERPROFILE%\.quotaops` folder as the app. From a repository checkout:
+
+```powershell
+npm run collector:setup -- add claude dev-1 "Dev 1"
+npm run collector:setup -- login dev-1
+```
+
+See [docs/local-collector.md](docs/local-collector.md) for all commands, and
+[docs/google-antigravity.md](docs/google-antigravity.md) for Google. Every configured
+account is shown on the dashboard, even before its first successful check. The
+dashboard shows its real state: not checked yet, sign-in needed, verification
+needed, unavailable, unsupported or OK. If a check fails, the last known values stay
+visible with the time they were collected. An account that has never been collected
+says **Never successfully synced**.
+
+### Claude checks and their limits
+
+- Background checks run on Windows in a **separate hidden Windows desktop** that
+  is never shown and never takes focus. QuotaOps does not use offscreen or
+  minimized windows for this.
+- Claude's Cloudflare protection challenges every headless browser, so headless
+  collection is not used by default on Windows. This is a provider limitation, and
+  QuotaOps does not try to get around it.
+- Each Claude browser profile has to pass Claude's human check once in a visible
+  browser. Use the tray entry **Manual verification required: <account>**, finish the
+  check yourself, and close that window. After that, background checks normally work
+  without showing anything.
+- QuotaOps never solves or clicks challenges for you. It never shows 0% when the real
+  value is unknown, and a reset time it does not know stays unknown. If an account
+  keeps being challenged, QuotaOps stops retrying it in the background for 24 hours
+  and shows that it needs attention. **Refresh with visible browser...** asks you
+  before it opens anything.
+
+### Token analytics in the app
+
+Token analytics is **off** until you turn it on from the tray with **Turn on token
+analytics...**. A dialog explains what QuotaOps reads before anything is read. When
+it is on, QuotaOps reads only the numeric token counts (input, output, cache) and
+their dates from the Claude Code (`%USERPROFILE%\.claude`) and Codex
+(`%USERPROFILE%\.codex`) session logs on this PC. Totals cover only those local
+sessions and are not provider-wide billing. A very large history can take more than
+one pass to scan. Until the scan is complete, the panel shows from which date its
+totals are complete. Choose **Token analytics: on (turn off)** to stop it.
+
+### Branding, signing and updates
+
+- `QuotaOps.exe` has the QuotaOps icon and version information, so Explorer, Task
+  Manager, the taskbar and the shortcuts show QuotaOps rather than the Electron
+  defaults. The installer and uninstaller use the same icon. These were checked on
+  Windows 11 for the current test build.
+- The build is **not code-signed**, and automatic updates are **off**.
+
+### Uninstall
+
+Use **Settings → Apps → Installed apps → QuotaOps → Uninstall**. The uninstaller
+removes the program but keeps `%USERPROFILE%\.quotaops`, which holds your
+accounts, browser profiles, the collector token and settings. Delete that folder
+yourself if you want to remove them too.
+
 ## Google / Antigravity (manual + CLI statusLine preview)
 
 The dashboard accepts Google / Antigravity accounts and model groups, with
