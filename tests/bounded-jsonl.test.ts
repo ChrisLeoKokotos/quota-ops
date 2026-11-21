@@ -99,3 +99,45 @@ test("bounded JSONL still completes when the budget is never exhausted", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("incremental reading skips an oversized line instead of rejecting the file", async () => {
+  const { readJsonlIncrement } = await import("../collector/bounded-jsonl.ts");
+  const dir = await mkdtemp(join(tmpdir(), "quotaops-jsonl-inc-"));
+  try {
+    const path = join(dir, "s.jsonl");
+    const big = JSON.stringify({ type: "user", blob: "x".repeat(300_000) });
+    await writeFile(path, `{"n":1}\n${big}\n{"n":2}\n`);
+    const seen: unknown[] = [];
+    const heads: string[] = [];
+    const result = await readJsonlIncrement(path, (record) => seen.push(record.n), {
+      maxLineBytes: 100_000, onOversizedLine: (head) => heads.push(head.slice(0, 12)),
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(seen, [1, 2]);
+    assert.equal(heads.length, 1);
+    assert.match(heads[0] ?? "", /^\{"type":"use/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("incremental reading resumes at endOffset and never counts an unterminated last line", async () => {
+  const { readJsonlIncrement } = await import("../collector/bounded-jsonl.ts");
+  const { appendFile } = await import("node:fs/promises");
+  const dir = await mkdtemp(join(tmpdir(), "quotaops-jsonl-inc-"));
+  try {
+    const path = join(dir, "s.jsonl");
+    await writeFile(path, `{"n":1}\n{"n":2}`);
+    const first: unknown[] = [];
+    const a = await readJsonlIncrement(path, (r) => first.push(r.n));
+    assert.deepEqual(first, [1, 2], "a complete trailing record is still parsed");
+    assert.equal(a.endOffset, 8, "but the next pass resumes before it");
+    await appendFile(path, `\n{"n":3}\n`);
+    const second: unknown[] = [];
+    const b = await readJsonlIncrement(path, (r) => second.push(r.n), { startOffset: a.endOffset });
+    assert.deepEqual(second, [2, 3], "only the unterminated line and new lines are read again");
+    assert.equal(b.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

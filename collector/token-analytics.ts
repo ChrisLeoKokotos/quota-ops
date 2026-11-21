@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { Provider } from "../lib/quota.ts";
 import type { TokenAnalyticsConsent } from "./types.ts";
-import { readBoundedJsonl } from "./bounded-jsonl.ts";
+import { readBoundedJsonl, readJsonlIncrement } from "./bounded-jsonl.ts";
 import {
   addTokenTotals,
   emptyTokenTotals,
@@ -70,6 +70,12 @@ interface ScanResult {
   readErrors: number;
   /** True when a time or aggregation budget stopped the scan early. */
   truncated: boolean;
+  /** Files still waiting for a later pass (incremental sources). */
+  pendingFiles?: number;
+  /** Newest modification time among pending files: totals are complete after it. */
+  pendingNewestMtimeMs?: number;
+  /** Oversized assistant (usage-bearing) lines that had to be skipped. */
+  skippedUsageLines?: number;
   totals: TokenTotals;
   daily: Map<string, MutableDailyBucket>;
 }
@@ -505,63 +511,138 @@ export function parseCodexTokenRecord(
   };
 }
 
+/**
+ * Claude Code histories can be gigabytes (owner's PC: 381 files, 2.47 GB,
+ * single files over 800 MB, lines holding pasted images). Reading all of it
+ * every pass, oldest first, with a whole-file rejection on any long line,
+ * left recent days, including today, missing.
+ *
+ * Now: newest files first; a per-file cache in the collector keeps each
+ * file's records, so unchanged files are not read again and an appended
+ * session file is read only from where the last pass stopped; long lines are
+ * skipped, not fatal. Every pass is still bounded by time and bytes, and the
+ * result says "partial" (with the reason) until every file has been covered.
+ */
+interface ClaudeFileCache {
+  size: number;
+  mtimeMs: number;
+  endOffset: number;
+  records: Map<string, { date: string | null; totals: TokenTotals }>;
+  skippedUsageLines: number;
+}
+const claudeFileCache = new Map<string, ClaudeFileCache>();
+const CLAUDE_BYTES_PER_PASS = 1024 * 1024 * 1024;
+const ASSISTANT_RECORD_HEAD = /"type"\s*:\s*"assistant"/;
+
+/** Test seam: forget cached files (a fresh collector process). */
+export function resetTokenScanCache(): void {
+  claudeFileCache.clear();
+}
+
 async function scanClaudeCode(): Promise<ScanResult> {
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const root = join(homedir(), ".claude", "projects");
   const walk = await findJsonlFiles(root, deadline);
-  const paths = walk.files;
-  const best = new Map<
-    string,
-    { date: string | null; totals: TokenTotals }
-  >();
-  const daily = new Map<string, MutableDailyBucket>();
-  let files = 0;
-  let readErrors = 0;
-  let scanBytes = 0;
   let truncated = walk.truncated;
-  const budgetExhausted = (): boolean =>
-    Date.now() > deadline || best.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
+  let readErrors = 0;
+  let pendingFiles = 0;
+  let pendingNewestMtimeMs = 0;
+  let bytesThisPass = 0;
 
-  for (const path of paths) {
-    if (budgetExhausted()) {
-      truncated = true;
-      break;
-    }
-
-    const size = await stat(path).then((info) => info.size).catch(() => null);
-    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+  const files: Array<{ path: string; size: number; mtimeMs: number }> = [];
+  for (const path of walk.files) {
+    const info = await stat(path).catch(() => null);
+    if (!info || !info.isFile()) {
       readErrors += 1;
       continue;
     }
-    scanBytes += size;
-    const ok = await readBoundedJsonl(
-      path,
+    files.push({ path, size: info.size, mtimeMs: info.mtimeMs });
+  }
+  // Newest first: when a pass runs out of budget, recent days are complete.
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const present = new Set(files.map((file) => file.path));
+  for (const cachedPath of [...claudeFileCache.keys()]) {
+    if (!present.has(cachedPath)) claudeFileCache.delete(cachedPath);
+  }
+
+  let tracked = 0;
+  for (const file of files) {
+    const cached = claudeFileCache.get(file.path);
+    if (cached && cached.size === file.size && cached.mtimeMs === file.mtimeMs) {
+      tracked += cached.records.size;
+      continue;
+    }
+    if (Date.now() > deadline || bytesThisPass >= CLAUDE_BYTES_PER_PASS ||
+        tracked >= MAX_TRACKED_RECORDS_PER_SOURCE) {
+      pendingFiles += 1;
+      pendingNewestMtimeMs = Math.max(pendingNewestMtimeMs, file.mtimeMs);
+      if (cached) tracked += cached.records.size;
+      continue;
+    }
+    // Resume an appended file; read a shrunk or rewritten one from the start.
+    const resume = cached && cached.endOffset <= file.size ? cached : null;
+    const entry: ClaudeFileCache = resume ?? {
+      size: 0, mtimeMs: 0, endOffset: 0, records: new Map(), skippedUsageLines: 0,
+    };
+    const result = await readJsonlIncrement(
+      file.path,
       (record) => {
         const parsed = parseClaudeTokenRecord(record);
         if (!parsed) return;
-
         const key = boundedKey(parsed.id);
-        const previous = best.get(key);
-        if (!previous && best.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
-
-        best.set(key, {
+        const previous = entry.records.get(key);
+        entry.records.set(key, {
           date: previous?.date ?? parsed.date,
-          totals: previous
-            ? maxTokenTotals(previous.totals, parsed.totals)
-            : parsed.totals,
+          totals: previous ? maxTokenTotals(previous.totals, parsed.totals) : parsed.totals,
         });
       },
-      { shouldStop: budgetExhausted },
+      {
+        startOffset: resume ? resume.endOffset : 0,
+        shouldStop: () => Date.now() > deadline,
+        onOversizedLine: (head) => {
+          if (ASSISTANT_RECORD_HEAD.test(head)) entry.skippedUsageLines += 1;
+        },
+      },
     );
+    bytesThisPass += result.bytesRead;
+    entry.endOffset = result.endOffset;
+    if (result.ok) {
+      entry.size = file.size;
+      entry.mtimeMs = file.mtimeMs;
+    } else {
+      // Keep the progress; size 0 makes the next pass resume this file.
+      entry.size = 0;
+      entry.mtimeMs = 0;
+      if (Date.now() > deadline) {
+        pendingFiles += 1;
+        pendingNewestMtimeMs = Math.max(pendingNewestMtimeMs, file.mtimeMs);
+      } else {
+        readErrors += 1;
+      }
+    }
+    claudeFileCache.set(file.path, entry);
+    tracked += entry.records.size;
+  }
+  if (pendingFiles > 0) truncated = true;
 
-    if (ok) files += 1;
-    else if (budgetExhausted()) {
-      truncated = true;
-      break;
-    } else readErrors += 1;
+  const best = new Map<string, { date: string | null; totals: TokenTotals }>();
+  let skippedUsageLines = 0;
+  for (const entry of claudeFileCache.values()) {
+    skippedUsageLines += entry.skippedUsageLines;
+    for (const [key, value] of entry.records) {
+      const previous = best.get(key);
+      if (!previous && best.size >= MAX_TRACKED_RECORDS_PER_SOURCE) {
+        truncated = true;
+        continue;
+      }
+      best.set(key, previous
+        ? { date: previous.date ?? value.date, totals: maxTokenTotals(previous.totals, value.totals) }
+        : value);
+    }
   }
 
+  const daily = new Map<string, MutableDailyBucket>();
   let totals = emptyTokenTotals();
   for (const item of best.values()) {
     totals = addTokenTotals(totals, item.totals);
@@ -571,9 +652,12 @@ async function scanClaudeCode(): Promise<ScanResult> {
   return {
     provider: "claude",
     source: "claude-code",
-    files,
+    files: [...claudeFileCache.values()].filter((entry) => entry.size > 0).length,
     readErrors,
     truncated,
+    pendingFiles,
+    pendingNewestMtimeMs,
+    skippedUsageLines,
     totals,
     daily,
   };
@@ -658,12 +742,21 @@ function sourceStatus(result: ScanResult): TokenSourceStatus {
   // Totals are never presented as complete once a file was rejected or a
   // budget stopped the scan; counts stay numeric and name no file content.
   let message: string | null = null;
+  const skipped = result.skippedUsageLines ?? 0;
   if (missing) {
     message = `No ${label} session logs found.`;
+  } else if ((result.pendingFiles ?? 0) > 0) {
+    // A pending file holds nothing newer than its modification time, so
+    // activity after the newest pending file is complete.
+    const since = localDateKey(new Date(result.pendingNewestMtimeMs ?? 0).toISOString());
+    message = `${label}: ${result.pendingFiles} older session file(s) are still being read in the background; ` +
+      `totals are complete only for activity after ${since ?? "an earlier pass"}.`;
   } else if (result.truncated) {
     message = `${label} scan stopped at its time or record budget; totals are partial.`;
   } else if (result.readErrors > 0) {
     message = `${result.readErrors} session file(s) could not be read.`;
+  } else if (skipped > 0) {
+    message = `${skipped} very large ${label} record(s) were skipped; totals may be slightly low.`;
   }
 
   return {
@@ -671,7 +764,7 @@ function sourceStatus(result: ScanResult): TokenSourceStatus {
     provider: result.provider,
     state: missing
       ? "not_found"
-      : result.readErrors > 0 || result.truncated
+      : result.readErrors > 0 || result.truncated || skipped > 0
         ? "partial"
         : "ok",
     files: result.files,
