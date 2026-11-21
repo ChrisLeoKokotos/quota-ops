@@ -650,24 +650,45 @@ async function followVisibleRefresh(requestedAt) {
 async function runTokenAnalyticsToggle() {
   if (trayCommandPending) return;
   await refreshCollectorSettings();
-  const turnOn = !collectorSettings.tokenAnalyticsOn;
+  await setTokenAnalytics(!collectorSettings.tokenAnalyticsOn, null);
+}
+
+/**
+ * The one place token analytics is switched, from the tray or from the
+ * dashboard button. Turning it on always shows this native dialog first:
+ * the renderer can ask, but only the person's click here gives consent.
+ * Returns "on" | "off" | "cancelled" | "busy" | "error".
+ */
+async function setTokenAnalytics(turnOn, parentWindow) {
+  if (trayCommandPending) return "busy";
   if (turnOn) {
-    const choice = await dialog.showMessageBox({
-      type: "question",
-      buttons: ["Cancel", "Turn on"],
-      defaultId: 1,
-      cancelId: 0,
-      noLink: true,
-      title: "QuotaOps token analytics",
-      message: "Count tokens from Claude Code and Codex session logs on this PC?",
-      detail:
-        "QuotaOps reads only numeric token counts (input, output, cache) and dates " +
-        "from the local session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
-        "(%USERPROFILE%\\.codex). Prompts, responses and file contents are not read into " +
-        "QuotaOps and nothing leaves this PC. Totals cover only sessions on this PC. " +
-        "You can turn this off at any time from this menu.",
-    });
-    if (choice.response !== 1) return;
+    trayCommandPending = true;
+    let choice;
+    try {
+      const options = {
+        type: "question",
+        buttons: ["Cancel", "Turn on"],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true,
+        title: "QuotaOps token analytics",
+        message: "Count tokens from Claude Code and Codex session logs on this PC?",
+        detail:
+          "QuotaOps reads only numeric token counts (input, output, cache), their dates, " +
+          "and the Claude account each Claude Code session ran under, from the local " +
+          "session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
+          "(%USERPROFILE%\\.codex). Account ids are kept only as a one-way hash. " +
+          "Prompts, responses and file contents are not read into QuotaOps and nothing " +
+          "leaves this PC. Totals cover only sessions on this PC. You can turn this off " +
+          "at any time in the dashboard or the tray menu.",
+      };
+      choice = parentWindow && !parentWindow.isDestroyed()
+        ? await dialog.showMessageBox(parentWindow, options)
+        : await dialog.showMessageBox(options);
+    } finally {
+      trayCommandPending = false;
+    }
+    if (choice.response !== 1) return "cancelled";
   }
   trayCommandPending = true;
   trayCommandError = null;
@@ -679,6 +700,8 @@ async function runTokenAnalyticsToggle() {
     );
     if (status !== 200) trayCommandError = "Could not change token analytics";
     await refreshCollectorSettings();
+    if (status !== 200) return "error";
+    return turnOn ? "on" : "off";
   } finally {
     trayCommandPending = false;
     refreshTray();
@@ -1067,6 +1090,17 @@ if (!firstInstance) {
   startupMark("electron_ready");
   registerStaticProtocol();
   hardenSession();
+  // The dashboard's "Turn on token analytics" / "Turn off" button. Same
+  // sender check as the snapshot; exactly one boolean argument; turning on
+  // still needs the person's click in the native consent dialog.
+  ipcMain.handle("quotaops:token-analytics", async (event, enabled) => {
+    if (!isTrustedIpcSender(event, trustedSender)) return { error: "forbidden" };
+    if (typeof enabled !== "boolean") return { error: "invalid" };
+    const result = await setTokenAnalytics(enabled, mainWindow);
+    startupMark(`token_analytics_${result}`);
+    return { status: result };
+  });
+
   ipcMain.handle("quotaops:snapshot", async (event) => {
     // Identity comes from Electron, never from a value the renderer sends.
     // Without this, any frame the renderer can create could reach the

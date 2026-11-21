@@ -386,7 +386,9 @@ async function runCycle(cycle) {
     }
     if (scenario === "token-consent") {
       const consent = async () => JSON.parse(await readFile(join(home, ".quotaops", "collector.json"), "utf8")).tokenAnalyticsSources;
-      if ((await snapshot(token))?.tokens !== null) failures.push("token analytics ran before consent");
+      const before = await snapshot(token);
+      if (before?.tokens !== null) failures.push("token analytics ran before consent");
+      if (before?.tokenStatus?.state !== "disabled") failures.push(`scan state before consent: ${before?.tokenStatus?.state}`);
       let opened = await invokeTrayItem(child.pid, "Turn on token analytics...");
       if (!opened.ok) throw new Error(`tray token item not available: ${opened.output}`);
       const cancelled = await invokeButton(child.pid, "Cancel");
@@ -414,6 +416,11 @@ async function runCycle(cycle) {
         failures.push(`token total ${body.tokens.totals?.totalTokens} instead of 1350`);
       }
       if (JSON.stringify(body ?? {}).includes(TOKEN_PROMPT)) failures.push("prompt text reached the snapshot");
+      if (body?.tokenStatus?.state !== "ready") failures.push(`scan state after Turn on: ${body?.tokenStatus?.state}`);
+      // No account record in this fixture: all usage is explicitly unattributed.
+      const rows = body?.tokens?.accounts ?? [];
+      if (rows.length !== 1 || rows[0].account !== null || rows[0].attribution !== "no_account_record" ||
+          rows[0].totals?.totalTokens !== 1350) failures.push("unattributed usage was not reported as such");
       // The renderer must RECEIVE the totals through IPC (the projection
       // once dropped every real token snapshot). Hide and show the window,
       // as a person would, so the dashboard reads the snapshot again; the
@@ -433,7 +440,8 @@ async function runCycle(cycle) {
       const off = await invokeTrayItem(child.pid, "Token analytics: on (turn off)");
       if (!off.ok) failures.push(`tray "turn off" item not available: ${off.output}`);
       await sleep(2_000);
-      if ((await consent()).claudeCode !== false || (await snapshot(token))?.tokens !== null) {
+      const after = await snapshot(token);
+      if ((await consent()).claudeCode !== false || after?.tokens !== null || after?.tokenStatus?.state !== "disabled") {
         failures.push("turning token analytics off did not stop it");
       }
     }

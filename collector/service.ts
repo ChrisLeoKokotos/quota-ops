@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { collectProviderUsage } from "./provider.ts";
-import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { collectLocalTokenAnalytics, tokenScanPending } from "./token-analytics.ts";
+import { TokenRunner } from "./token-runner.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
@@ -24,7 +25,6 @@ import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
 } from "./types.ts";
-import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 
 const HOST = "127.0.0.1";
 const MAX_REQUESTS_PER_MINUTE = 120;
@@ -54,7 +54,22 @@ async function main(): Promise<void> {
   const config = await loadCollectorConfig();
   const collectorToken = await getOrCreateCollectorToken();
   let results: CollectorAccountResult[] = [];
-  let tokenAnalytics: TokenAnalyticsSnapshot | null = null;
+  // Token analytics has its own clock (token-runner.ts): provider checks that
+  // fail, wait for a person, are paused or switched off never hold it back.
+  // Local private histories are read only with the stored consent.
+  const tokens = new TokenRunner({
+    scan: async () => {
+      const current = await loadCollectorConfig();
+      if (!current.tokenAnalyticsEnabled) return null;
+      const sources = current.tokenAnalyticsSources;
+      if (!sources.claudeCode && !sources.codex && sources.googleAntigravity !== true) return null;
+      const snapshot = await mergeGoogleAnalytics(
+        await collectLocalTokenAnalytics(sources),
+        current.accounts, sources.googleAntigravity === true,
+      );
+      return { snapshot, pending: tokenScanPending() };
+    },
+  });
   // generatedAt is a provider collection timestamp, not the time a client
   // retrieved a cached /snapshot (which can be many minutes old).
   let generatedAt = new Date(0).toISOString();
@@ -154,20 +169,11 @@ async function main(): Promise<void> {
         await persistHolds(holds, statePath);
       }
       if (invalidated()) return null;
-      // Local private histories are read only with the stored consent.
-      const nextTokens = current.tokenAnalyticsEnabled
-        ? await mergeGoogleAnalytics(
-            await collectLocalTokenAnalytics(current.tokenAnalyticsSources),
-            current.accounts, current.tokenAnalyticsSources.googleAntigravity === true,
-          )
-        : null;
-      if (invalidated()) return null;
-      return { nextResults, nextTokens };
+      return { nextResults };
     },
     (value, at) => {
       if (value === null) return;
       results = value.nextResults.map(withLastSuccess);
-      tokenAnalytics = value.nextTokens;
       // Do not report a fresh collection when no account produced usage:
       // a batch in which every account failed refreshed nothing (issue #49).
       if (value.nextResults.length === 0 ||
@@ -181,7 +187,8 @@ async function main(): Promise<void> {
     version: 1,
     generatedAt,
     accounts: results,
-    tokens: tokenAnalytics,
+    tokens: tokens.snapshot,
+    tokenStatus: tokens.status,
   });
 
   /**
@@ -276,12 +283,10 @@ async function main(): Promise<void> {
         tokenAnalyticsSources: sources,
         tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
       });
-      tokenAnalytics = claudeCode || codex || sources.googleAntigravity === true
-        ? await mergeGoogleAnalytics(
-            await collectLocalTokenAnalytics(sources),
-            current.accounts, sources.googleAntigravity === true,
-          )
-        : null;
+      // Start (or stop) at once; the first pass of a large history can take
+      // several seconds, so the reply does not wait for it. The snapshot says
+      // "scanning" until the pass returns.
+      void tokens.trigger();
       sendJson(request, response, 200, { status: "ok", claudeCode, codex });
     } catch {
       sendJson(request, response, 500, { error: "consent_not_saved" });
@@ -412,6 +417,7 @@ async function main(): Promise<void> {
   };
   scheduledTick();
   const timer = setInterval(scheduledTick, config.pollIntervalSeconds * 1000);
+  void tokens.trigger();
 
   // Bounded: cancels the in-flight provider browser, drains for a few
   // seconds, closes the listener and its keep-alive sockets, then exits.
@@ -419,7 +425,10 @@ async function main(): Promise<void> {
   const shutdown = createCollectorShutdown({
     monitoring,
     server,
-    stopScheduling: () => clearInterval(timer),
+    stopScheduling: () => {
+      clearInterval(timer);
+      tokens.stop();
+    },
     closeInteractive: () => {
       for (const profile of interactiveProfiles.values()) profile.close();
     },

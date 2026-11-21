@@ -1,16 +1,18 @@
-import { createHash } from "node:crypto";
-import { readdir, stat } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { Provider } from "../lib/quota.ts";
 import type { TokenAnalyticsConsent } from "./types.ts";
 import { readBoundedJsonl, readJsonlIncrement } from "./bounded-jsonl.ts";
+import { getQuotaOpsHome } from "./paths.ts";
 import {
   addTokenTotals,
   emptyTokenTotals,
   type DailyTokenBucket,
   type ProviderTokenTotals,
+  type TokenAccountTotals,
   type TokenAnalyticsSnapshot,
   type TokenSourceStatus,
   type TokenTotals,
@@ -78,6 +80,8 @@ interface ScanResult {
   skippedUsageLines?: number;
   totals: TokenTotals;
   daily: Map<string, MutableDailyBucket>;
+  /** All-time per-account split (Claude Code only). */
+  accounts?: TokenAccountTotals[];
 }
 
 function safeTokenNumber(value: unknown): number {
@@ -523,25 +527,104 @@ export function parseCodexTokenRecord(
  * skipped, not fatal. Every pass is still bounded by time and bytes, and the
  * result says "partial" (with the reason) until every file has been covered.
  */
+interface ClaudeRecord {
+  date: string | null;
+  totals: TokenTotals;
+  /** Interned session id, used only to look up the session's account. */
+  session: string | null;
+}
 interface ClaudeFileCache {
   size: number;
   mtimeMs: number;
   endOffset: number;
-  records: Map<string, { date: string | null; totals: TokenTotals }>;
+  records: Map<string, ClaudeRecord>;
+  /** session id -> salted hashes of the account ids its owner records name. */
+  owners: Map<string, Set<string>>;
   skippedUsageLines: number;
 }
 const claudeFileCache = new Map<string, ClaudeFileCache>();
 const CLAUDE_BYTES_PER_PASS = 1024 * 1024 * 1024;
 const ASSISTANT_RECORD_HEAD = /"type"\s*:\s*"assistant"/;
+let lastClaudePendingFiles = 0;
+
+/** Session ids repeat on every record of a session: keep one copy of each. */
+const MAX_INTERNED_SESSIONS = 50_000;
+const internedSessions = new Map<string, string>();
+function internSession(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 100) return null;
+  const known = internedSessions.get(value);
+  if (known) return known;
+  if (internedSessions.size >= MAX_INTERNED_SESSIONS) return null;
+  internedSessions.set(value, value);
+  return value;
+}
+
+/**
+ * Account ids are stored and shown only as a salted one-way hash. The salt
+ * is random per QuotaOps home, so the short key cannot be matched against
+ * anything outside this PC.
+ */
+let accountSalt: Buffer | null = null;
+async function loadAccountSalt(): Promise<Buffer> {
+  if (accountSalt) return accountSalt;
+  const path = join(getQuotaOpsHome(), "token-account-salt");
+  try {
+    const existing = await readFile(path);
+    if (existing.length >= 32) return (accountSalt = existing.subarray(0, 32));
+  } catch {
+    // Created below.
+  }
+  const fresh = randomBytes(32);
+  try {
+    await writeFile(path, fresh, { flag: "wx", mode: 0o600 });
+    accountSalt = fresh;
+  } catch {
+    // Lost a race with another writer, or the home is not writable: use
+    // whatever is on disk, else keep this process's salt in memory only.
+    const again = await readFile(path).catch(() => null);
+    accountSalt = again && again.length >= 32 ? again.subarray(0, 32) : fresh;
+  }
+  return accountSalt;
+}
+function accountKey(salt: Buffer, accountId: string): string {
+  return createHash("sha256").update(salt).update(accountId).digest("hex").slice(0, 12);
+}
+const ACCOUNT_ID_PATTERN = /^[0-9a-f-]{8,64}$/i;
+
+/**
+ * The account Claude Code is signed in to now (~/.claude.json), as the same
+ * salted key. Only that one field is used; the file is not kept.
+ */
+async function currentClaudeAccountKey(salt: Buffer): Promise<string | null> {
+  const path = join(homedir(), ".claude.json");
+  try {
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) return null;
+    const parsed = JSON.parse(await readFile(path, "utf8")) as { oauthAccount?: { accountUuid?: unknown } };
+    const id = parsed?.oauthAccount?.accountUuid;
+    return typeof id === "string" && ACCOUNT_ID_PATTERN.test(id) ? accountKey(salt, id) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Test seam: forget cached files (a fresh collector process). */
 export function resetTokenScanCache(): void {
   claudeFileCache.clear();
+  internedSessions.clear();
+  accountSalt = null;
+  lastClaudePendingFiles = 0;
+}
+
+/** True while the last Claude Code pass left older files for a later pass. */
+export function tokenScanPending(): boolean {
+  return lastClaudePendingFiles > 0;
 }
 
 async function scanClaudeCode(): Promise<ScanResult> {
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
+  const salt = await loadAccountSalt();
   const root = join(homedir(), ".claude", "projects");
   const walk = await findJsonlFiles(root, deadline);
   let truncated = walk.truncated;
@@ -583,11 +666,21 @@ async function scanClaudeCode(): Promise<ScanResult> {
     // Resume an appended file; read a shrunk or rewritten one from the start.
     const resume = cached && cached.endOffset <= file.size ? cached : null;
     const entry: ClaudeFileCache = resume ?? {
-      size: 0, mtimeMs: 0, endOffset: 0, records: new Map(), skippedUsageLines: 0,
+      size: 0, mtimeMs: 0, endOffset: 0, records: new Map(), owners: new Map(), skippedUsageLines: 0,
     };
     const result = await readJsonlIncrement(
       file.path,
       (record) => {
+        if (record.type === "session-owner") {
+          const session = internSession(record.sessionId);
+          const id = record.accountUuid;
+          if (session && typeof id === "string" && ACCOUNT_ID_PATTERN.test(id)) {
+            const owners = entry.owners.get(session) ?? new Set<string>();
+            if (owners.size < 8) owners.add(accountKey(salt, id));
+            entry.owners.set(session, owners);
+          }
+          return;
+        }
         const parsed = parseClaudeTokenRecord(record);
         if (!parsed) return;
         const key = boundedKey(parsed.id);
@@ -595,6 +688,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
         entry.records.set(key, {
           date: previous?.date ?? parsed.date,
           totals: previous ? maxTokenTotals(previous.totals, parsed.totals) : parsed.totals,
+          session: previous?.session ?? internSession(record.sessionId),
         });
       },
       {
@@ -625,11 +719,18 @@ async function scanClaudeCode(): Promise<ScanResult> {
     tracked += entry.records.size;
   }
   if (pendingFiles > 0) truncated = true;
+  lastClaudePendingFiles = pendingFiles;
 
-  const best = new Map<string, { date: string | null; totals: TokenTotals }>();
+  const best = new Map<string, ClaudeRecord>();
+  const owners = new Map<string, Set<string>>();
   let skippedUsageLines = 0;
   for (const entry of claudeFileCache.values()) {
     skippedUsageLines += entry.skippedUsageLines;
+    for (const [session, keys] of entry.owners) {
+      const all = owners.get(session) ?? new Set<string>();
+      for (const key of keys) all.add(key);
+      owners.set(session, all);
+    }
     for (const [key, value] of entry.records) {
       const previous = best.get(key);
       if (!previous && best.size >= MAX_TRACKED_RECORDS_PER_SOURCE) {
@@ -637,16 +738,63 @@ async function scanClaudeCode(): Promise<ScanResult> {
         continue;
       }
       best.set(key, previous
-        ? { date: previous.date ?? value.date, totals: maxTokenTotals(previous.totals, value.totals) }
+        ? {
+            date: previous.date ?? value.date,
+            totals: maxTokenTotals(previous.totals, value.totals),
+            session: previous.session ?? value.session,
+          }
         : value);
     }
   }
 
   const daily = new Map<string, MutableDailyBucket>();
   let totals = emptyTokenTotals();
+  // Attribution: a session with exactly one account id; nothing else.
+  const byAccount = new Map<string, { totals: TokenTotals; sessions: Set<string> }>();
+  const unattributed = {
+    no_account_record: { totals: emptyTokenTotals(), sessions: new Set<string>() },
+    several_accounts: { totals: emptyTokenTotals(), sessions: new Set<string>() },
+  };
   for (const item of best.values()) {
     totals = addTokenTotals(totals, item.totals);
     if (!addDaily(daily, "claude", item.date, item.totals)) truncated = true;
+    const sessionOwners = item.session ? owners.get(item.session) : undefined;
+    const bucket = !sessionOwners || sessionOwners.size === 0
+      ? unattributed.no_account_record
+      : sessionOwners.size > 1
+        ? unattributed.several_accounts
+        : (() => {
+            const key = [...sessionOwners][0] as string;
+            const existing = byAccount.get(key) ?? { totals: emptyTokenTotals(), sessions: new Set<string>() };
+            byAccount.set(key, existing);
+            return existing;
+          })();
+    bucket.totals = addTokenTotals(bucket.totals, item.totals);
+    if (item.session) bucket.sessions.add(item.session);
+  }
+  const current = byAccount.size > 0 ? await currentClaudeAccountKey(salt) : null;
+  const accounts: TokenAccountTotals[] = [...byAccount.entries()]
+    .sort((a, b) => b[1].totals.totalTokens - a[1].totals.totalTokens)
+    .slice(0, 12)
+    .map(([account, value]) => ({
+      source: "claude-code" as const,
+      account,
+      attribution: "attributed" as const,
+      current: account === current,
+      sessions: value.sessions.size,
+      totals: value.totals,
+    }));
+  for (const reason of ["no_account_record", "several_accounts"] as const) {
+    const value = unattributed[reason];
+    if (value.totals.totalTokens === 0) continue;
+    accounts.push({
+      source: "claude-code",
+      account: null,
+      attribution: reason,
+      current: false,
+      sessions: value.sessions.size,
+      totals: value.totals,
+    });
   }
 
   return {
@@ -660,6 +808,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
     skippedUsageLines,
     totals,
     daily,
+    accounts,
   };
 }
 
@@ -855,5 +1004,6 @@ export async function collectLocalTokenAnalytics(
     ),
     daily: dailyBuckets,
     sources,
+    accounts: claudeScan?.accounts ?? [],
   };
 }

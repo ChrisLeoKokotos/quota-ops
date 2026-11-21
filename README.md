@@ -109,14 +109,38 @@ says **Never successfully synced**.
 
 ### Token analytics in the app
 
-Token analytics is **off** until you turn it on from the tray with **Turn on token
-analytics...**. A dialog explains what QuotaOps reads before anything is read. When
-it is on, QuotaOps reads only the numeric token counts (input, output, cache) and
-their dates from the Claude Code (`%USERPROFILE%\.claude`) and Codex
-(`%USERPROFILE%\.codex`) session logs on this PC. Totals cover only those local
-sessions and are not provider-wide billing. A very large history can take more than
-one pass to scan. Until the scan is complete, the panel shows from which date its
-totals are complete. Choose **Token analytics: on (turn off)** to stop it.
+Token analytics is **off** until you turn it on. Use the **Turn on token analytics**
+button in the dashboard's Token analytics panel, or **Turn on token analytics...** in
+the tray menu. A dialog explains what QuotaOps reads before anything is read.
+
+When it is on, QuotaOps reads these from the session logs on this PC:
+
+- the numeric token counts (input, output, cache read, cache write) and their dates,
+  from Claude Code (`%USERPROFILE%\.claude`) and Codex (`%USERPROFILE%\.codex`);
+- for Claude Code, the Claude account each session ran under, kept only as a one-way
+  hash.
+
+The panel shows:
+
+- **Total tokens processed · All time**, with the input, output, cache read and
+  cache write breakdown;
+- one total each for Claude Code, Codex and Antigravity. A source that is off, or
+  that has no history on this PC, shows "—" rather than 0;
+- **Claude Code by Claude account**. A session counts for an account only when
+  Claude Code recorded exactly one account id in it. Older sessions without that
+  record are listed as **Not attributed**. Usage is never guessed or split between
+  accounts, and these accounts are not yet linked to your QuotaOps accounts;
+- totals for Today, 7 days, 30 days and All time.
+
+The panel's state is one of **Off**, **Scanning**, **Partial: still reading older
+files**, **Complete**, **No usage found** or **Unavailable**. Token analytics runs on
+its own schedule, separately from Claude/OpenAI quota checks, so a failing, paused
+or blocked quota check does not stop it. A large history is read in several short
+passes. The panel refreshes on its own until the scan is complete, then QuotaOps
+looks for new activity every 5 minutes.
+
+Totals cover only the sessions on this PC and are not provider-wide billing. Use
+**Turn off token analytics** in the panel, or the tray item, to stop it.
 
 ### Branding, signing and updates
 

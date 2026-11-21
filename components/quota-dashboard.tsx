@@ -11,6 +11,7 @@ import {
   providerLabel,
   type AccountStatus,
   type QuotaAccount,
+  type Provider,
   type QuotaWindow,
 } from "@/lib/quota";
 import {
@@ -28,7 +29,11 @@ import {
   type CollectorAccountResult,
   type CollectorConnectionState,
 } from "@/lib/collector-client";
-import { getDesktopBridge } from "@/lib/collector-transport";
+import {
+  canSwitchTokenAnalytics,
+  getDesktopBridge,
+  requestTokenAnalytics,
+} from "@/lib/collector-transport";
 import {
   parseVoiceUsageCommand,
   voiceWindowLabel,
@@ -36,8 +41,13 @@ import {
 import {
   formatTokenCount,
   summarizeTokenRange,
+  tokenPanelState,
   type TokenAnalyticsSnapshot,
+  type TokenPanelState,
   type TokenRange,
+  type TokenScanStatus,
+  type TokenSourceStatus,
+  type TokenTotals,
 } from "@/lib/token-analytics";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
@@ -912,29 +922,96 @@ function AddAccountDialog({
   );
 }
 
+const TOKEN_STATE_LABELS: Record<TokenPanelState, string> = {
+  checking: "Connecting",
+  offline: "Collector offline",
+  disabled: "Off",
+  scanning: "Scanning",
+  unavailable: "Unavailable",
+  partial: "Partial: still reading older files",
+  complete: "Complete",
+  zero: "No usage found",
+};
+
+const TOKEN_SOURCES: Array<{ source: TokenSourceStatus["source"]; provider: Provider; label: string }> = [
+  { source: "claude-code", provider: "claude", label: "Claude Code" },
+  { source: "codex", provider: "openai", label: "Codex" },
+  { source: "google-antigravity", provider: "google", label: "Antigravity" },
+];
+
+function exactTokens(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function sourceStateLabel(source: TokenSourceStatus | undefined): string {
+  if (!source) return "Not reported";
+  switch (source.state) {
+    case "ok":
+      return `Complete · ${source.files} file${source.files === 1 ? "" : "s"}`;
+    case "partial":
+      return "Partial";
+    case "disabled":
+      return "Off";
+    default:
+      return "No history found";
+  }
+}
+
+function TokenBreakdown({ totals }: { totals: TokenTotals }) {
+  return (
+    <div className="token-breakdown">
+      <div>
+        <span>Input</span>
+        <strong>{formatTokenCount(totals.inputTokens)}</strong>
+      </div>
+      <div>
+        <span>Output</span>
+        <strong>{formatTokenCount(totals.outputTokens)}</strong>
+      </div>
+      <div>
+        <span>Cache read</span>
+        <strong>{formatTokenCount(totals.cacheReadTokens)}</strong>
+      </div>
+      <div>
+        <span>Cache write</span>
+        <strong>{formatTokenCount(totals.cacheWriteTokens)}</strong>
+      </div>
+    </div>
+  );
+}
+
 function TokenAnalyticsPanel({
   analytics,
+  status,
   range,
   nowMs,
   onRangeChange,
-  collectorConnected,
+  collectorState,
+  canSwitch,
+  switching,
+  onSwitch,
 }: {
   analytics: TokenAnalyticsSnapshot | null;
+  status: TokenScanStatus | null;
   range: TokenRange;
   nowMs: number;
   onRangeChange: (range: TokenRange) => void;
-  /** Connected collector without a token snapshot means analytics is off. */
-  collectorConnected: boolean;
+  collectorState: CollectorConnectionState;
+  /** Desktop app: the dashboard can ask to switch token analytics. */
+  canSwitch: boolean;
+  switching: boolean;
+  onSwitch: (enabled: boolean) => void;
 }) {
-  const summary = analytics
-    ? summarizeTokenRange(analytics, range, nowMs)
-    : null;
+  const state = tokenPanelState(analytics, status, collectorState);
+  const summary = analytics ? summarizeTokenRange(analytics, range, nowMs) : null;
   const ranges: Array<{ id: TokenRange; label: string }> = [
     { id: "today", label: "Today" },
     { id: "7d", label: "7 days" },
     { id: "30d", label: "30 days" },
     { id: "all", label: "All time" },
   ];
+  const accounts = analytics?.accounts ?? [];
+  const attributed = accounts.filter((item) => item.account !== null);
 
   return (
     <section className="token-panel" aria-labelledby="token-analytics-title">
@@ -943,103 +1020,164 @@ function TokenAnalyticsPanel({
           <span className="page-kicker">Token analytics</span>
           <h2 id="token-analytics-title">Locally observed work</h2>
           <p>
-            Numeric usage only from local Claude Code and Codex session logs.
-            Prompts and responses are not included in the snapshot.
+            Numeric usage only, from Claude Code and Codex session logs and opted-in
+            Antigravity CLI events on this PC. Prompts and responses are not included.
           </p>
         </div>
-        <div className="token-range" aria-label="Token analytics range">
-          {ranges.map((option) => (
-            <button
-              className="token-range-button"
-              data-active={range === option.id ? "true" : "false"}
-              key={option.id}
-              type="button"
-              onClick={() => onRangeChange(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <span className="token-state" data-state={state}>
+          {TOKEN_STATE_LABELS[state]}
+        </span>
       </div>
 
-      {summary ? (
-        <>
-          <div className="token-total-row">
-            <div className="token-total">
-              <span>Total tokens processed</span>
-              <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
-              <small>Locally observed</small>
-            </div>
-            <div className="token-breakdown">
-              <div>
-                <span>Input</span>
-                <strong>{formatTokenCount(summary.totals.inputTokens)}</strong>
-              </div>
-              <div>
-                <span>Output</span>
-                <strong>{formatTokenCount(summary.totals.outputTokens)}</strong>
-              </div>
-              <div>
-                <span>Cache read</span>
-                <strong>{formatTokenCount(summary.totals.cacheReadTokens)}</strong>
-              </div>
-              <div>
-                <span>Cache write</span>
-                <strong>{formatTokenCount(summary.totals.cacheWriteTokens)}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="token-provider-row">
-            {summary.providers.length > 0 ? (
-              summary.providers.map((item) => (
-                <div className="token-provider" key={item.provider}>
-                  <span>{providerLabel(item.provider)}</span>
-                  <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
-                </div>
-              ))
-            ) : (
-              <span className="token-empty">No observed token usage in this range.</span>
-            )}
-          </div>
-
-          <div className="token-source-row">
-            {analytics?.sources.map((source) => (
-              <span
-                className="token-source"
-                data-state={source.state}
-                key={source.source}
-                title={source.message ?? undefined}
-              >
-                {source.source === "claude-code" ? "Claude Code" : source.source === "google-antigravity" ? "Antigravity CLI" : "Codex"} ·{" "}
-                {source.state === "ok"
-                  ? `${source.files} file${source.files === 1 ? "" : "s"}`
-                  : source.state === "partial"
-                    ? "Partial"
-                    : source.state === "disabled"
-                      ? "Off"
-                      : "Not found"}
-              </span>
-            ))}
-          </div>
-          {analytics ? (
-            <p className="token-source-note">
-              Scanned {formatUpdatedAt(analytics.generatedAt)}. Counts cover only sessions on this PC.
-              {analytics.sources
-                .filter((source) => source.state === "partial" && source.message)
-                .map((source) => ` ${source.message}`)
-                .join("")}
+      {state === "checking" ? (
+        <div className="token-empty-state">Connecting to the local collector...</div>
+      ) : state === "offline" ? (
+        <div className="token-empty-state">
+          Start the local collector to read numeric token usage from Claude Code and
+          Codex session logs on this PC.
+        </div>
+      ) : state === "disabled" ? (
+        <div className="token-cta">
+          <div>
+            <strong>Token analytics is off.</strong>
+            <p>
+              Turn it on to see the total tokens processed by Claude Code and Codex on
+              this PC. QuotaOps asks for your consent first and reads only numbers and
+              dates.
             </p>
+          </div>
+          {canSwitch ? (
+            <button
+              className="primary-button"
+              type="button"
+              disabled={switching}
+              onClick={() => onSwitch(true)}
+            >
+              {switching ? "Waiting for your choice..." : "Turn on token analytics"}
+            </button>
+          ) : (
+            <code className="token-cta-command">
+              npm run collector:setup -- tokens-auto enable claude-code
+            </code>
+          )}
+        </div>
+      ) : !analytics ? (
+        <div className="token-empty-state">
+          {state === "unavailable"
+            ? "The local session history could not be read. QuotaOps tries again in a few minutes."
+            : "Reading the local session history. The first totals appear in a few seconds; large histories finish over several passes."}
+        </div>
+      ) : (
+        <>
+          <div className="token-hero">
+            <span>Total tokens processed · All time</span>
+            <strong>{formatTokenCount(analytics.totals.totalTokens)}</strong>
+            <small>
+              {exactTokens(analytics.totals.totalTokens)} tokens, locally observed
+              {state === "partial" ? " so far" : ""}
+            </small>
+          </div>
+          <TokenBreakdown totals={analytics.totals} />
+
+          <div className="token-source-grid">
+            {TOKEN_SOURCES.map((item) => {
+              const source = analytics.sources.find((candidate) => candidate.source === item.source);
+              const totals = analytics.providers.find((candidate) => candidate.provider === item.provider)?.totals;
+              return (
+                <div className="token-source-card" data-state={source?.state ?? "missing"} key={item.source}>
+                  <span>{item.label}</span>
+                  <strong>
+                    {/* Off or no history: a dash, never a 0 that looks like measured zero work. */}
+                    {source?.state === "disabled" || source?.state === "not_found" || !source
+                      ? "—"
+                      : formatTokenCount(totals?.totalTokens ?? 0)}
+                  </strong>
+                  <small title={source?.message ?? undefined}>{sourceStateLabel(source)}</small>
+                </div>
+              );
+            })}
+          </div>
+
+          {accounts.length > 0 ? (
+            <div className="token-accounts">
+              <h3>Claude Code by Claude account · All time</h3>
+              <ul>
+                {accounts.map((item) => (
+                  <li key={item.account ?? item.attribution}>
+                    <span>
+                      {item.account
+                        ? `Claude account ·${item.account.slice(0, 6)}`
+                        : item.attribution === "several_accounts"
+                          ? "Not attributed: sessions that name several accounts"
+                          : "Not attributed: sessions without an account record"}
+                      {item.current ? <em> · signed in to Claude Code now</em> : null}
+                    </span>
+                    <span className="token-account-sessions">
+                      {item.sessions} session{item.sessions === 1 ? "" : "s"}
+                    </span>
+                    <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
+                  </li>
+                ))}
+              </ul>
+              <p className="token-source-note">
+                {attributed.length > 0
+                  ? "A session counts for an account only when Claude Code recorded exactly one account id in it. Usage is never guessed or split. These accounts are not linked to your QuotaOps accounts yet."
+                  : "No session in this history records an account id, so no usage is attributed to an account."}
+              </p>
+            </div>
+          ) : null}
+
+          <div className="token-range-section">
+            <div className="token-range-heading">
+              <h3>By period</h3>
+              <div className="token-range" aria-label="Token analytics range">
+                {ranges.map((option) => (
+                  <button
+                    className="token-range-button"
+                    data-active={range === option.id ? "true" : "false"}
+                    key={option.id}
+                    type="button"
+                    onClick={() => onRangeChange(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {summary ? (
+              <div className="token-total-row">
+                <div className="token-total">
+                  <span>Total tokens processed</span>
+                  <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
+                  <small>{ranges.find((option) => option.id === range)?.label}</small>
+                </div>
+                <TokenBreakdown totals={summary.totals} />
+              </div>
+            ) : null}
+          </div>
+
+          <p className="token-source-note">
+            {state === "unavailable"
+              ? "The last pass failed; these are the last totals read. "
+              : null}
+            Scanned {formatUpdatedAt(status?.scannedAt ?? analytics.generatedAt)}. Counts cover only
+            sessions on this PC, not provider-wide usage.
+            {analytics.sources
+              .filter((source) => source.state === "partial" && source.message)
+              .map((source) => ` ${source.message}`)
+              .join("")}
+          </p>
+          {canSwitch ? (
+            <button
+              className="token-switch-off"
+              type="button"
+              disabled={switching}
+              onClick={() => onSwitch(false)}
+            >
+              Turn off token analytics
+            </button>
           ) : null}
         </>
-      ) : (
-        <div className="token-empty-state">
-          {collectorConnected
-            ? getDesktopBridge()
-              ? "Token analytics is off. Turn it on from the QuotaOps tray menu (Turn on token analytics...)."
-              : "Token analytics is off. Turn it on with: npm run collector:setup -- tokens-auto enable claude-code"
-            : "Start the local collector to read numeric token usage from Claude Code and Codex session logs on this PC."}
-        </div>
       )}
     </section>
   );
@@ -1063,11 +1201,45 @@ export function QuotaDashboard() {
   const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const [tokenAnalytics, setTokenAnalytics] =
     useState<TokenAnalyticsSnapshot | null>(null);
-  const [tokenRange, setTokenRange] = useState<TokenRange>("all");
+  // The headline already shows all time; the period view starts at today.
+  const [tokenRange, setTokenRange] = useState<TokenRange>("today");
+  const [tokenStatus, setTokenStatus] = useState<TokenScanStatus | null>(null);
+  const [tokenSwitching, setTokenSwitching] = useState(false);
+  const [canSwitchTokens, setCanSwitchTokens] = useState(false);
+  // Lets token actions read the snapshot again at once instead of waiting
+  // for the next 30 s tick.
+  const syncNowRef = useRef<(() => void) | null>(null);
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
+  // While token analytics scans (first pass, or older files still pending),
+  // read the snapshot every 3 s so the totals and state update by themselves.
+  const tokenBusy = tokenStatus?.state === "scanning" || tokenStatus?.pending === true;
   useEffect(() => {
+    if (!tokenBusy) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") syncNowRef.current?.();
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [tokenBusy]);
+
+  const switchTokenAnalytics = async (enabled: boolean) => {
+    if (tokenSwitching) return;
+    setTokenSwitching(true);
+    try {
+      const result = await requestTokenAnalytics(enabled);
+      if (result === "error") showToast("Token analytics could not be changed. Try again from the tray menu.");
+      if (result === "busy") showToast("QuotaOps is busy with another action. Try again in a moment.");
+    } catch {
+      showToast("Token analytics could not be changed. Try again from the tray menu.");
+    } finally {
+      setTokenSwitching(false);
+      syncNowRef.current?.();
+    }
+  };
+
+  useEffect(() => {
+    setCanSwitchTokens(canSwitchTokenAnalytics());
     setAccounts(loadAccounts());
     const initialTheme = loadTheme();
     setTheme(initialTheme);
@@ -1121,6 +1293,8 @@ export function QuotaDashboard() {
         // 30 s re-renders the whole dashboard for nothing.
         setTokenAnalytics((previous) =>
           JSON.stringify(previous) === JSON.stringify(snapshot.tokens) ? previous : snapshot.tokens);
+        setTokenStatus((previous) =>
+          JSON.stringify(previous) === JSON.stringify(snapshot.tokenStatus) ? previous : snapshot.tokenStatus);
         setCollectorStates((previous) =>
           JSON.stringify(previous) === JSON.stringify(snapshot.issues) ? previous : snapshot.issues);
         // "Not checked yet" is information, not something to fix.
@@ -1190,10 +1364,12 @@ export function QuotaDashboard() {
       if (document.visibilityState === "visible") void sync();
     };
     void sync();
+    syncNowRef.current = () => void sync();
     const timer = window.setInterval(syncIfVisible, 30_000);
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
+      syncNowRef.current = null;
       cancelled = true;
       controller?.abort();
       window.clearInterval(timer);
@@ -1622,10 +1798,14 @@ export function QuotaDashboard() {
 
           <TokenAnalyticsPanel
             analytics={tokenAnalytics}
+            status={tokenStatus}
             range={tokenRange}
             nowMs={nowMs}
             onRangeChange={setTokenRange}
-            collectorConnected={collectorState === "connected"}
+            collectorState={collectorState}
+            canSwitch={canSwitchTokens}
+            switching={tokenSwitching}
+            onSwitch={(enabled) => void switchTokenAnalytics(enabled)}
           />
 
           {collectorIssues.length > 0 ? (

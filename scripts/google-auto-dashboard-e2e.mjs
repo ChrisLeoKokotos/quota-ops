@@ -60,7 +60,14 @@ try{
   assert.match(text,/auto-synced/);
   assert.match(text,/25%/);
   assert.match(text,/45%/);
-  await page.locator(".token-source").filter({hasText:"Antigravity CLI"}).waitFor({timeout:30000});
+  // Token panel: all-time headline, per-source card and completion state.
+  const antigravity=page.locator(".token-source-card").filter({hasText:"Antigravity"});
+  await antigravity.waitFor({timeout:30000});
+  assert.match(await antigravity.innerText(),/150[\s\S]*Complete/);
+  assert.match(await page.locator(".token-hero").innerText(),/Total tokens processed · All time[\s\S]*150/);
+  assert.equal(await page.locator(".token-state").innerText(),"Complete");
+  // Claude Code and Codex were not consented: shown as off, never as zero work.
+  assert.match(await page.locator(".token-source-card").filter({hasText:"Claude Code"}).innerText(),/Off/);
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem("quotaops:accounts:v2")??"[]"));
   assert.equal(saved.find(a=>a.id==="google-1")?.provider,"google");
   assert.equal(saved.find(a=>a.id==="google-1")?.source,"collector");

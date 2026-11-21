@@ -38,12 +38,20 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 - Windows desktop: the collector restarts after an unexpected stop (at most 3 times in 10 minutes), and a taken port 4317 is explained in the tray instead of failing silently.
 - Dashboard: every configured account is visible with its real state (not checked yet, sign-in needed, verification needed, unavailable, unsupported, OK), the last known values with their time, and "Never successfully synced" when there are none.
 - Packaged lifecycle E2E scenarios: close/reopen, Pause/Resume, crash recovery, a foreign program on port 4317, and a killed main process.
+- Token analytics in the dashboard:
+  - a **Turn on token analytics** button. It opens the same native consent dialog as the tray, and the renderer can only ask;
+  - a **Total tokens processed · All time** headline with input, output, cache read and cache write;
+  - a total each for Claude Code, Codex and Antigravity;
+  - the states Off, Scanning, Partial, Complete, No usage found and Unavailable.
+- Claude Code usage per Claude account, from the `session-owner` records in session logs. Account ids are kept as a salted one-way hash. Usage counts for an account only when its session names exactly one account; the rest stays explicitly unattributed and is never inferred or split.
 
 ### Fixed
 
 - Claude usage responses with query parameters were rejected, so reset times were missing. The usage endpoint check still requires the exact host and path.
 - Claude Code token totals were incomplete for large histories, because large session files were cut off. Scanning is now incremental, newest first, with per-file offsets, and partial totals say from which date they are complete.
 - Attention holds from headless attempts blocked hidden-desktop attempts. Holds now record how the check ran.
+- Token analytics ran only at the end of each provider quota check (every 15 minutes), one pass per check, and not at all while paused or with background checks off. A large history took over half an hour to complete. It now runs on its own schedule: it starts at once after consent, repeats passes while files are pending, and the dashboard refreshes by itself while it scans.
+- The token panel said "Start the local collector" while the dashboard was still connecting.
 - The desktop dashboard never showed token analytics. The collector always reports a Google token source, and the IPC projection rejected the whole snapshot because of it. Google sources are now accepted, as long as each source matches its own provider.
 
 ### Changed

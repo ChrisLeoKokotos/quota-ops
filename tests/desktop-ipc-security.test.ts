@@ -13,6 +13,7 @@ const security = require("../desktop/electron-ipc/security.js") as {
     generatedAt: string | null;
     accounts: { id: string | null; label: string | null; message: string | null; account: { windows: { usedPercent: number | null }[] } | null }[];
     tokens: unknown;
+    tokenStatus: unknown;
   };
   buildContentSecurityPolicy: (hashes?: unknown[]) => string;
   resolveExternalUrl: (value: unknown) => string | null;
@@ -625,6 +626,7 @@ test("token analytics cannot smuggle private history or extra keys through IPC",
       source: "claude-code", provider: "claude", state: "ok", files: 1,
       message: null,
     }],
+    accounts: [],
   });
   const serialized = JSON.stringify(result);
   for (const secret of ["private prompt", "credentials", "secret.ts", "privateFile", "history"]) {
@@ -692,6 +694,53 @@ test("the Google source the collector always reports does not drop token analyti
     tokens: { ...base, sources: [{ source: "google-antigravity", provider: "claude", state: "ok", files: 1, message: null }] },
   });
   assert.equal(mismatched.tokens, null);
+});
+
+test("per-account token totals cross IPC only as salted short hashes, and scan status is bounded", () => {
+  const totals = {
+    inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, totalTokens: 10,
+  };
+  const base = {
+    scope: "locally_observed", generatedAt: "2026-11-21T00:00:00Z", totals,
+    providers: [{ provider: "claude", totals }], daily: [],
+    sources: [{ source: "claude-code", provider: "claude", state: "ok", files: 1, message: null }],
+  };
+  const good = security.projectSnapshot({
+    version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [],
+    tokens: {
+      ...base,
+      accounts: [
+        { source: "claude-code", account: "a1b2c3d4e5f6", attribution: "attributed", current: true, sessions: 2, totals, email: "x@y" },
+        { source: "claude-code", account: null, attribution: "no_account_record", current: false, sessions: 5, totals },
+      ],
+    },
+    tokenStatus: { state: "scanning", scannedAt: null, pending: true, extra: "dropped" },
+  }) as { tokens: { accounts: unknown[] }; tokenStatus: unknown };
+  assert.deepEqual(good.tokens.accounts, [
+    { source: "claude-code", account: "a1b2c3d4e5f6", attribution: "attributed", current: true, sessions: 2, totals },
+    { source: "claude-code", account: null, attribution: "no_account_record", current: false, sessions: 5, totals },
+  ]);
+  assert.deepEqual(good.tokenStatus, { state: "scanning", scannedAt: null, pending: true });
+  assert.equal(JSON.stringify(good).includes("x@y"), false);
+
+  // A raw account id, an attributed row without a key, or an unknown
+  // attribution fails closed: no token analytics rather than a wrong split.
+  for (const bad of [
+    { source: "claude-code", account: "0b0e5c1e-1234-4abc-9def-001122334455", attribution: "attributed", current: false, sessions: 1, totals },
+    { source: "claude-code", account: null, attribution: "attributed", current: false, sessions: 1, totals },
+    { source: "claude-code", account: "a1b2c3d4e5f6", attribution: "guessed", current: false, sessions: 1, totals },
+  ]) {
+    const result = security.projectSnapshot({
+      version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [], tokens: { ...base, accounts: [bad] },
+    });
+    assert.equal(result.tokens, null);
+  }
+  for (const status of [{ state: "done", scannedAt: null, pending: false }, "ready", null, { state: "ready", scannedAt: 5, pending: false }]) {
+    const result = security.projectSnapshot({
+      version: 1, generatedAt: "2026-11-21T00:00:00Z", accounts: [], tokens: null, tokenStatus: status,
+    }) as { tokenStatus: unknown };
+    assert.equal(result.tokenStatus, null);
+  }
 });
 
 test("malformed token analytics fail closed instead of fabricating totals", () => {
