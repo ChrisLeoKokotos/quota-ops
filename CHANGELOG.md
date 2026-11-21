@@ -44,6 +44,7 @@ The format is inspired by Keep a Changelog. Release versions should follow seman
 - Claude usage responses with query parameters were rejected, so reset times were missing. The usage endpoint check still requires the exact host and path.
 - Claude Code token totals were incomplete for large histories, because large session files were cut off. Scanning is now incremental, newest first, with per-file offsets, and partial totals say from which date they are complete.
 - Attention holds from headless attempts blocked hidden-desktop attempts. Holds now record how the check ran.
+- The desktop dashboard never showed token analytics. The collector always reports a Google token source, and the IPC projection rejected the whole snapshot because of it. Google sources are now accepted, as long as each source matches its own provider.
 
 ### Changed
 
