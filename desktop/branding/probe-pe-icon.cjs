@@ -11,7 +11,11 @@ const { readFile, writeFile, rename, unlink } = require("node:fs/promises");
 const { existsSync } = require("node:fs");
 const { dirname, join, resolve } = require("node:path");
 
-const ENABLED = process.env.QUOTAOPS_BRANDED_PE_PROBE === "1";
+// On by default for the unsigned test build (owner requirement: branded
+// QuotaOps.exe). QUOTAOPS_BRANDED_PE_PROBE=0 turns it off. The release
+// configuration does not use these hooks: it edits and signs the executable
+// through electron-builder itself (see desktop/build-signed-candidate.mjs).
+const ENABLED = process.env.QUOTAOPS_BRANDED_PE_PROBE !== "0";
 const ICON_PATH = resolve(__dirname, "quotaops-icon.ico");
 
 function reseditFromBuilder() {
@@ -69,6 +73,37 @@ async function afterExtract(context) {
     iconData.icons.map((item) => item.data),
   );
 
+  // Version strings shown by Explorer, Task Manager and "Open with": the
+  // stock binary says "Electron / GitHub, Inc.". Same pre-integrity edit.
+  const appInfo = context.packager && context.packager.appInfo;
+  const version = String((appInfo && appInfo.version) || "");
+  const parts = version.split(".").map((value) => Number.parseInt(value, 10));
+  if (parts.length !== 3 || parts.some((value) => !Number.isInteger(value) || value < 0)) {
+    throw new Error("Unexpected app version for PE metadata.");
+  }
+  const versions = Resource.VersionInfo.fromEntries(resources.entries);
+  if (versions.length !== 1) throw new Error("Unexpected stock Electron version resources.");
+  const info = versions[0];
+  const languages = info.getAllLanguagesForStringValues();
+  if (languages.length === 0) throw new Error("Stock Electron version resource has no string table.");
+  const productName = String((appInfo && appInfo.productName) || "QuotaOps");
+  const companyName = String((appInfo && appInfo.companyName) || "So Homely");
+  for (const language of languages) {
+    info.setStringValues(language, {
+      ProductName: productName,
+      FileDescription: productName,
+      CompanyName: companyName,
+      InternalName: productName,
+      OriginalFilename: `${productName}.exe`,
+      LegalCopyright: `Copyright (C) ${new Date().getFullYear()} ${companyName}`,
+      FileVersion: version,
+      ProductVersion: version,
+    });
+  }
+  info.setFileVersion(parts[0], parts[1], parts[2], 0, languages[0].lang);
+  info.setProductVersion(parts[0], parts[1], parts[2], 0, languages[0].lang);
+  info.outputToResourceEntries(resources.entries);
+
   resources.outputResource(executable);
   const newBinary = Buffer.from(executable.generate());
   const stage = join(context.appOutDir, `.quotaops-icon-${process.pid}.tmp`);
@@ -81,7 +116,7 @@ async function afterExtract(context) {
     await unlink(stage).catch(() => undefined);
   }
   const digest = createHash("sha256").update(newBinary).digest("hex").slice(0, 12);
-  process.stdout.write(`[branding-probe] stock Electron icon replaced before ASAR integrity (sha256:${digest})\n`);
+  process.stdout.write(`[branding-probe] QuotaOps icon and version strings applied before ASAR integrity (sha256:${digest})\n`);
 }
 
 async function afterPack(context) {
@@ -108,6 +143,12 @@ async function afterPack(context) {
   if (!largeIcon || !resources.entries.some((entry) =>
     Number(entry.type) === 3 && Buffer.from(entry.bin).equals(largeIcon))) {
     throw new Error("The actual QuotaOps icon is absent from packaged PE resources.");
+  }
+  const versionInfo = resedit.Resource.VersionInfo.fromEntries(resources.entries)[0];
+  const strings = versionInfo && versionInfo.getAllLanguagesForStringValues()
+    .map((language) => versionInfo.getStringValues(language))[0];
+  if (!strings || strings.FileDescription !== "QuotaOps" || strings.ProductName !== "QuotaOps") {
+    throw new Error("Packaged QuotaOps.exe does not carry QuotaOps version strings.");
   }
   const asarIntegrity = resources.entries.find((entry) =>
     String(entry.type).toLowerCase() === "integrity" &&

@@ -149,12 +149,13 @@ process.stdout.write(
 );
 // State the actual experiment mode, never claim an unverified icon is ready
 // for distribution. A local Windows packaged-boot test remains compulsory.
-if (process.env.QUOTAOPS_BRANDED_PE_PROBE === "1") {
+if (process.env.QUOTAOPS_BRANDED_PE_PROBE !== "0") {
   process.stdout.write(
-    "EXPERIMENTAL PE BRANDING: pre-integrity icon and post-pack resource\n" +
-      "checks were enabled. This is still UNSIGNED and NOT release approved.\n" +
-      "Run isolated packaged startup smoke again; verify icon visually and\n" +
-      "obtain independent ASAR-integrity/security review before release.\n",
+    "Branding: QuotaOps.exe carries the QuotaOps icon and version strings,\n" +
+      "applied to the extracted Electron binary BEFORE electron-builder writes\n" +
+      "the ASAR integrity resource; the post-pack check verified icon, strings\n" +
+      "and integrity manifest. Shortcuts inherit the executable icon. This is\n" +
+      "still an UNSIGNED test build, not release approved.\n",
   );
 } else {
   process.stdout.write(

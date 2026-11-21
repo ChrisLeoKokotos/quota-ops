@@ -22,7 +22,7 @@ test("experimental PE icon hooks parse under the owner Node runtime", () => {
   }
 });
 
-test("PE icon experiment is disabled by default and only affects test hooks", async () => {
+test("PE branding is on for the unsigned test build only, and can be turned off", async () => {
   const code = await readFile(hook, "utf8");
   const base = JSON.parse(await readFile(new URL(
     "../desktop/electron-builder.json", import.meta.url), "utf8"));
@@ -32,7 +32,7 @@ test("PE icon experiment is disabled by default and only affects test hooks", as
   assert.equal(Object.hasOwn(base, "afterPack"), false);
   assert.equal(Object.hasOwn(base.win, "signAndEditExecutable"), false);
   assert.equal(experimental.win.signAndEditExecutable, false);
-  assert.match(code, /process\.env\.QUOTAOPS_BRANDED_PE_PROBE === "1"/);
+  assert.match(code, /process\.env\.QUOTAOPS_BRANDED_PE_PROBE !== "0"/);
   assert.match(code, /if \(!ENABLED\) return/);
   assert.equal(experimental.publish, null);
 });
@@ -46,6 +46,10 @@ test("pre-ASAR PE edit refuses an already embedded integrity resource", async ()
   assert.match(code, /app-builder-lib\/package\.json/);
   assert.match(code, /No ElectronAsar INTEGRITY resource/);
   assert.match(code, /largeIcon/);
+  // Version strings are set in the same pre-integrity edit and verified after packing.
+  assert.match(code, /info\.outputToResourceEntries\(resources\.entries\)/);
+  assert.ok(code.indexOf("outputToResourceEntries") < code.indexOf("resources.outputResource(executable)"));
+  assert.match(code, /does not carry QuotaOps version strings/);
 });
 
 test("CJS hook wrappers point to their own builder phases", () => {

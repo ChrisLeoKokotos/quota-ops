@@ -306,16 +306,15 @@ test("an ICO directory entry points at real data", () => {
   assert.deepEqual(ico.subarray(offset, offset + length), frame.data);
 });
 
-test("the executable icon limitation stays visible in the build output", async () => {
-  // The installer, uninstaller, window and tray are branded; QuotaOps.exe is
-  // not, because `signAndEditExecutable: false` skips resource editing and
-  // enabling it fails extracting winCodeSign's macOS dylib symlinks without
-  // administrator rights. Measured: the packaged executable's icon is
-  // byte-identical to stock electron.exe.
-  //
-  // This pins the warning so the gap cannot quietly become "done".
+test("the build states honestly whether QuotaOps.exe is branded", async () => {
+  // Default test build: icon and version strings applied before the ASAR
+  // integrity resource (verified visually on Windows, Nov 2026). With
+  // QUOTAOPS_BRANDED_PE_PROBE=0 the old limitation message must still say
+  // the executable and shortcuts are NOT branded.
   const script = await readFile(new URL("desktop/build-installer.mjs", repo), "utf8");
 
+  assert.match(script, /QUOTAOPS_BRANDED_PE_PROBE !== "0"/);
+  assert.match(script, /BEFORE electron-builder writes\\n/);
   assert.match(script, /QuotaOps\.exe does NOT/);
   assert.match(script, /winCodeSign/);
   assert.match(script, /shortcuts/i);
