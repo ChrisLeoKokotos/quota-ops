@@ -67,7 +67,26 @@ async function main(): Promise<void> {
   // Show restored holds at once (tray "Needs your attention", dashboard
   // state) instead of waiting for a batch, which may never run when
   // background collection is off.
-  results = holds.heldResults(config.accounts.filter((account) => account.enabled));
+  // Every enabled account is visible from the first snapshot: restored
+  // holds as they were, everything else as "configured" (not checked yet).
+  // A failed or pending check never turns into a usage value.
+  const configuredResult = (account: { id: string; label: string }): CollectorAccountResult => ({
+    id: account.id,
+    label: account.label,
+    status: "configured",
+    account: null,
+    checkedAt: new Date(0).toISOString(),
+    message: "Not checked yet in this session.",
+  });
+  const withLastSuccess = (result: CollectorAccountResult): CollectorAccountResult => ({
+    ...result,
+    lastSuccessAt: holds.lastSuccessAt(result.id),
+  });
+  {
+    const enabledAtStart = config.accounts.filter((account) => account.enabled);
+    const held = new Map(holds.heldResults(enabledAtStart).map((result) => [result.id, result]));
+    results = enabledAtStart.map((account) => withLastSuccess(held.get(account.id) ?? configuredResult(account)));
+  }
   const interactiveProfiles = new Map<string, InteractiveProfile>();
 
   const monitoring = new MonitoringController(
@@ -147,7 +166,7 @@ async function main(): Promise<void> {
     },
     (value, at) => {
       if (value === null) return;
-      results = value.nextResults;
+      results = value.nextResults.map(withLastSuccess);
       tokenAnalytics = value.nextTokens;
       // Do not report a fresh collection when no account produced usage:
       // a batch in which every account failed refreshed nothing (issue #49).

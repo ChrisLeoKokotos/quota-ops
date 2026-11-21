@@ -3,6 +3,8 @@ import type { TokenAnalyticsSnapshot } from "../lib/token-analytics.ts";
 
 export type CollectorAccountStatus =
   | "ok"
+  /** Configured and enabled, not checked yet in this collector run. */
+  | "configured"
   | "login_required"
   | "verification_required"
   | "unavailable"
@@ -47,6 +49,12 @@ export interface CollectorAccountResult {
   account: QuotaAccount | null;
   checkedAt: string;
   message: string | null;
+  /**
+   * When this account last returned usage (ISO time), or null if it never
+   * has on this PC. Lets the dashboard say "Never successfully synced"
+   * instead of showing a misleading time or a 0%.
+   */
+  lastSuccessAt?: string | null;
 }
 
 export interface CollectorSnapshotResponse {

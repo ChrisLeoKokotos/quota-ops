@@ -51,6 +51,8 @@ interface HoldRecord {
 
 export class AttentionHolds {
   private readonly held = new Map<string, HoldRecord>();
+  /** Last time each account returned usage (ISO), kept across restarts. */
+  private readonly successes = new Map<string, string>();
   private readonly interactive = new Set<string>();
   private readonly now: () => number;
 
@@ -93,6 +95,11 @@ export class AttentionHolds {
   record(result: CollectorAccountResult, presentation: HoldPresentation = "headless"): void {
     if (needsPerson(result.status)) this.held.set(result.id, { result, heldAt: this.now(), presentation });
     else this.held.delete(result.id);
+    if (result.status === "ok" && result.account !== null) this.successes.set(result.id, result.checkedAt);
+  }
+
+  lastSuccessAt(id: string): string | null {
+    return this.successes.get(id) ?? null;
   }
 
   /**
@@ -136,13 +143,22 @@ export class AttentionHolds {
       heldAt: record.heldAt,
       presentation: record.presentation,
     }));
-    return JSON.stringify({ version: 1, holds }) + "\n";
+    const lastSuccess = Object.fromEntries(this.successes);
+    return JSON.stringify({ version: 1, holds, lastSuccess }) + "\n";
   }
 
   restore(json: string, labels: Map<string, string>): void {
     let parsed: unknown;
     try { parsed = JSON.parse(json); } catch { return; }
     if (!parsed || typeof parsed !== "object" || (parsed as { version?: unknown }).version !== 1) return;
+    const successes = (parsed as { lastSuccess?: unknown }).lastSuccess;
+    if (successes && typeof successes === "object" && !Array.isArray(successes)) {
+      for (const [id, at] of Object.entries(successes as Record<string, unknown>).slice(0, 64)) {
+        if (labels.has(id) && typeof at === "string" && !Number.isNaN(Date.parse(at)) && Date.parse(at) <= this.now()) {
+          this.successes.set(id, at);
+        }
+      }
+    }
     const holds = (parsed as { holds?: unknown }).holds;
     if (!Array.isArray(holds)) return;
     for (const entry of holds.slice(0, 64)) {

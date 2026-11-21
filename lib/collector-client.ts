@@ -15,13 +15,23 @@ export type CollectorConnectionState =
   | "connected"
   | "offline";
 
-interface CollectorAccountResult {
+export type CollectorAccountState =
+  | "ok"
+  | "configured"
+  | "login_required"
+  | "verification_required"
+  | "unavailable"
+  | "unsupported";
+
+export interface CollectorAccountResult {
   id: string;
   label: string;
-  status: "ok" | "login_required" | "verification_required" | "unavailable" | "unsupported";
+  status: CollectorAccountState;
   account: QuotaAccount | null;
   checkedAt: string;
   message: string | null;
+  /** Last time this account returned usage, or null: never on this PC. */
+  lastSuccessAt?: string | null;
 }
 
 interface CollectorSnapshotResponse {

@@ -25,8 +25,10 @@ import {
 } from "@/lib/reset-notifications";
 import {
   fetchCollectorSnapshot,
+  type CollectorAccountResult,
   type CollectorConnectionState,
 } from "@/lib/collector-client";
+import { getDesktopBridge } from "@/lib/collector-transport";
 import {
   parseVoiceUsageCommand,
   voiceWindowLabel,
@@ -48,6 +50,7 @@ const SIDEBAR_KEY = "quotaops:sidebar-open";
 // the person in the account's own profile (tray: Manual verification
 // required), never by QuotaOps.
 const COLLECTOR_ISSUE_LABELS: Record<string, string> = {
+  configured: "Not checked yet",
   verification_required: "Manual verification required",
   login_required: "Sign-in required",
   unsupported: "Provider usage format unsupported",
@@ -499,18 +502,69 @@ function QuotaRow({
   );
 }
 
+/** What the person can do about a collector state, in this app or the dev dashboard. */
+function collectorStateAction(state: CollectorAccountResult): string | null {
+  const inDesktopApp = getDesktopBridge() !== null;
+  if (state.status === "verification_required" || state.status === "login_required") {
+    const item = state.status === "login_required" ? "Sign in" : "Manual verification required";
+    return inDesktopApp
+      ? `Open the QuotaOps tray menu and choose "${item}: ${state.label.slice(0, 40)}...". Complete the check in the window that opens, then close it.`
+      : `Run: npm run collector:setup -- login ${state.id} and complete the check in the window that opens.`;
+  }
+  if (state.status === "configured") return "QuotaOps checks it automatically shortly after start.";
+  if (state.status === "unavailable") return "Make sure Google Chrome or Microsoft Edge is installed; QuotaOps retries on its next check.";
+  return null;
+}
+
+function lastSuccessCopy(state: CollectorAccountResult): string {
+  return state.lastSuccessAt
+    ? `Last successful sync ${formatUpdatedAt(state.lastSuccessAt)}`
+    : "Never successfully synced";
+}
+
+/**
+ * A configured account the collector could not read (yet). Shows its state
+ * and what to do; never a percentage, because there is no reading to show.
+ */
+function CollectorStatusCard({ state }: { state: CollectorAccountResult }) {
+  const action = collectorStateAction(state);
+  return (
+    <article className="account-card" data-status="needs_setup" data-collector-state={state.status}>
+      <header className="account-header">
+        <div>
+          <div className="account-name-row">
+            <h2>{state.label}</h2>
+          </div>
+          <p>Auto-sync · {lastSuccessCopy(state)}</p>
+        </div>
+        <span className="status-badge" data-status="needs_setup">
+          <span className="status-dot" aria-hidden="true" />
+          {COLLECTOR_ISSUE_LABELS[state.status] ?? state.status}
+        </span>
+      </header>
+      <div className="quota-list">
+        <p>No usage to show: QuotaOps has no reading for this account{state.lastSuccessAt ? " in this session" : " yet"}.</p>
+        {action ? <p>{action}</p> : null}
+      </div>
+    </article>
+  );
+}
+
 function AccountCard({
   account,
   nowMs,
   recommended,
   onChange,
   onDelete,
+  collectorState,
 }: {
   account: QuotaAccount;
   nowMs: number;
   recommended: boolean;
   onChange: (next: QuotaAccount) => void;
   onDelete: () => void;
+  /** Latest collector state when it is not a fresh reading. */
+  collectorState?: CollectorAccountResult | undefined;
 }) {
   const status = getAccountStatus(account, nowMs);
   const [newGoogleGroup, setNewGoogleGroup] = useState("");
@@ -538,6 +592,11 @@ function AccountCard({
             {providerLabel(account.provider)} {account.plan} · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
           </p>
           {account.email ? <p>{account.email}</p> : null}
+          {collectorState ? (
+            <p data-collector-state={collectorState.status}>
+              Latest check: {COLLECTOR_ISSUE_LABELS[collectorState.status] ?? collectorState.status} · showing last known values from {formatUpdatedAt(account.updatedAt)}
+            </p>
+          ) : null}
         </div>
 
         <span className="status-badge" data-status={status}>
@@ -984,6 +1043,8 @@ export function QuotaDashboard() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
   const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
+  // Every configured account the collector reports without a fresh reading.
+  const [collectorStates, setCollectorStates] = useState<CollectorAccountResult[]>([]);
   const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const [tokenAnalytics, setTokenAnalytics] =
     useState<TokenAnalyticsSnapshot | null>(null);
@@ -1045,7 +1106,10 @@ export function QuotaDashboard() {
         // 30 s re-renders the whole dashboard for nothing.
         setTokenAnalytics((previous) =>
           JSON.stringify(previous) === JSON.stringify(snapshot.tokens) ? previous : snapshot.tokens);
-        const nextIssues = snapshot.issues.map((issue) => {
+        setCollectorStates((previous) =>
+          JSON.stringify(previous) === JSON.stringify(snapshot.issues) ? previous : snapshot.issues);
+        // "Not checked yet" is information, not something to fix.
+        const nextIssues = snapshot.issues.filter((issue) => issue.status !== "configured").map((issue) => {
           // Say plainly what the person must do; last known values stay as
           // they were (stale), never replaced by 0%.
           const state = COLLECTOR_ISSUE_LABELS[issue.status] ?? issue.status;
@@ -1188,6 +1252,11 @@ export function QuotaDashboard() {
   const recommended = useMemo(
     () => (nowMs ? getRecommendedAccount(accounts, nowMs) : null),
     [accounts, nowMs],
+  );
+
+  const statusOnlyStates = useMemo(
+    () => collectorStates.filter((state) => !accounts.some((account) => account.id === state.id)),
+    [collectorStates, accounts],
   );
 
   const summary = useMemo(() => {
@@ -1631,10 +1700,10 @@ export function QuotaDashboard() {
                 <span className="page-kicker">Accounts</span>
                 <h2>AI accounts</h2>
               </div>
-              <span>{accounts.length} account{accounts.length === 1 ? "" : "s"}</span>
+              <span>{accounts.length + statusOnlyStates.length} account{accounts.length + statusOnlyStates.length === 1 ? "" : "s"}</span>
             </div>
 
-            {accounts.length === 0 ? (
+            {accounts.length === 0 && statusOnlyStates.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon"><AccountsIcon /></div>
                 <h3>Add your first account</h3>
@@ -1657,7 +1726,13 @@ export function QuotaDashboard() {
                     recommended={recommended?.id === account.id}
                     onChange={updateAccount}
                     onDelete={() => removeAccount(account)}
+                    collectorState={account.source === "collector"
+                      ? collectorStates.find((state) => state.id === account.id)
+                      : undefined}
                   />
+                ))}
+                {statusOnlyStates.map((state) => (
+                  <CollectorStatusCard key={`collector-${state.id}`} state={state} />
                 ))}
               </div>
             )}

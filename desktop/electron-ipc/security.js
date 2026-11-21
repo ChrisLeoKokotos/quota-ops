@@ -359,6 +359,7 @@ function projectSnapshot(parsed) {
         status: boundedText(source.status, 32),
         checkedAt: boundedText(source.checkedAt, 64),
         message: boundedText(source.message, 512),
+        lastSuccessAt: boundedText(source.lastSuccessAt, 64),
         account: account
           ? {
               id: boundedText(account.id, 64),

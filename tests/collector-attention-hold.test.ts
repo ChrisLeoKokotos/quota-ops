@@ -133,7 +133,7 @@ test("only a consented visible refresh opens browser windows; background is head
   assert.match(service, /request\.url === "\/monitoring\/refresh-visible"/);
   // Restored holds are visible immediately after a restart, also when
   // background collection is off and no batch runs.
-  assert.match(service, /results = holds\.heldResults\(config\.accounts\.filter\(\(account\) => account\.enabled\)\);/);
+  assert.match(service, /const held = new Map\(holds\.heldResults\(enabledAtStart\)/);
 
   const main = await readFile(new URL("../desktop/electron-ipc/main.js", import.meta.url), "utf8");
   const start = main.indexOf("async function runVisibleRefresh()");
