@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const exec = promisify(execFile);
@@ -54,11 +55,26 @@ test("cross-process config transactions do not restore revoked consent or lose u
     assert.equal(raw.tokenAnalyticsSources.claudeCode,false);
     assert.equal(raw.tokenAnalyticsSources.googleAntigravity,true);
     assert.equal(raw.pollIntervalSeconds,1200);
+    // Real CLI mutations use the same transaction and preserve each other's
+    // independent opt-in scopes, including the separate Google epoch.
+    const cli = (...args: string[]) => exec(process.execPath, [
+      "--experimental-strip-types", fileURLToPath(new URL("../collector/cli.ts", import.meta.url)), ...args,
+    ], { env, timeout: 30000 });
+    await Promise.all([cli("tokens-auto","enable","codex"),cli("tokens-auto","disable","google-antigravity")]);
+    const after = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
+    assert.equal(after.tokenAnalyticsSources.claudeCode,false);
+    assert.equal(after.tokenAnalyticsSources.codex,true);
+    assert.equal(after.tokenAnalyticsSources.googleAntigravity,false);
+    assert.equal(after.googleTokenConsentEpoch,undefined);
+    await cli("tokens-auto","enable","google-antigravity");
+    const reenabled = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
+    assert.notEqual(reenabled.googleTokenConsentEpoch,raw.googleTokenConsentEpoch);
+    assert.equal(reenabled.tokenAnalyticsSources.codex,true);
     // Failure to acquire the common lock must never run a writer/publication.
     await worker(`await mkdir(join(home,".quotaops","collector.json.lock"));
       let ran=false;try{await withCollectorConfig(()=>{ran=true;});throw Error("unexpected lock success");}
       catch(e){if(ran||!String(e).includes("lock busy"))throw e;}`);
     const unchanged = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
-    assert.deepEqual(unchanged,raw);
+    assert.deepEqual(unchanged,reenabled);
   } finally { await rm(home,{recursive:true,force:true}); }
 });

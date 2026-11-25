@@ -198,12 +198,11 @@ async function main(): Promise<void> {
     }
 
     const analytics = await mergeGoogleAnalytics(await collectLocalTokenAnalytics(consent),config.accounts,consent.googleAntigravity === true);
-    await withCollectorConfig(async latest => {
+    await withCollectorConfig(latest => {
       if (tokenConsentKey(latest) !== tokenConsentKey(config)) throw new Error("Consent changed during scan; no token results published.");
-      const output = JSON.stringify(analytics, null, 2) + "\n";
-      await new Promise<void>((resolve, reject) => {
-        process.stdout.write(output, error => error ? reject(error) : resolve());
-      });
+      // Queue output under the consent lock, without letting a blocked stdout
+      // pipe hold configuration mutations indefinitely.
+      process.stdout.write(JSON.stringify(analytics, null, 2) + "\n");
     });
     return;
   }

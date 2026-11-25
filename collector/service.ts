@@ -18,7 +18,7 @@ import { getCollectorRunDir, getCollectorStatePath, getCollectorConfigPath } fro
 import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
 import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
-import { loadCollectorConfig, updateCollectorConfig, tokenConsentKey as consentKey } from "./config.ts";
+import { loadCollectorConfig, updateCollectorConfig, withCollectorConfig, tokenConsentKey as consentKey } from "./config.ts";
 import {
   collectorTokenMatches,
   getOrCreateCollectorToken,
@@ -437,7 +437,35 @@ async function main(): Promise<void> {
     }
 
     if (request.url === "/snapshot") {
-      sendJson(request, response, 200, snapshot());
+      // The watcher is intentionally asynchronous. Do not publish cached token
+      // totals in its blind interval after a CLI revocation. Queue the response
+      // under the same lock as consent mutations, then release it immediately.
+      void withCollectorConfig(current => {
+        const key = consentKey(current);
+        if (key !== observedConsent) {
+          observation++;
+          observedConsent = key;
+          tokens.invalidate();
+        }
+        const value = snapshot();
+        sendJson(request, response, 200, current.tokenAnalyticsEnabled ? value : {
+          ...value, tokens: null,
+          tokenStatus: { state: "disabled", scannedAt: null, pending: false },
+        });
+      }).catch(() => {
+        if (response.headersSent || response.destroyed) return;
+        if (observedConsent !== "invalid") {
+          observation++;
+          observedConsent = "invalid";
+          tokens.invalidate();
+        }
+        // An invalid or busy configuration must not expose cached private
+        // aggregates; provider quota data remains separately available.
+        sendJson(request, response, 200, {
+          ...snapshot(), tokens: null,
+          tokenStatus: { state: "unavailable", scannedAt: null, pending: false },
+        });
+      });
       return;
     }
 
