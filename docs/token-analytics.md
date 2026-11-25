@@ -148,3 +148,5 @@ QuotaOps prefers an explicitly local total over claiming provider-wide completen
 ## Consent changes
 
 The collector invalidates old scan generations on consent changes, suppresses stale totals and cooperatively stops history readers. CLI changes are observed through the config file watcher (one-second polling; already pending disk I/O can complete). Google counters use a baseline for each session per consent epoch, counting only subsequent increases. Older stored aggregates are retained, not retrospectively corrected. Existing previously enabled installations start a new baseline on the first updated hook event. Do not run simultaneous CLI and desktop consent writes; use one control surface at a time.
+
+Rapid CLI off/on changes carry a unique revision so identical final flags cannot conceal a consent transition. Concurrent configuration writes across different processes are not a supported workflow; use one control surface at a time. A disk read already in flight may finish, but invalidated history scan results cannot be published by the runner. Google hook rechecks the opt-in epoch before publishing.

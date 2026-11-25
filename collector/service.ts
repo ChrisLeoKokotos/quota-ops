@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { watchFile, unwatchFile } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import { collectProviderUsage } from "./provider.ts";
 import { collectLocalTokenAnalytics, resetTokenScanCache, tokenScanPending } from "./token-analytics.ts";
@@ -62,10 +63,11 @@ async function main(): Promise<void> {
   const consentKey = (c: CollectorConfig) => JSON.stringify([
     c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
     c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
+    c.tokenConsentRevision ?? null,
   ]);
   let observedConsent = consentKey(config);
   let consentChanging = false;
-  const tokens = new TokenRunner({
+  const tokens: TokenRunner = new TokenRunner({
     clearCache: resetTokenScanCache,
     scan: async (signal) => {
       const current = await loadCollectorConfig();
@@ -79,8 +81,13 @@ async function main(): Promise<void> {
       );
       signal.throwIfAborted();
       // CLI consent changes are also observed before any scan is published.
-      const latest = await loadCollectorConfig();
+      const latest = await loadCollectorConfig().catch(() => null);
       signal.throwIfAborted();
+      if (!latest) {
+        observedConsent = "invalid";
+        tokens.invalidate();
+        return null;
+      }
       if (consentKey(latest) !== consentKey(current)) {
         observedConsent = consentKey(latest);
         tokens.invalidate();
@@ -319,6 +326,7 @@ async function main(): Promise<void> {
       const next = {
         ...current,
         tokenAnalyticsSources: sources,
+        tokenConsentRevision: randomUUID(),
         tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
       };
       await saveCollectorConfig(next);

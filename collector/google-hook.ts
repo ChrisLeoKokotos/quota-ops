@@ -14,9 +14,14 @@ try{
   const cfg=await loadCollectorConfig();
   if(!cfg.accounts.some(a=>a.id===id&&a.provider==="google"&&a.enabled))throw Error("unconfigured account");
   const payload:unknown=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if(!await ingestGoogleStatusline(id,payload,undefined,Date.now(),
-    cfg.tokenAnalyticsEnabled && cfg.tokenAnalyticsSources.googleAntigravity === true
-      ? cfg.googleTokenConsentEpoch ?? "legacy" : null))
+  const epoch=cfg.tokenAnalyticsEnabled && cfg.tokenAnalyticsSources.googleAntigravity === true
+    ? cfg.googleTokenConsentEpoch ?? "legacy" : null;
+  const stillConsented=async()=>{
+    const latest=await loadCollectorConfig().catch(()=>null);
+    return !!latest&&latest.tokenAnalyticsEnabled&&latest.tokenAnalyticsSources.googleAntigravity===true&&
+      (latest.googleTokenConsentEpoch??"legacy")===epoch;
+  };
+  if(!await ingestGoogleStatusline(id,payload,undefined,Date.now(),epoch,stillConsented))
     throw Error("invalid statusline");
 }catch{
   process.exitCode=1; // Never log raw JSON, path, email or token fields.

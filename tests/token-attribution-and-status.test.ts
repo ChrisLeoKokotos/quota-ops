@@ -275,3 +275,23 @@ test("consent invalidation hides previous data immediately and rejects in-flight
   assert.equal(cleared,1);
   runner.stop();
 });
+
+
+test("rapid consent invalidations coalesce and a failed replacement cannot expose revoked totals",async()=>{
+  let pass=0, release!:()=>void;
+  const runner=new TokenRunner({...fakeTimers(),scan:async()=>{
+    pass++;
+    if(pass===1)return {snapshot:snapshotOf(100),pending:false};
+    if(pass===2){await new Promise<void>(resolve=>{release=resolve;});return {snapshot:snapshotOf(999),pending:false};}
+    throw Error("rescan failed");
+  }});
+  await runner.trigger();
+  const old=runner.trigger();
+  runner.invalidate();runner.invalidate();
+  assert.equal(runner.snapshot,null);
+  release();await old;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(runner.status.state,"unavailable");
+  assert.equal(runner.snapshot,null);
+  assert.equal(pass,3);
+  runner.stop();
+});

@@ -176,6 +176,7 @@ async function main(): Promise<void> {
       ...rest,
       tokenAnalyticsEnabled: next.claudeCode || next.codex || next.googleAntigravity,
       tokenAnalyticsSources: next,
+      tokenConsentRevision: randomUUID(),
       ...(next.googleAntigravity ? {
         googleTokenConsentEpoch: consent.googleAntigravity === true && previousEpoch
           ? previousEpoch : randomUUID(),

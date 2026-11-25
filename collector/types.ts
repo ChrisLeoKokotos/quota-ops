@@ -34,6 +34,8 @@ export interface CollectorConfig {
   tokenAnalyticsSources: TokenAnalyticsConsent;
   /** Rotates on Google opt-in so cumulative counters cannot bridge revocation. */
   googleTokenConsentEpoch?: string;
+  /** Changes even for a rapid off/on cycle with identical final flags. */
+  tokenConsentRevision?: string;
   accounts: CollectorAccountConfig[];
   /**
    * Unattended (scheduled) collection, never on the person's screen:

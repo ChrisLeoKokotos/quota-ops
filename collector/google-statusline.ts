@@ -105,7 +105,8 @@ const initial=():Stored=>({version:1,updatedAt:new Date(0).toISOString(),plan:"A
   daily:Object.create(null) as Record<string,TokenTotals>});
 /** Serialized read/modify/write: repeated statusline ticks do not double-count tokens. */
 export async function ingestGoogleStatusline(id:string,payload:unknown,
-  root=getGoogleStatuslineRoot(),now=Date.now(),tokenEpoch:string|null=null):Promise<boolean>{
+  root=getGoogleStatuslineRoot(),now=Date.now(),tokenEpoch:string|null=null,
+  stillConsented?:()=>Promise<boolean>):Promise<boolean>{
   const event=projectGoogleStatusline(payload,now);if(!event)return false;
   const path=fileFor(id,root);
   await mkdir(root,{recursive:true,mode:0o700});await noLink(root);await noLink(path);
@@ -118,6 +119,7 @@ export async function ingestGoogleStatusline(id:string,payload:unknown,
   try{
     const s=(await readState(id,root))??initial();
     if(Date.parse(s.updatedAt)>now)return false;
+    if(tokenEpoch!==null&&stillConsented&&!await stillConsented())tokenEpoch=null;
     s.updatedAt=event.checkedAt;s.plan=event.plan;
     s.windows=event.windows; // Missing quotas must not refresh older percentages as if current.
     // Every opt-in epoch begins with a baseline, not historical usage.
@@ -153,6 +155,9 @@ export async function ingestGoogleStatusline(id:string,payload:unknown,
       if(Buffer.byteLength(data)>MAX_BYTES)return false;
       const fd=await open(temp,"wx",0o600);
       try{await fd.writeFile(data,"utf8");}finally{await fd.close();}
+      // Recheck before publishing the sanitized aggregate. A revocation while
+      // awaiting the file lock or writing the temp file must not publish it.
+      if(tokenEpoch!==null&&stillConsented&&!await stillConsented())return false;
       await rename(temp,path);
     }finally{await rm(temp,{force:true}).catch(()=>undefined);}
     return true;

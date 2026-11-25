@@ -775,3 +775,18 @@ test("a valid exhausted seventeenth Google window survives the IPC boundary", ()
   assert.equal(projected.accounts[0]?.account?.windows.length,17);
   assert.equal(projected.accounts[0]?.account?.windows[16]?.usedPercent,100);
 });
+
+
+test("the full projected quota set excludes an account with its final bucket exhausted", async () => {
+  const { adviseAccounts } = await import("../lib/smart-advisor.ts");
+  const now=Date.parse("2026-11-25T12:00:00Z");
+  const windows=Array.from({length:32},(_,i)=>({id:"google-bucket:"+i,label:"Bucket "+i,usedPercent:i===31?100:0,resetAt:new Date(now+86400000).toISOString()}));
+  const account={id:"a",label:"A",provider:"google",plan:"Pro",updatedAt:new Date(now).toISOString(),windows};
+  const projected=security.projectSnapshot({version:1,accounts:[{id:"a",label:"A",status:"ok",account}]});
+  assert.equal(projected.accounts[0]?.account?.windows.length,32);
+  const observed=projected.accounts[0]?.account;
+  assert.ok(observed);
+  // Projection is validated on the actual renderer path by collector-client.
+  const result=adviseAccounts([{...account, ...observed, source:"collector"} as import("../lib/quota.ts").QuotaAccount],{provider:"google",task:"coding",nowMs:now,freshIds:["a"]});
+  assert.equal(result.recommended,null);
+});

@@ -76,6 +76,8 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
       candidate.tokenAnalyticsSources.claudeCode ||
       candidate.tokenAnalyticsSources.codex ||
       candidate.tokenAnalyticsSources.googleAntigravity === true) &&
+    (candidate.tokenConsentRevision === undefined ||
+      (typeof candidate.tokenConsentRevision === "string" && /^[a-f0-9-]{36}$/.test(candidate.tokenConsentRevision))) &&
     (candidate.googleTokenConsentEpoch === undefined ||
       (typeof candidate.googleTokenConsentEpoch === "string" && /^[a-f0-9-]{36}$/.test(candidate.googleTokenConsentEpoch))) &&
     Array.isArray(candidate.accounts) &&

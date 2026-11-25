@@ -14,6 +14,7 @@ import {
   type QuotaWindow,
 } from "@/lib/quota";
 import { adviseAccounts, recordAdvisorHistory, TASKS, type AdvisorTask, type AdvisorHistory } from "@/lib/smart-advisor";
+import { applyAccountEdit } from "@/lib/account-observation";
 import {
   createGoogleModelGroupWindows,
   hasGoogleModelGroup,
@@ -1233,6 +1234,10 @@ export function QuotaDashboard() {
     setTokenSwitching(true);
     try {
       const result = await requestTokenAnalytics(enabled);
+      if (result === "off") {
+        setTokenAnalytics(null);
+        setTokenStatus({ state: "scanning", scannedAt: null, pending: false });
+      }
       if (result === "error") showToast("Token analytics could not be changed. Try again from the tray menu.");
       if (result === "busy") showToast("QuotaOps is busy with another action. Try again in a moment.");
     } catch {
@@ -1497,14 +1502,7 @@ export function QuotaDashboard() {
 
   const updateAccount = (next: QuotaAccount) => {
     setAccounts((current) =>
-      current.map((account) => {
-        if (account.id !== next.id) return account;
-        if (account.source !== "collector") return next;
-        // Metadata edits must preserve the latest actual observation, even
-        // if a render holding older data initiated this change.
-        const { email: _email, ...observed } = account;
-        return { ...observed, label: next.label, ...(next.email ? { email: next.email } : {}) };
-      }),
+      current.map(account => applyAccountEdit(account, next)),
     );
   };
 
