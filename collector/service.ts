@@ -18,7 +18,7 @@ import { getCollectorRunDir, getCollectorStatePath, getCollectorConfigPath } fro
 import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
 import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
-import { loadCollectorConfig, saveCollectorConfig } from "./config.ts";
+import { loadCollectorConfig, updateCollectorConfig, tokenConsentKey as consentKey } from "./config.ts";
 import {
   collectorTokenMatches,
   getOrCreateCollectorToken,
@@ -26,7 +26,6 @@ import {
 import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
-  CollectorConfig,
 } from "./types.ts";
 
 const HOST = "127.0.0.1";
@@ -60,11 +59,6 @@ async function main(): Promise<void> {
   // Token analytics has its own clock (token-runner.ts): provider checks that
   // fail, wait for a person, are paused or switched off never hold it back.
   // Local private histories are read only with the stored consent.
-  const consentKey = (c: CollectorConfig) => JSON.stringify([
-    c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
-    c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
-    c.tokenConsentRevision ?? null,
-  ]);
   let observedConsent = consentKey(config);
   let consentChanging = false;
   const tokens: TokenRunner = new TokenRunner({
@@ -72,6 +66,11 @@ async function main(): Promise<void> {
     scan: async (signal) => {
       const current = await loadCollectorConfig();
       signal.throwIfAborted();
+      if (consentKey(current) !== observedConsent) {
+        observedConsent = consentKey(current);
+        tokens.invalidate();
+        return null;
+      }
       if (!current.tokenAnalyticsEnabled) return null;
       const sources = current.tokenAnalyticsSources;
       if (!sources.claudeCode && !sources.codex && sources.googleAntigravity !== true) return null;
@@ -84,8 +83,10 @@ async function main(): Promise<void> {
       const latest = await loadCollectorConfig().catch(() => null);
       signal.throwIfAborted();
       if (!latest) {
-        observedConsent = "invalid";
-        tokens.invalidate();
+        if (observedConsent !== "invalid") {
+          observedConsent = "invalid";
+          tokens.invalidate();
+        }
         return null;
       }
       if (consentKey(latest) !== consentKey(current)) {
@@ -321,15 +322,17 @@ async function main(): Promise<void> {
     }
     consentChanging = true;
     try {
-      const current = await loadCollectorConfig();
-      const sources = { ...current.tokenAnalyticsSources, claudeCode, codex };
-      const next = {
-        ...current,
-        tokenAnalyticsSources: sources,
-        tokenConsentRevision: randomUUID(),
-        tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
-      };
-      await saveCollectorConfig(next);
+      const flags = { claudeCode, codex };
+      const next = await updateCollectorConfig(current => {
+        const { claudeCode, codex } = flags;
+        const sources = { ...current.tokenAnalyticsSources, claudeCode, codex };
+        return {
+          ...current,
+          tokenAnalyticsSources: sources,
+          tokenConsentRevision: randomUUID(),
+          tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
+        };
+      });
       observation++;
       observedConsent = consentKey(next);
       tokens.invalidate();

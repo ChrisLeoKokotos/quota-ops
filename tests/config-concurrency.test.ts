@@ -1,0 +1,64 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+const exec = promisify(execFile);
+const configUrl = new URL("../collector/config.ts", import.meta.url).href;
+const securityUrl = new URL("../collector/security.ts", import.meta.url).href;
+
+test("cross-process config transactions do not restore revoked consent or lose unrelated edits", async () => {
+  const home = await mkdtemp(join(tmpdir(), "qo-config-lock-"));
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  const worker = (body: string) => exec(process.execPath, [
+    "--experimental-strip-types", "--input-type=module", "--eval",
+    `import { updateCollectorConfig, loadCollectorConfig, withCollectorConfig } from ${JSON.stringify(configUrl)};
+     import { ensureCollectorHomeSecurity } from ${JSON.stringify(securityUrl)};
+     import { writeFile, access, mkdir } from "node:fs/promises";
+     import { join } from "node:path";
+     import { setTimeout as delay } from "node:timers/promises";
+     import { randomUUID } from "node:crypto";
+     const home = process.env.USERPROFILE;
+     await ensureCollectorHomeSecurity();
+     ${body}`
+  ], { env, timeout: 30000 });
+  const waitFor = async (name: string) => {
+    const until = Date.now() + 15000;
+    while (Date.now() < until) {
+      try { await readFile(join(home, name)); return; } catch { await delay(20); }
+    }
+    throw new Error("worker marker timed out: " + name);
+  };
+  try {
+    await worker(`await updateCollectorConfig(c => ({...c, tokenAnalyticsEnabled:true,
+      tokenAnalyticsSources:{...c.tokenAnalyticsSources,claudeCode:true,googleAntigravity:true},
+      googleTokenConsentEpoch:randomUUID(),tokenConsentRevision:randomUUID()}));`);
+    const revocation = worker(`await updateCollectorConfig(async c => {
+      await writeFile(join(home,"held"),"1");
+      const end=Date.now()+15000;
+      while(true){try{await access(join(home,"contender"));break;}catch{if(Date.now()>end)throw Error("contender timeout");await delay(20);}}
+      await delay(150);
+      return {...c,tokenAnalyticsSources:{...c.tokenAnalyticsSources,claudeCode:false},tokenConsentRevision:randomUUID()};
+    });`);
+    // Attach handlers immediately so a failing worker cannot become an unhandled rejection.
+    void revocation.catch(()=>undefined);
+    await waitFor("held");
+    const other = worker(`await writeFile(join(home,"contender"),"1");
+      await updateCollectorConfig(c=>({...c,pollIntervalSeconds:1200}));`);
+    await Promise.all([revocation,other]);
+    const raw = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
+    assert.equal(raw.tokenAnalyticsSources.claudeCode,false);
+    assert.equal(raw.tokenAnalyticsSources.googleAntigravity,true);
+    assert.equal(raw.pollIntervalSeconds,1200);
+    // Failure to acquire the common lock must never run a writer/publication.
+    await worker(`await mkdir(join(home,".quotaops","collector.json.lock"));
+      let ran=false;try{await withCollectorConfig(()=>{ran=true;});throw Error("unexpected lock success");}
+      catch(e){if(ran||!String(e).includes("lock busy"))throw e;}`);
+    const unchanged = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
+    assert.deepEqual(unchanged,raw);
+  } finally { await rm(home,{recursive:true,force:true}); }
+});

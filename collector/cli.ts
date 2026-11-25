@@ -7,7 +7,9 @@ import {
   bootstrapFiveAccounts,
   createAccountConfig,
   loadCollectorConfig,
-  saveCollectorConfig,
+  updateCollectorConfig,
+  withCollectorConfig,
+  tokenConsentKey,
 } from "./config.ts";
 import {
   ensureCollectorHomeSecurity,
@@ -71,17 +73,14 @@ async function main(): Promise<void> {
       usage();
     }
 
-    const config = await loadCollectorConfig();
     const account = createAccountConfig(id, label, providerArg);
-    const existing = config.accounts.findIndex((item) => item.id === account.id);
-    const accounts =
-      existing >= 0
-        ? config.accounts.map((item, index) =>
-            index === existing ? account : item,
-          )
+    await updateCollectorConfig(config => {
+      const existing = config.accounts.findIndex(item => item.id === account.id);
+      const accounts = existing >= 0
+        ? config.accounts.map((item, index) => index === existing ? account : item)
         : [...config.accounts, account];
-
-    await saveCollectorConfig({ ...config, accounts });
+      return { ...config, accounts };
+    });
     process.stdout.write(`Configured ${account.label}.\n`);
     return;
   }
@@ -121,21 +120,14 @@ async function main(): Promise<void> {
   if (command === "enable" || command === "disable") {
     if (args.length === 0) usage();
 
-    const config = await loadCollectorConfig();
-    const unknown = args.filter(
-      (id) => !config.accounts.some((account) => account.id === id),
-    );
-    if (unknown.length > 0) {
-      throw new Error(`Unknown account id(s): ${unknown.join(", ")}`);
-    }
-
     const enabled = command === "enable";
     const ids = new Set(args);
-    const accounts = config.accounts.map((account) =>
-      ids.has(account.id) ? { ...account, enabled } : account,
-    );
-
-    await saveCollectorConfig({ ...config, accounts });
+    await updateCollectorConfig(config => {
+      const unknown = args.filter(id => !config.accounts.some(account => account.id === id));
+      if (unknown.length > 0) throw new Error(`Unknown account id(s): ${unknown.join(", ")}`);
+      return { ...config, accounts: config.accounts.map(account =>
+        ids.has(account.id) ? { ...account, enabled } : account) };
+    });
     process.stdout.write(
       `${enabled ? "Enabled" : "Disabled"}: ${args.join(", ")}.\n`,
     );
@@ -147,10 +139,9 @@ async function main(): Promise<void> {
     if (!action || !["enable", "disable", "status"].includes(action)) usage();
     if (!["claude-code", "codex", "google-antigravity", "all"].includes(scope)) usage();
 
-    const config = await loadCollectorConfig();
-    const consent = config.tokenAnalyticsSources;
-
     if (action === "status") {
+      const config = await loadCollectorConfig();
+      const consent = config.tokenAnalyticsSources;
       process.stdout.write(
         `Background token scanning: ${config.tokenAnalyticsEnabled ? "enabled" : "disabled"}.\n` +
           `  Claude Code history: ${consent.claudeCode ? "enabled" : "disabled"}.\n` +
@@ -162,26 +153,30 @@ async function main(): Promise<void> {
 
     // Each source carries its own consent; enabling one never enables the other.
     const value = action === "enable";
-    const next = {
-      claudeCode: scope === "codex" || scope === "google-antigravity" ? consent.claudeCode : value,
-      codex: scope === "claude-code" || scope === "google-antigravity" ? consent.codex : value,
-      // Google is explicitly opt-in; "all" can disable it but never silently enable it.
-      googleAntigravity: scope === "google-antigravity" ? value
-        : scope === "all" && action === "disable" ? false
-        : consent.googleAntigravity === true,
-    };
+    const updated = await updateCollectorConfig(config => {
+      const consent = config.tokenAnalyticsSources;
+      const next = {
+        claudeCode: scope === "codex" || scope === "google-antigravity" ? consent.claudeCode : value,
+        codex: scope === "claude-code" || scope === "google-antigravity" ? consent.codex : value,
+        // Google is explicitly opt-in; "all" can disable it but never silently enable it.
+        googleAntigravity: scope === "google-antigravity" ? value
+          : scope === "all" && action === "disable" ? false
+          : consent.googleAntigravity === true,
+      };
 
-    const { googleTokenConsentEpoch: previousEpoch, ...rest } = config;
-    await saveCollectorConfig({
-      ...rest,
-      tokenAnalyticsEnabled: next.claudeCode || next.codex || next.googleAntigravity,
-      tokenAnalyticsSources: next,
-      tokenConsentRevision: randomUUID(),
-      ...(next.googleAntigravity ? {
-        googleTokenConsentEpoch: consent.googleAntigravity === true && previousEpoch
-          ? previousEpoch : randomUUID(),
-      } : {}),
+      const { googleTokenConsentEpoch: previousEpoch, ...rest } = config;
+      return {
+        ...rest,
+        tokenAnalyticsEnabled: next.claudeCode || next.codex || next.googleAntigravity,
+        tokenAnalyticsSources: next,
+        tokenConsentRevision: randomUUID(),
+        ...(next.googleAntigravity ? {
+          googleTokenConsentEpoch: consent.googleAntigravity === true && previousEpoch
+            ? previousEpoch : randomUUID(),
+        } : {}),
+      };
     });
+    const next = updated.tokenAnalyticsSources;
     process.stdout.write(
       `Background token scanning updated. Claude Code: ${next.claudeCode ? "enabled" : "disabled"}; ` +
         `Codex: ${next.codex ? "enabled" : "disabled"}; Antigravity: ${next.googleAntigravity ? "enabled" : "disabled"}. ` +
@@ -194,7 +189,7 @@ async function main(): Promise<void> {
     const config = await loadCollectorConfig();
     const consent = config.tokenAnalyticsSources;
 
-    if (!consent.claudeCode && !consent.codex && consent.googleAntigravity !== true) {
+    if (!config.tokenAnalyticsEnabled || (!consent.claudeCode && !consent.codex && consent.googleAntigravity !== true)) {
       process.stdout.write(
         "No session history source is enabled, so nothing was read.\n" +
           "Enable one explicitly, for example: collector:setup -- tokens-auto enable claude-code\n",
@@ -203,7 +198,13 @@ async function main(): Promise<void> {
     }
 
     const analytics = await mergeGoogleAnalytics(await collectLocalTokenAnalytics(consent),config.accounts,consent.googleAntigravity === true);
-    process.stdout.write(JSON.stringify(analytics, null, 2) + "\n");
+    await withCollectorConfig(async latest => {
+      if (tokenConsentKey(latest) !== tokenConsentKey(config)) throw new Error("Consent changed during scan; no token results published.");
+      const output = JSON.stringify(analytics, null, 2) + "\n";
+      await new Promise<void>((resolve, reject) => {
+        process.stdout.write(output, error => error ? reject(error) : resolve());
+      });
+    });
     return;
   }
 

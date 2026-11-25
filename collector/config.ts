@@ -1,4 +1,6 @@
-import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm, rmdir } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
@@ -102,7 +104,7 @@ export function migrateConsent(record: Record<string, unknown>): TokenAnalyticsC
   return { claudeCode: legacy, codex: legacy };
 }
 
-export async function saveCollectorConfig(
+async function writeCollectorConfigLocked(
   config: CollectorConfig,
 ): Promise<void> {
   await ensureCollectorHomeSecurity();
@@ -126,7 +128,7 @@ export async function saveCollectorConfig(
   } finally { await rm(temporary, { force: true }).catch(() => undefined); }
 }
 
-export async function loadCollectorConfig(): Promise<CollectorConfig> {
+async function readCollectorConfigLocked(): Promise<CollectorConfig> {
   await ensureCollectorHomeSecurity();
   const path = getCollectorConfigPath();
 
@@ -170,9 +172,60 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
     if (nodeError.code !== "ENOENT") throw error;
 
     const config = createDefaultCollectorConfig();
-    await saveCollectorConfig(config);
+    await writeCollectorConfigLocked(config);
     return config;
   }
+}
+
+/** All supported writers and sensitive publication paths use this same lock.
+ * A crashed owner leaves a lock directory: never guess that it is stale.
+ * Stop every QuotaOps/CLI/hook process before manually removing it.
+ * Callbacks must not call load/update/withCollectorConfig recursively.
+ */
+export async function withCollectorConfig<T>(
+  action: (current: CollectorConfig) => Promise<T> | T,
+): Promise<T> {
+  await ensureCollectorHomeSecurity();
+  const lock = getCollectorConfigPath() + ".lock";
+  const deadline = performance.now() + 1500;
+  for (;;) {
+    try {
+      await mkdir(lock, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (performance.now() >= deadline) throw new Error("Collector configuration lock busy; retry after the active operation finishes.");
+      await delay(25);
+    }
+  }
+  try {
+    return await action(await readCollectorConfigLocked());
+  } finally {
+    await rmdir(lock);
+  }
+}
+
+export function loadCollectorConfig(): Promise<CollectorConfig> {
+  return withCollectorConfig(current => current);
+}
+
+/** Mutate the latest configuration inside the lock, never a stale copy. */
+export function updateCollectorConfig(
+  mutate: (current: CollectorConfig) => CollectorConfig | Promise<CollectorConfig>,
+): Promise<CollectorConfig> {
+  return withCollectorConfig(async current => {
+    const next = await mutate(current);
+    await writeCollectorConfigLocked(next);
+    return next;
+  });
+}
+
+export function tokenConsentKey(c: CollectorConfig): string {
+  return JSON.stringify([
+    c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
+    c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
+    c.tokenConsentRevision ?? null,
+  ]);
 }
 
 export function createAccountConfig(
@@ -203,20 +256,12 @@ export function createAccountConfig(
 }
 
 export async function bootstrapFiveAccounts(): Promise<CollectorConfig> {
-  let config = await loadCollectorConfig();
-
-  for (let index = 1; index <= 5; index += 1) {
-    const id = `dev-${index}`;
-    if (config.accounts.some((account) => account.id === id)) continue;
-
-    const account = createAccountConfig(id, `Dev ${index}`);
-    await assertSafeProfileDirectory(account.profileDir);
-    config = {
-      ...config,
-      accounts: [...config.accounts, account],
-    };
-  }
-
-  await saveCollectorConfig(config);
-  return config;
+  return updateCollectorConfig(config => {
+    const accounts = [...config.accounts];
+    for (let index = 1; index <= 5; index += 1) {
+      const id = `dev-${index}`;
+      if (!accounts.some(account => account.id === id)) accounts.push(createAccountConfig(id, `Dev ${index}`));
+    }
+    return { ...config, accounts };
+  });
 }
