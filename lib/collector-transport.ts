@@ -32,6 +32,8 @@ export interface QuotaOpsBridge {
    * Missing on older desktop builds.
    */
   setTokenAnalytics?(enabled: boolean): Promise<unknown>;
+  /** Notification only; the renderer receives no raw IPC event or private data. */
+  onTokenConsentChanged?(callback: () => void): () => void;
 }
 
 export type TokenAnalyticsSwitchResult = "on" | "off" | "cancelled" | "busy" | "error";

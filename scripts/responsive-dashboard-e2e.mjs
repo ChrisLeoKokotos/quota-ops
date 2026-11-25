@@ -150,6 +150,49 @@ try {
     console.log("PASS responsive "+width+"x"+height+" light/dark, open/closed, modal");
   }
   console.log("PASS: "+checks+" responsive layout combinations plus "+viewports.length+" modal checks.");
+  await page.close();
+
+  // Real React renderer with a deterministic synthetic desktop bridge.
+  // Resolve the newest snapshot first, then a revoked pre-change response.
+  // No provider credentials and no actual Electron privilege are involved.
+  const racePage=await browser.newPage({viewport:{width:1440,height:900}});
+  await racePage.addInitScript(()=>{
+    let hold=false, consentListener=null;
+    const pending=[];
+    const fixture=(enabled)=>{
+      const now=new Date().toISOString();
+      const totals={inputTokens:987654321,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:987654321};
+      return {version:1,generatedAt:now,accounts:[],
+        tokens:enabled?{generatedAt:now,scope:"locally_observed",totals,providers:[{provider:"claude",totals}],daily:[],
+          sources:[{source:"claude-code",provider:"claude",state:"ok",files:1,message:null}]}:null,
+        tokenStatus:{state:enabled?"ready":"disabled",scannedAt:enabled?now:null,pending:false}};
+    };
+    window.quotaops={version:1,getSnapshot:()=>hold?new Promise(resolve=>pending.push(resolve)):Promise.resolve(fixture(true)),
+      setTokenAnalytics:async()=>({status:"off"}),
+      onTokenConsentChanged:callback=>{consentListener=callback;return()=>{consentListener=null;};}};
+    window.__qoRace={
+      begin:()=>{hold=true;document.dispatchEvent(new Event("visibilitychange"));},
+      count:()=>pending.length,
+      revoke:()=>consentListener?.(),
+      finish:(index,enabled)=>pending[index](fixture(enabled))
+    };
+  });
+  await racePage.goto(url,{waitUntil:"domcontentloaded"});
+  await racePage.locator(".token-hero strong").waitFor({timeout:30000});
+  await racePage.evaluate(()=>window.__qoRace.begin());
+  await racePage.waitForFunction(()=>window.__qoRace.count()===1);
+  await racePage.evaluate(()=>window.__qoRace.revoke());
+  await racePage.waitForFunction(()=>window.__qoRace.count()>=2);
+  await racePage.locator(".token-hero strong").waitFor({state:"hidden"});
+  await racePage.evaluate(()=>window.__qoRace.finish(1,false));
+  await racePage.getByText("Token analytics is off.",{exact:true}).waitFor();
+  await racePage.evaluate(()=>window.__qoRace.finish(0,true));
+  // Two animation frames allow the delayed promise and React updates to settle.
+  await racePage.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await racePage.locator(".token-hero strong").count(),0);
+  assert.equal(await racePage.getByText("Token analytics is off.",{exact:true}).count(),1);
+  await racePage.close();
+  console.log("PASS delayed IPC renderer response after consent invalidation");
 }finally{
   await browser?.close().catch(()=>undefined);
   for(const child of started.reverse()){

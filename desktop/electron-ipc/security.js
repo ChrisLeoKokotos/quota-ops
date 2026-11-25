@@ -448,7 +448,15 @@ function projectSnapshot(parsed) {
   };
 }
 
+/** A response begun under an older consent generation may still arrive from
+ * the collector. Preserve quota data but never forward its token aggregates. */
+function guardTokenSnapshot(result, startedGeneration, currentGeneration, consentPending) {
+  if (!result || result.error || (!consentPending && startedGeneration === currentGeneration)) return result;
+  return { ...result, tokens: null, tokenStatus: { state: "scanning", scannedAt: null, pending: false } };
+}
+
 module.exports = {
+  guardTokenSnapshot,
   MAX_ACCOUNTS,
   projectSnapshot,
   ALLOWED_EXTERNAL_HOSTS,

@@ -14,4 +14,11 @@ contextBridge.exposeInMainWorld("quotaops", {
   getSnapshot: () => ipcRenderer.invoke("quotaops:snapshot"),
   setTokenAnalytics: (enabled) =>
     ipcRenderer.invoke("quotaops:token-analytics", enabled === true),
+  // Do not expose the Electron event or arbitrary IPC subscriptions.
+  onTokenConsentChanged: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const listener = () => callback();
+    ipcRenderer.on("quotaops:token-consent-changed", listener);
+    return () => ipcRenderer.removeListener("quotaops:token-consent-changed", listener);
+  },
 });

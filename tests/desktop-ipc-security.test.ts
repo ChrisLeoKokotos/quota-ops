@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const security = require("../desktop/electron-ipc/security.js") as {
   ALLOWED_EXTERNAL_HOSTS: Set<string>;
   MAX_ACCOUNTS: number;
+  guardTokenSnapshot: (result: Record<string, unknown>, started: number, current: number, pending: boolean) => Record<string, unknown>;
   projectSnapshot: (parsed: Record<string, unknown>) => {
     generatedAt: string | null;
     accounts: { id: string | null; label: string | null; status: string | null; message: string | null; account: { windows: { id: string | null; label: string | null; usedPercent: number | null; resetAt: string | null }[] } | null }[];
@@ -789,4 +790,20 @@ test("the full projected quota set excludes an account with its final bucket exh
   // Projection is validated on the actual renderer path by collector-client.
   const result=adviseAccounts([{...account, ...observed, source:"collector"} as import("../lib/quota.ts").QuotaAccount],{provider:"google",task:"coding",nowMs:now,freshIds:["a"]});
   assert.equal(result.recommended,null);
+});
+
+
+test("Electron suppresses old or pending-consent token responses without altering quota data", () => {
+  const original = { version: 1, accounts: [{ id: "synthetic" }], tokens: { synthetic: true },
+    tokenStatus: { state: "ready", scannedAt: "2026-01-01", pending: false } };
+  assert.equal(security.guardTokenSnapshot(original, 2, 2, false), original);
+  for (const [started, current, pending] of [[1, 2, false], [2, 2, true]] as const) {
+    const safe = security.guardTokenSnapshot(original, started, current, pending);
+    assert.equal(safe.tokens, null);
+    assert.equal(safe.accounts, original.accounts);
+    assert.deepEqual(safe.tokenStatus, { state: "scanning", scannedAt: null, pending: false });
+  }
+  assert.deepEqual(original.tokens, { synthetic: true });
+  const error = { error: "collector_offline" };
+  assert.equal(security.guardTokenSnapshot(error, 1, 2, true), error);
 });

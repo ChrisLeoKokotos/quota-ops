@@ -27,6 +27,7 @@ const {
   buildContentSecurityPolicy,
   isTrustedIpcSender,
   projectSnapshot,
+  guardTokenSnapshot,
   readBoundedBody,
   resolveExternalUrl,
   resolveStaticAsset,
@@ -83,6 +84,8 @@ let trustedSender = null;
 let scheduler = null;
 /** One snapshot request at a time; the rest observe the result. */
 let inFlightSnapshot = null;
+let tokenConsentGeneration = 0;
+let tokenConsentPending = false;
 let lastSnapshotAt = 0;
 let trayCommandPending = false;
 let trayCommandError = null;
@@ -664,6 +667,14 @@ async function runTokenAnalyticsToggle() {
  * the renderer can ask, but only the person's click here gives consent.
  * Returns "on" | "off" | "cancelled" | "busy" | "error".
  */
+function invalidateTokenSnapshots() {
+  tokenConsentGeneration++;
+  // A notification only, never data or a privileged renderer-controlled action.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try { mainWindow.webContents.send("quotaops:token-consent-changed"); } catch { /* closing */ }
+  }
+}
+
 async function setTokenAnalytics(turnOn, parentWindow) {
   if (trayCommandPending) return "busy";
   if (turnOn) {
@@ -697,6 +708,8 @@ async function setTokenAnalytics(turnOn, parentWindow) {
   }
   trayCommandPending = true;
   trayCommandError = null;
+  tokenConsentPending = true;
+  invalidateTokenSnapshots();
   refreshTray();
   try {
     const flag = turnOn ? "1" : "0";
@@ -708,6 +721,8 @@ async function setTokenAnalytics(turnOn, parentWindow) {
     if (status !== 200) return "error";
     return turnOn ? "on" : "off";
   } finally {
+    tokenConsentPending = false;
+    invalidateTokenSnapshots();
     trayCommandPending = false;
     refreshTray();
   }
@@ -1124,8 +1139,10 @@ if (!firstInstance) {
     }
     lastSnapshotAt = now;
 
+    const startedGeneration = tokenConsentGeneration;
     inFlightSnapshot = readSnapshot()
-      .then((result) => {
+      .then((rawResult) => {
+        const result = guardTokenSnapshot(rawResult, startedGeneration, tokenConsentGeneration, tokenConsentPending);
         if (process.env.QUOTAOPS_IPC_TRACE) {
           // Shape only, never contents: a trace must not become a data leak.
           const shape = result && result.error

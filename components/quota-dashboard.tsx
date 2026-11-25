@@ -1385,8 +1385,16 @@ export function QuotaDashboard() {
     syncNowRef.current = () => void sync();
     const timer = window.setInterval(syncIfVisible, 30_000);
     document.addEventListener("visibilitychange", onVisibility);
+    const unsubscribeConsent = getDesktopBridge()?.onTokenConsentChanged?.(() => {
+      // Tray and dashboard changes both invalidate previous renderer work.
+      controller?.abort();
+      setTokenAnalytics(null);
+      setTokenStatus({ state: "scanning", scannedAt: null, pending: false });
+      void sync();
+    });
 
     return () => {
+      unsubscribeConsent?.();
       syncNowRef.current = null;
       cancelled = true;
       controller?.abort();
