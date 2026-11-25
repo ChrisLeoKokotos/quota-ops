@@ -1295,8 +1295,10 @@ export function QuotaDashboard() {
         setCollectorState("connected");
         const failedIds = new Set(snapshot.issues.map(issue => issue.id));
         const successful = snapshot.accounts.filter(account => !failedIds.has(account.id));
+        const observedAt = Date.now();
+        setNowMs(observedAt);
         setAdvisorFreshIds(successful.map(account => account.id));
-        setAdvisorHistory(previous => recordAdvisorHistory(previous, successful, Date.now()));
+        setAdvisorHistory(previous => recordAdvisorHistory(previous, successful, observedAt));
         setCollectorLastSync(snapshot.generatedAt);
         // Keep the previous object when nothing changed: a new object every
         // 30 s re-renders the whole dashboard for nothing.

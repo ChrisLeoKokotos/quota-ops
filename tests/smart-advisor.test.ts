@@ -126,3 +126,10 @@ test("exhaustive integer quota grid: no recommendation below reserve or at limit
     }
   }
 });
+
+test("prototype-like account IDs are ordinary data, not inherited history", () => {
+  const a = account("constructor", 10, 10);
+  const h = recordAdvisorHistory({}, [a], NOW);
+  assert.equal(h.constructor instanceof Array, true);
+  assert.equal(advise([a], {history: {}}).recommended?.account.id, "constructor");
+});

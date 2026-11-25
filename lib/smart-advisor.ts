@@ -40,6 +40,10 @@ export interface AdvisorResult {
   retained: boolean;
 }
 
+function samplesFor(history: AdvisorHistory | undefined, id: string): QuotaAccount[] {
+  return history && Object.hasOwn(history, id) ? history[id] ?? [] : [];
+}
+
 function validPercent(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 100;
 }
@@ -56,7 +60,7 @@ export function recordAdvisorHistory(previous: AdvisorHistory, readings: readonl
   for (const a of readings) {
     if (a.source !== "collector" || !validReading(a, now) ||
         a.windows.length === 0 || a.windows.some(w => !validPercent(w.usedPercent))) continue;
-    const old = (previous[a.id] ?? []).filter(p =>
+    const old = samplesFor(previous, a.id).filter(p =>
       p.provider === a.provider && p.plan === a.plan &&
       Date.parse(p.updatedAt) >= now - HISTORY_AGE &&
       Date.parse(p.updatedAt) < Date.parse(a.updatedAt));
@@ -73,7 +77,7 @@ export function recordAdvisorHistory(previous: AdvisorHistory, readings: readonl
 function rate(account: QuotaAccount, window: QuotaWindow, history: AdvisorHistory | undefined): number | null {
   if (!window.resetAt || account.source !== "collector") return null;
   const at = Date.parse(account.updatedAt);
-  const points = (history?.[account.id] ?? [])
+  const points = samplesFor(history, account.id)
     .filter(p => p.provider === account.provider && p.plan === account.plan &&
       Date.parse(p.updatedAt) >= at - HISTORY_AGE && Date.parse(p.updatedAt) < at)
     .map(p => ({ at: Date.parse(p.updatedAt), window: p.windows.find(w => w.id === window.id) }))
