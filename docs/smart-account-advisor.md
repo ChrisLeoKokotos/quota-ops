@@ -32,3 +32,15 @@ All 91 withheld recommendations had no eligible account. The rule-based comparis
 ## Installed Windows verification (synthetic)
 
 The Windows Advisor installed E2E workflow builds the existing branded unsigned NSIS installer on a disposable GitHub-hosted runner, performs a clean per-user install, verifies installed EXE/ASAR/static HTML hashes against the build, runs the actual packaged collector with five synthetic Antigravity profiles via its shipped statusLine hook, and checks the rendered recommendation via PID-scoped Windows UI Automation. Four profiles have quota readings (short-window bottleneck, balanced, weekly bottleneck, exhausted); one has no event. The expected recommendation is the balanced profile with 60% tightest headroom. No provider network, real accounts or user history is involved. The existing isolated graceful Quit smoke and silent uninstall are also run on the installed app. The workflow does not upload the installer, enable automatic updates, or publish a release. On a local Windows machine with the existing app fully quit, the unpacked equivalent is `node scripts/windows-packaged-startup-smoke.mjs --advisor` after building. Actual signed-in Claude outcomes and prospective forecast accuracy are not covered by synthetic E2E. Results are authoritative only when the exact-head workflow passes.
+
+## Prospective local forecast evaluation
+
+On a PC already running QuotaOps, explicitly opt in by running from the checked-out branch:
+
+```powershell
+node --experimental-strip-types scripts/evaluate-advisor-live.mjs --observe-local --minutes 90 --task coding
+```
+
+The observer reads the existing authenticated loopback snapshot every 30 seconds; it never starts or refreshes the collector, makes provider requests, switches accounts, writes files, or reads session history. It retains only quota observations in memory and prints aggregate metrics, never names, account IDs, credentials, or raw snapshot bodies. Ctrl+C ends the observation. Run during normal use, with sufficient distinct successful snapshots before and after the forecast horizon; heavy mode needs a longer observation (up to 240 minutes). A result with zero matched outcomes is insufficient evidence, not zero error.
+
+The holdout evaluation compares V2's estimated tightest headroom with the first subsequent same-reset observation within five minutes of the target horizon. The prediction uses only data already observed; repeated polls do not create new observations. Missing/failed samples, changed resets, reversed usage, and inconsistent timelines invalidate the comparison. The persistence baseline predicts no change (the V1 policy itself has no forecast). It reports mean absolute error in percentage points, overoptimistic forecasts, and missed reserve predictions. Fixture tests prove the chronological matching rules. This is observational evidence under actual usage, not a counterfactual demonstration that choosing V2 over V1 extends sessions. Real results require a normal-use run on the owner's machine and must not be committed to a public repository.
