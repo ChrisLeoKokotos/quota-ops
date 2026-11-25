@@ -172,6 +172,7 @@ interface FileWalk {
 async function findJsonlFiles(
   root: string,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<FileWalk> {
   const files: string[] = [];
   const pending = [root];
@@ -179,6 +180,7 @@ async function findJsonlFiles(
   let truncated = false;
 
   while (pending.length > 0) {
+    signal?.throwIfAborted();
     if (files.length >= MAX_FILES_PER_SOURCE) {
       truncated = true;
       break;
@@ -200,6 +202,7 @@ async function findJsonlFiles(
     }
 
     for (const entry of entries) {
+      signal?.throwIfAborted();
       if (files.length >= MAX_FILES_PER_SOURCE) {
         truncated = true;
         break;
@@ -621,12 +624,13 @@ export function tokenScanPending(): boolean {
   return lastClaudePendingFiles > 0;
 }
 
-async function scanClaudeCode(): Promise<ScanResult> {
+async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
+  signal?.throwIfAborted();
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const salt = await loadAccountSalt();
   const root = join(homedir(), ".claude", "projects");
-  const walk = await findJsonlFiles(root, deadline);
+  const walk = await findJsonlFiles(root, deadline, signal);
   let truncated = walk.truncated;
   let readErrors = 0;
   let pendingFiles = 0;
@@ -635,6 +639,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
 
   const files: Array<{ path: string; size: number; mtimeMs: number }> = [];
   for (const path of walk.files) {
+    signal?.throwIfAborted();
     const info = await stat(path).catch(() => null);
     if (!info || !info.isFile()) {
       readErrors += 1;
@@ -651,6 +656,7 @@ async function scanClaudeCode(): Promise<ScanResult> {
 
   let tracked = 0;
   for (const file of files) {
+    signal?.throwIfAborted();
     const cached = claudeFileCache.get(file.path);
     if (cached && cached.size === file.size && cached.mtimeMs === file.mtimeMs) {
       tracked += cached.records.size;
@@ -693,12 +699,13 @@ async function scanClaudeCode(): Promise<ScanResult> {
       },
       {
         startOffset: resume ? resume.endOffset : 0,
-        shouldStop: () => Date.now() > deadline,
+        shouldStop: () => signal?.aborted === true || Date.now() > deadline,
         onOversizedLine: (head) => {
           if (ASSISTANT_RECORD_HEAD.test(head)) entry.skippedUsageLines += 1;
         },
       },
     );
+    signal?.throwIfAborted();
     bytesThisPass += result.bytesRead;
     entry.endOffset = result.endOffset;
     if (result.ok) {
@@ -772,7 +779,9 @@ async function scanClaudeCode(): Promise<ScanResult> {
     bucket.totals = addTokenTotals(bucket.totals, item.totals);
     if (item.session) bucket.sessions.add(item.session);
   }
+  signal?.throwIfAborted();
   const current = byAccount.size > 0 ? await currentClaudeAccountKey(salt) : null;
+  signal?.throwIfAborted();
   const accounts: TokenAccountTotals[] = [...byAccount.entries()]
     .sort((a, b) => b[1].totals.totalTokens - a[1].totals.totalTokens)
     .slice(0, 12)
@@ -812,14 +821,15 @@ async function scanClaudeCode(): Promise<ScanResult> {
   };
 }
 
-async function scanCodex(): Promise<ScanResult> {
+async function scanCodex(signal?: AbortSignal): Promise<ScanResult> {
+  signal?.throwIfAborted();
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
   const codexHome = join(homedir(), ".codex");
-  const active = await findJsonlFiles(join(codexHome, "sessions"), deadline);
+  const active = await findJsonlFiles(join(codexHome, "sessions"), deadline, signal);
   const archived = await findJsonlFiles(
     join(codexHome, "archived_sessions"),
-    deadline,
+    deadline, signal,
   );
   const paths = [...new Set([...active.files, ...archived.files])];
   const seen = new Set<string>();
@@ -831,7 +841,7 @@ async function scanCodex(): Promise<ScanResult> {
   let truncated = active.truncated || archived.truncated;
 
   const budgetExhausted = (): boolean =>
-    Date.now() > deadline || seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
+    signal?.aborted === true || Date.now() > deadline || seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
 
   for (const path of paths) {
     if (budgetExhausted()) {
@@ -942,11 +952,19 @@ function disabledSource(
 
 export async function collectLocalTokenAnalytics(
   consent: TokenAnalyticsConsent,
+  signal?: AbortSignal,
 ): Promise<TokenAnalyticsSnapshot> {
-  const [claudeScan, codexScan] = await Promise.all([
-    consent.claudeCode ? scanClaudeCode() : null,
-    consent.codex ? scanCodex() : null,
+  signal?.throwIfAborted();
+  // Wait for both readers to settle before invalidation can clear their caches.
+  const results = await Promise.allSettled([
+    consent.claudeCode ? scanClaudeCode(signal) : null,
+    consent.codex ? scanCodex(signal) : null,
   ]);
+  signal?.throwIfAborted();
+  const [claudeScan, codexScan] = results.map(result => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
 
   const scans = [claudeScan, codexScan].filter(
     (scan): scan is ScanResult => scan !== null,

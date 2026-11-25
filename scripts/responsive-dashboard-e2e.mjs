@@ -41,6 +41,7 @@ const longLabel = "LongAccountName".repeat(3);
 try {
   run("collector/cli.ts",["add","google","responsive-google","Synthetic responsive Google"]);
   run("collector/cli.ts",["tokens-auto","enable","google-antigravity"]);
+  run("collector/google-hook.ts",["responsive-google"],JSON.stringify({product:"antigravity",session_id:"synthetic-responsive",context_window:{total_input_tokens:0,total_output_tokens:0}}));
   run("collector/google-hook.ts",["responsive-google"],JSON.stringify({
     product:"antigravity",session_id:"synthetic-responsive",
     plan_tier:"Pro",quota:{

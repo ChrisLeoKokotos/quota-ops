@@ -26,6 +26,7 @@ interface Counter{input:number;output:number}
 interface Stored{
   version:1;updatedAt:string;plan:string;windows:QuotaWindow[];
   sessions:Record<string,Counter>;totals:TokenTotals;daily:Record<string,TokenTotals>;
+  tokenEpoch?:string|null;
 }
 export interface GoogleProjection{
   checkedAt:string;plan:string;windows:QuotaWindow[];sessionHash:string|null;
@@ -74,7 +75,7 @@ function isState(v:unknown):v is Stored{
       const w=obj(raw);return !!w&&typeof w.id==="string"&&w.id.startsWith("google-bucket:")&&
         typeof w.label==="string"&&typeof w.usedPercent==="number"&&w.usedPercent>=0&&
         w.usedPercent<=100&&(w.resetAt===null||typeof w.resetAt==="string");
-    })&&!!sessions&&Object.keys(sessions).length<=MAX_SESSIONS&&
+    })&&(s.tokenEpoch===undefined||s.tokenEpoch===null||typeof s.tokenEpoch==="string")&&!!sessions&&Object.keys(sessions).length<=MAX_SESSIONS&&
     Object.values(sessions).every(v=>{const o=obj(v);return !!o&&count(o.input)!==null&&count(o.output)!==null;})&&
     totalsOk(s.totals)&&!!daily&&Object.keys(daily).length<=MAX_DAYS&&
     Object.entries(daily).every(([k,v])=>/^\d{4}-\d{2}-\d{2}$/.test(k)&&totalsOk(v));
@@ -104,7 +105,7 @@ const initial=():Stored=>({version:1,updatedAt:new Date(0).toISOString(),plan:"A
   daily:Object.create(null) as Record<string,TokenTotals>});
 /** Serialized read/modify/write: repeated statusline ticks do not double-count tokens. */
 export async function ingestGoogleStatusline(id:string,payload:unknown,
-  root=getGoogleStatuslineRoot(),now=Date.now(),includeTokens=true):Promise<boolean>{
+  root=getGoogleStatuslineRoot(),now=Date.now(),tokenEpoch:string|null=null):Promise<boolean>{
   const event=projectGoogleStatusline(payload,now);if(!event)return false;
   const path=fileFor(id,root);
   await mkdir(root,{recursive:true,mode:0o700});await noLink(root);await noLink(path);
@@ -116,11 +117,20 @@ export async function ingestGoogleStatusline(id:string,payload:unknown,
   if(!lock)return false;
   try{
     const s=(await readState(id,root))??initial();
+    if(Date.parse(s.updatedAt)>now)return false;
     s.updatedAt=event.checkedAt;s.plan=event.plan;
     s.windows=event.windows; // Missing quotas must not refresh older percentages as if current.
-    if(includeTokens&&event.sessionHash&&event.input!==null&&event.output!==null){
+    // Every opt-in epoch begins with a baseline, not historical usage.
+    // Clearing watermarks does not erase previously consented aggregates.
+    if(s.tokenEpoch!==tokenEpoch){
+      s.sessions=Object.create(null) as Record<string,Counter>;
+      s.tokenEpoch=tokenEpoch;
+    }
+    if(tokenEpoch!==null&&event.sessionHash&&event.input!==null&&event.output!==null){
       const key=event.sessionHash,prev=s.sessions[key];
-      if(prev||Object.keys(s.sessions).length<MAX_SESSIONS){
+      if(!prev&&Object.keys(s.sessions).length<MAX_SESSIONS){
+        s.sessions[key]={input:event.input,output:event.output};
+      }else if(prev){
         const input=Math.max(prev?.input??0,event.input);
         const output=Math.max(prev?.output??0,event.output);
         const di=input-(prev?.input??0),do_=output-(prev?.output??0);

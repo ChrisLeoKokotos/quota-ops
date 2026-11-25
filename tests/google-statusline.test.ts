@@ -35,10 +35,11 @@ test("Google projector only accepts supported statusLine quota fields",()=>{
 test("automatic Google snapshots are privacy-scoped, monotonic, deduplicated and stale-safe",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"qo-google-test-"));
   try{
-    assert.equal(await ingestGoogleStatusline("google-1",payload(100,20),dir,DATE),true);
-    assert.equal(await ingestGoogleStatusline("google-1",payload(100,20),dir,DATE+1000),true);
-    assert.equal(await ingestGoogleStatusline("google-1",payload(150,30),dir,DATE+2000),true);
-    assert.equal(await ingestGoogleStatusline("google-1",payload(75,15),dir,DATE+3000),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(0,0),dir,DATE,"epoch-1"),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(100,20),dir,DATE,"epoch-1"),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(100,20),dir,DATE+1000,"epoch-1"),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(150,30),dir,DATE+2000,"epoch-1"),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(75,15),dir,DATE+3000,"epoch-1"),true);
     const raw=await readFile(join(dir,"google-1.json"),"utf8");
     for(const secret of ["do-not-store@example.com","/private/workspace","/secret/transcript","session-A"])
       assert.equal(raw.includes(secret),false,secret);
@@ -56,14 +57,14 @@ test("automatic Google snapshots are privacy-scoped, monotonic, deduplicated and
     assert.equal(stale.status,"unavailable");
     assert.equal(stale.account,null);
     // An event without quota MUST NOT refresh old windows as if still current.
-    await ingestGoogleStatusline("google-1",{product:"antigravity"},dir,DATE+6000);
+    await ingestGoogleStatusline("google-1",{product:"antigravity"},dir,DATE+6000,"epoch-1");
     assert.equal((await readGoogleStatusline(account,dir,DATE+7000)).status,"unavailable");
   }finally{await rm(dir,{recursive:true,force:true});}
 });
 test("quota-only Google events do not persist numeric token counters before explicit opt-in",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"qo-google-no-consent-"));
   try{
-    assert.equal(await ingestGoogleStatusline("google-1",payload(900,100),dir,DATE,false),true);
+    assert.equal(await ingestGoogleStatusline("google-1",payload(900,100),dir,DATE,null),true);
     assert.equal((await readGoogleStatusline(account,dir,DATE+1000)).status,"ok");
     const snapshot=await readGoogleTokenStates([account],dir);
     assert.equal(snapshot.totals.totalTokens,0);
@@ -76,8 +77,32 @@ test("quota-only Google events do not persist numeric token counters before expl
 test("separate Google sessions contribute only their observed deltas",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"qo-google-test-"));
   try{
-    await ingestGoogleStatusline("google-1",payload(100,30),dir,DATE);
-    await ingestGoogleStatusline("google-1",payload(50,10,"session-B"),dir,DATE+1000);
+    await ingestGoogleStatusline("google-1",payload(0,0),dir,DATE,"epoch-1");
+    await ingestGoogleStatusline("google-1",payload(100,30),dir,DATE,"epoch-1");
+    await ingestGoogleStatusline("google-1",payload(0,0,"session-B"),dir,DATE+1000,"epoch-1");
+    await ingestGoogleStatusline("google-1",payload(50,10,"session-B"),dir,DATE+1000,"epoch-1");
     assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,190);
   }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("Google opt-in establishes a baseline and never bridges a consent epoch",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"qo-google-epoch-"));
+  try {
+    await ingestGoogleStatusline("google-1",payload(100,20),dir,DATE); // default deny
+    assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,0);
+    await ingestGoogleStatusline("google-1",payload(150,30),dir,DATE+1000,"epoch-1");
+    assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,0);
+    await ingestGoogleStatusline("google-1",payload(160,35),dir,DATE+2000,"epoch-1");
+    assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,15);
+    // No event during revocation; new epoch must still rebase.
+    await ingestGoogleStatusline("google-1",payload(900,100),dir,DATE+3000,"epoch-2");
+    assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,15);
+    await ingestGoogleStatusline("google-1",payload(910,105),dir,DATE+4000,"epoch-2");
+    assert.equal((await readGoogleTokenStates([account],dir)).totals.totalTokens,30);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+test("oversized quota set is unavailable, not truncated into a successful reading",()=>{
+  const quota=Object.fromEntries(Array.from({length:33},(_,i)=>["bucket-"+i,{remaining_fraction:i===32?0:1}]));
+  assert.deepEqual(projectGoogleStatusline({product:"antigravity",quota},DATE)?.windows,[]);
 });

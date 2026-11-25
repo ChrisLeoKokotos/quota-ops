@@ -29,6 +29,7 @@ export async function readBoundedJsonl(
   const shouldStop = options.shouldStop;
   let handle: FileHandle | null = null;
   try {
+    if (shouldStop?.()) return false;
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size > MAX_JSONL_FILE_BYTES) return false;
@@ -137,6 +138,7 @@ export async function readJsonlIncrement(
   let endOffset = start;
   let bytesRead = 0;
   try {
+    if (options.shouldStop?.()) return { ok: false, endOffset, bytesRead };
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const metadata = await handle.stat();
     if (!metadata.isFile()) return { ok: false, endOffset, bytesRead };

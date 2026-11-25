@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import {
@@ -75,6 +76,8 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
       candidate.tokenAnalyticsSources.claudeCode ||
       candidate.tokenAnalyticsSources.codex ||
       candidate.tokenAnalyticsSources.googleAntigravity === true) &&
+    (candidate.googleTokenConsentEpoch === undefined ||
+      (typeof candidate.googleTokenConsentEpoch === "string" && /^[a-f0-9-]{36}$/.test(candidate.googleTokenConsentEpoch))) &&
     Array.isArray(candidate.accounts) &&
     candidate.accounts.every(isAccountConfig) &&
     (candidate.backgroundCollection === undefined ||
@@ -112,10 +115,13 @@ export async function saveCollectorConfig(
 
   const path = getCollectorConfigPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, JSON.stringify(config, null, 2) + "\n", {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+  const temporary = path + "." + randomUUID() + ".tmp";
+  try {
+    await writeFile(temporary, JSON.stringify(config, null, 2) + "\n", {
+      encoding: "utf8", mode: 0o600, flag: "wx",
+    });
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }).catch(() => undefined); }
 }
 
 export async function loadCollectorConfig(): Promise<CollectorConfig> {

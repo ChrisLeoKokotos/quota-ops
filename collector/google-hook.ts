@@ -15,7 +15,8 @@ try{
   if(!cfg.accounts.some(a=>a.id===id&&a.provider==="google"&&a.enabled))throw Error("unconfigured account");
   const payload:unknown=JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if(!await ingestGoogleStatusline(id,payload,undefined,Date.now(),
-    cfg.tokenAnalyticsEnabled && cfg.tokenAnalyticsSources.googleAntigravity === true))
+    cfg.tokenAnalyticsEnabled && cfg.tokenAnalyticsSources.googleAntigravity === true
+      ? cfg.googleTokenConsentEpoch ?? "legacy" : null))
     throw Error("invalid statusline");
 }catch{
   process.exitCode=1; // Never log raw JSON, path, email or token fields.

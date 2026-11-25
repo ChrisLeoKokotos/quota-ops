@@ -32,6 +32,8 @@ export interface CollectorConfig {
   tokenAnalyticsEnabled: boolean;
   /** Per-source consent. Reading either source exposes private history. */
   tokenAnalyticsSources: TokenAnalyticsConsent;
+  /** Rotates on Google opt-in so cumulative counters cannot bridge revocation. */
+  googleTokenConsentEpoch?: string;
   accounts: CollectorAccountConfig[];
   /**
    * Unattended (scheduled) collection, never on the person's screen:

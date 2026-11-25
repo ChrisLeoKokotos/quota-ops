@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { watchFile, unwatchFile } from "node:fs";
 
 import { collectProviderUsage } from "./provider.ts";
-import { collectLocalTokenAnalytics, tokenScanPending } from "./token-analytics.ts";
+import { collectLocalTokenAnalytics, resetTokenScanCache, tokenScanPending } from "./token-analytics.ts";
 import { TokenRunner } from "./token-runner.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
@@ -12,7 +13,7 @@ import {
   persistHolds,
   type RefreshTrigger,
 } from "./attention-hold.ts";
-import { getCollectorRunDir, getCollectorStatePath } from "./paths.ts";
+import { getCollectorRunDir, getCollectorStatePath, getCollectorConfigPath } from "./paths.ts";
 import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
 import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
@@ -24,6 +25,7 @@ import {
 import type {
   CollectorAccountResult,
   CollectorSnapshotResponse,
+  CollectorConfig,
 } from "./types.ts";
 
 const HOST = "127.0.0.1";
@@ -57,19 +59,50 @@ async function main(): Promise<void> {
   // Token analytics has its own clock (token-runner.ts): provider checks that
   // fail, wait for a person, are paused or switched off never hold it back.
   // Local private histories are read only with the stored consent.
+  const consentKey = (c: CollectorConfig) => JSON.stringify([
+    c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
+    c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
+  ]);
+  let observedConsent = consentKey(config);
+  let consentChanging = false;
   const tokens = new TokenRunner({
-    scan: async () => {
+    clearCache: resetTokenScanCache,
+    scan: async (signal) => {
       const current = await loadCollectorConfig();
+      signal.throwIfAborted();
       if (!current.tokenAnalyticsEnabled) return null;
       const sources = current.tokenAnalyticsSources;
       if (!sources.claudeCode && !sources.codex && sources.googleAntigravity !== true) return null;
       const snapshot = await mergeGoogleAnalytics(
-        await collectLocalTokenAnalytics(sources),
+        await collectLocalTokenAnalytics(sources, signal),
         current.accounts, sources.googleAntigravity === true,
       );
+      signal.throwIfAborted();
+      // CLI consent changes are also observed before any scan is published.
+      const latest = await loadCollectorConfig();
+      signal.throwIfAborted();
+      if (consentKey(latest) !== consentKey(current)) {
+        observedConsent = consentKey(latest);
+        tokens.invalidate();
+        return null;
+      }
       return { snapshot, pending: tokenScanPending() };
     },
   });
+  // A disabled runner has no periodic timer. Watch config changes so CLI
+  // revocation or opt-in is noticed even while provider monitoring is paused.
+  const consentPath = getCollectorConfigPath();
+  let observation = 0;
+  const observeConsent = async () => {
+    const version = ++observation;
+    let key: string;
+    try { key = consentKey(await loadCollectorConfig()); }
+    catch { key = "invalid"; }
+    if (version !== observation || key === observedConsent) return;
+    observedConsent = key;
+    tokens.invalidate();
+  };
+  watchFile(consentPath, { interval: 1000, persistent: false }, () => { void observeConsent(); });
   // generatedAt is a provider collection timestamp, not the time a client
   // retrieved a cached /snapshot (which can be many minutes old).
   let generatedAt = new Date(0).toISOString();
@@ -275,21 +308,31 @@ async function main(): Promise<void> {
       sendJson(request, response, 400, { error: "invalid_consent" });
       return;
     }
+    if (consentChanging) {
+      sendJson(request, response, 409, { error: "consent_change_in_progress" });
+      return;
+    }
+    consentChanging = true;
     try {
       const current = await loadCollectorConfig();
       const sources = { ...current.tokenAnalyticsSources, claudeCode, codex };
-      await saveCollectorConfig({
+      const next = {
         ...current,
         tokenAnalyticsSources: sources,
         tokenAnalyticsEnabled: claudeCode || codex || sources.googleAntigravity === true,
-      });
+      };
+      await saveCollectorConfig(next);
+      observation++;
+      observedConsent = consentKey(next);
+      tokens.invalidate();
       // Start (or stop) at once; the first pass of a large history can take
       // several seconds, so the reply does not wait for it. The snapshot says
       // "scanning" until the pass returns.
-      void tokens.trigger();
       sendJson(request, response, 200, { status: "ok", claudeCode, codex });
     } catch {
       sendJson(request, response, 500, { error: "consent_not_saved" });
+    } finally {
+      consentChanging = false;
     }
   };
 
@@ -427,6 +470,8 @@ async function main(): Promise<void> {
     server,
     stopScheduling: () => {
       clearInterval(timer);
+      unwatchFile(consentPath);
+      observation++;
       tokens.stop();
     },
     closeInteractive: () => {

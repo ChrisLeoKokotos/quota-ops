@@ -37,6 +37,7 @@ function service(script,args,pattern){
 try{
   run("collector/cli.ts",["add","google","google-1","Google Automatic E2E"]);
   run("collector/cli.ts",["tokens-auto","enable","google-antigravity"]);
+  run("collector/google-hook.ts",["google-1"],JSON.stringify({product:"antigravity",session_id:"test-session",context_window:{total_input_tokens:0,total_output_tokens:0}}));
   run("collector/google-hook.ts",["google-1"],JSON.stringify({
     product:"antigravity",session_id:"test-session",
     email:"never-show@example.com",plan_tier:"Pro",

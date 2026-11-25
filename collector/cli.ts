@@ -1,6 +1,7 @@
 import { collectProviderUsage, openProviderLogin } from "./provider.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { collectLocalTokenAnalytics } from "./token-analytics.ts";
 import {
   bootstrapFiveAccounts,
@@ -170,15 +171,20 @@ async function main(): Promise<void> {
         : consent.googleAntigravity === true,
     };
 
+    const { googleTokenConsentEpoch: previousEpoch, ...rest } = config;
     await saveCollectorConfig({
-      ...config,
+      ...rest,
       tokenAnalyticsEnabled: next.claudeCode || next.codex || next.googleAntigravity,
       tokenAnalyticsSources: next,
+      ...(next.googleAntigravity ? {
+        googleTokenConsentEpoch: consent.googleAntigravity === true && previousEpoch
+          ? previousEpoch : randomUUID(),
+      } : {}),
     });
     process.stdout.write(
       `Background token scanning updated. Claude Code: ${next.claudeCode ? "enabled" : "disabled"}; ` +
         `Codex: ${next.codex ? "enabled" : "disabled"}; Antigravity: ${next.googleAntigravity ? "enabled" : "disabled"}. ` +
-        "Restart or wait for the next collector refresh.\n",
+        "The running collector observes config changes; restart if needed. An in-flight read can take a short time to stop.\n",
     );
     return;
   }

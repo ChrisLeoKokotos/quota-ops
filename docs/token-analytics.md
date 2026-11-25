@@ -50,11 +50,7 @@ pass reads at most about 1 GB and stops after 20 seconds, and files that have
 already been read are resumed from their last offset. A line over 16 MB is
 skipped. If that line was a usage record, the source is marked `partial`. Until every
 file has been read, the Claude Code source is also `partial`, and its message says
-from which date the totals are complete. On 21 Nov 2026 the installed
-app's collector code (run by `QuotaOps.exe` as Node) scanned a real history of
-381 files and 2.5 GB. The scan was complete after three passes of 3.3 s, 3.1 s
-and 1.2 s, with an all-time total of 27.6 billion tokens. Only the numbers were
-recorded.
+from which date the totals are complete. A prior installed-app scan completed successfully; owner-specific usage and corpus metrics are omitted.
 
 Fixture-verified totals: `tests/token-analytics-fixture.test.ts` checks
 known totals for Claude Code (including cache read and write, deduplication by
@@ -85,9 +81,7 @@ combines it with the source states to show one of **Off**, **Scanning**,
 running, the dashboard reads the snapshot every 3 seconds, so the totals update
 without a restart.
 
-On 21 Nov 2026, in the installed app on the owner's PC, the first totals appeared
-2 seconds after consent: the state was `ready`, with older files still pending. The
-scan was complete after 12 seconds: 381 files, 27.65 billion tokens all time.
+Prior installed-app validation confirmed that totals appear after consent and progress to complete. Private usage metrics are omitted.
 
 ## Per-account attribution (Claude Code)
 
@@ -113,13 +107,7 @@ no account field.
   `oauthAccount.accountUuid`) is hashed the same way, to mark "signed in to Claude
   Code now".
 
-**Result on the owner's PC (21 Nov 2026).** Three accounts appear in the
-history. About two thirds of all-time Claude Code tokens came from sessions with
-exactly one account record. About one third came from older sessions without one,
-and those stay unattributed. No session named more than one account.
-
-Historical attribution is therefore **partial**. About two thirds of the history can
-be attributed exactly, and one third cannot and stays unattributed. `session-owner`
+**Historical attribution may be partial.** Sessions without exactly one account record remain unattributed. Owner-specific counts and proportions are omitted. `session-owner`
 is an undocumented Claude Code record type and may change. If it changes, more
 usage becomes unattributed; none of it is misattributed.
 
@@ -156,3 +144,7 @@ The `tokens` CLI displays only sources with explicit consent; otherwise it refus
 Local totals can differ from provider dashboards when history is missing, activity happened on another device, activity did not create supported local logs/events, or upstream log formats changed. Event-based Google counts stop updating when the CLI is closed, and activity before opting in cannot be reconstructed.
 
 QuotaOps prefers an explicitly local total over claiming provider-wide completeness it cannot verify.
+
+## Consent changes
+
+The collector invalidates old scan generations on consent changes, suppresses stale totals and cooperatively stops history readers. CLI changes are observed through the config file watcher (one-second polling; already pending disk I/O can complete). Google counters use a baseline for each session per consent epoch, counting only subsequent increases. Older stored aggregates are retained, not retrospectively corrected. Existing previously enabled installations start a new baseline on the first updated hook event. Do not run simultaneous CLI and desktop consent writes; use one control surface at a time.

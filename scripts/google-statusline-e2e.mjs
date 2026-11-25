@@ -27,6 +27,7 @@ try{
     },context_window:{total_input_tokens:120,total_output_tokens:30,
       current_usage:{cache_read_input_tokens:20}},
   };
+  run("collector/google-hook.ts",["google-1"],JSON.stringify({...event,context_window:{total_input_tokens:0,total_output_tokens:0}}));
   assert.match(run("collector/google-hook.ts",["google-1"],JSON.stringify(event)),/QuotaOps/);
   const raw=await readFile(join(home,".quotaops","google-statusline","google-1.json"),"utf8");
   for(const secret of ["private@invalid","/private/path","/private/transcript","private-session-id"])

@@ -246,3 +246,32 @@ test("token analytics no longer waits for provider quota batches", async () => {
   assert.match(service, /tokenStatus: tokens\.status/);
   assert.match(service, /void tokens\.trigger\(\);/);
 });
+
+
+test("consent invalidation hides previous data immediately and rejects in-flight old-generation results",async()=>{
+  let release!: (value:{snapshot:TokenAnalyticsSnapshot;pending:boolean})=>void;
+  let activeSignal:AbortSignal|undefined;
+  let pass=0, cleared=0;
+  const runner=new TokenRunner({
+    ...fakeTimers(),
+    clearCache:()=>{cleared++;},
+    scan:async signal=>{
+      pass++;
+      if(pass===1)return {snapshot:snapshotOf(42),pending:false};
+      if(pass===2){activeSignal=signal;return new Promise(resolve=>{release=resolve;});}
+      return null;
+    },
+  });
+  await runner.trigger();
+  const old=runner.trigger();
+  runner.invalidate();
+  assert.equal(activeSignal?.aborted,true);
+  assert.equal(runner.snapshot,null);
+  release({snapshot:snapshotOf(999),pending:false});
+  await old;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(runner.snapshot,null);
+  assert.equal(runner.status.state,"disabled");
+  assert.equal(cleared,1);
+  runner.stop();
+});
