@@ -11,7 +11,7 @@ const security = require("../desktop/electron-ipc/security.js") as {
   MAX_ACCOUNTS: number;
   projectSnapshot: (parsed: Record<string, unknown>) => {
     generatedAt: string | null;
-    accounts: { id: string | null; label: string | null; message: string | null; account: { windows: { usedPercent: number | null }[] } | null }[];
+    accounts: { id: string | null; label: string | null; status: string | null; message: string | null; account: { windows: { id: string | null; label: string | null; usedPercent: number | null; resetAt: string | null }[] } | null }[];
     tokens: unknown;
     tokenStatus: unknown;
   };
