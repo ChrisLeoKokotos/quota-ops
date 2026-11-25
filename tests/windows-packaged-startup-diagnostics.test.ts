@@ -54,3 +54,16 @@ test("packaged diagnostics are opt-in and never print raw collector stderr", asy
   assert.match(main, /smoke_electron_userdata_isolated/);
   assert.match(main, /Refusing an unsafe packaged-smoke Electron userData override/);
 });
+
+test("packaged startup smoke rejects ambiguous flags and non-CI installed mode before touching profiles", () => {
+  const filename = fileURLToPath(new URL("../scripts/windows-packaged-startup-smoke.mjs", import.meta.url));
+  const env = { ...process.env, GITHUB_ACTIONS: "false", RUNNER_ENVIRONMENT: "self-hosted" };
+  for (const args of [["--unknown"], ["--advisor", "--quit"], ["--installed", "--quit"], ["--advisor", "--advisor"]]) {
+    const result = spawnSync(process.execPath, [filename, ...args], { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage:/);
+  }
+  const installed = spawnSync(process.execPath, [filename, "--advisor", "--installed"], { env, encoding: "utf8", timeout: 15_000 });
+  assert.equal(installed.status, 1);
+  assert.match(installed.stderr, /requires a disposable GitHub-hosted runner/);
+});

@@ -6,7 +6,6 @@ import {
   clampPercent,
   formatCountdown,
   getAccountStatus,
-  getRecommendedAccount,
   getWindowState,
   providerLabel,
   type AccountStatus,
@@ -14,6 +13,7 @@ import {
   type Provider,
   type QuotaWindow,
 } from "@/lib/quota";
+import { adviseAccounts, recordAdvisorHistory, TASKS, type AdvisorTask, type AdvisorHistory } from "@/lib/smart-advisor";
 import {
   createGoogleModelGroupWindows,
   hasGoogleModelGroup,
@@ -596,7 +596,7 @@ function AccountCard({
         <div>
           <div className="account-name-row">
             <h2>{account.label}</h2>
-            {recommended ? <span className="recommended">Best capacity</span> : null}
+            {recommended ? <span className="recommended">Recommended</span> : null}
           </div>
           <p>
             {providerLabel(account.provider)} {account.plan} · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
@@ -1198,6 +1198,11 @@ export function QuotaDashboard() {
   const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
   // Every configured account the collector reports without a fresh reading.
   const [collectorStates, setCollectorStates] = useState<CollectorAccountResult[]>([]);
+  const [advisorFreshIds, setAdvisorFreshIds] = useState<string[]>([]);
+  const [advisorHistory, setAdvisorHistory] = useState<AdvisorHistory>({});
+  const [advisorTask, setAdvisorTask] = useState<AdvisorTask>("coding");
+  const [advisorProvider, setAdvisorProvider] = useState<Provider | null>(null);
+  const [advisorPrevious, setAdvisorPrevious] = useState<{ context: string; id: string } | null>(null);
   const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const [tokenAnalytics, setTokenAnalytics] =
     useState<TokenAnalyticsSnapshot | null>(null);
@@ -1288,6 +1293,12 @@ export function QuotaDashboard() {
         if (cancelled) return;
 
         setCollectorState("connected");
+        const failedIds = new Set(snapshot.issues.map(issue => issue.id));
+        const successful = snapshot.accounts.filter(account => !failedIds.has(account.id));
+        const observedAt = Date.now();
+        setNowMs(observedAt);
+        setAdvisorFreshIds(successful.map(account => account.id));
+        setAdvisorHistory(previous => recordAdvisorHistory(previous, successful, observedAt));
         setCollectorLastSync(snapshot.generatedAt);
         // Keep the previous object when nothing changed: a new object every
         // 30 s re-renders the whole dashboard for nothing.
@@ -1351,6 +1362,7 @@ export function QuotaDashboard() {
       } catch {
         if (cancelled) return;
         setCollectorState("offline");
+        setAdvisorFreshIds([]);
       }
     };
 
@@ -1440,10 +1452,23 @@ export function QuotaDashboard() {
     return () => window.removeEventListener("keydown", handler);
   }, [ready]);
 
-  const recommended = useMemo(
-    () => (nowMs ? getRecommendedAccount(accounts, nowMs) : null),
-    [accounts, nowMs],
-  );
+  const selectedProvider = advisorProvider ??
+    (accounts.some(account => account.provider === "claude") ? "claude" : accounts[0]?.provider ?? "claude");
+  const advisorContext = selectedProvider + ":" + advisorTask;
+  const advisor = useMemo(() => adviseAccounts(nowMs ? accounts : [], {
+    provider: selectedProvider, task: advisorTask, nowMs,
+    freshIds: advisorFreshIds, history: advisorHistory,
+    previousId: advisorPrevious?.context === advisorContext ? advisorPrevious.id : null,
+  }), [accounts, selectedProvider, advisorTask, nowMs, advisorFreshIds, advisorHistory, advisorPrevious, advisorContext]);
+  const recommended = advisor.recommended?.account ?? null;
+  const recommendedId = recommended?.id ?? null;
+  useEffect(() => {
+    setAdvisorPrevious(previous => {
+      if (!recommendedId) return previous === null ? previous : null;
+      if (previous?.context === advisorContext && previous.id === recommendedId) return previous;
+      return { context: advisorContext, id: recommendedId };
+    });
+  }, [advisorContext, recommendedId]);
 
   const statusOnlyStates = useMemo(
     () => collectorStates.filter((state) => !accounts.some((account) => account.id === state.id)),
@@ -1796,6 +1821,50 @@ export function QuotaDashboard() {
             </div>
           </section>
 
+          <section className="tips-panel" aria-label="Smart Account Advisor">
+            <div className="tips-heading">
+              <span className="page-kicker">Recommendation</span>
+              <h2>Smart Account Advisor</h2>
+            </div>
+            <div className="tips-list">
+              <div className="tip-item">
+                <label>Provider{" "}
+                  <select value={selectedProvider} onChange={event => setAdvisorProvider(event.target.value as Provider)}>
+                    <option value="claude">Claude</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="google">Google / Antigravity</option>
+                  </select>
+                </label>
+                <label>Task{" "}
+                  <select value={advisorTask} onChange={event => setAdvisorTask(event.target.value as AdvisorTask)}>
+                    {Object.entries(TASKS).map(([key, profile]) => <option key={key} value={key}>{profile.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="tip-item" role="status" aria-label={advisor.recommended ? "Recommended account: " + advisor.recommended.account.label + "; tightest remaining quota: " + advisor.recommended.remaining.toFixed(1) + "%" : "No reliable recommendation"}>
+                <strong>{recommended ? recommended.label : "No reliable recommendation"}</strong>
+                <span>{advisor.recommended ? advisor.recommended.reason : "Refresh quota readings or choose a less demanding task."}</span>
+                {advisor.recommended ? <span>
+                  Tightest remaining quota: {advisor.recommended.remaining.toFixed(1)}%.
+                  {advisor.recommended.trendKnown || advisor.recommended.trendPartial ? " Trend-adjusted headroom" + (advisor.recommended.trendPartial ? " (partial history)" : "") + ": " + advisor.recommended.projectedRemaining.toFixed(1) + "%." : " Forecast unavailable."}
+                </span> : null}
+                <span>Task reserve: {TASKS[advisorTask].reserve}% in every window. Estimates are not guarantees.</span>
+                {advisor.retained ? <span>Previous recommendation retained within the stability margin.</span> : null}
+              </div>
+              {advisor.upcomingReset ? <div className="tip-item">
+                <strong>{advisor.upcomingReset.account.label} — check after reset</strong>
+                <span>{formatCountdown(advisor.upcomingReset.resetAt, nowMs)}. Refresh before relying on new capacity.</span>
+              </div> : null}
+              {advisor.candidates.map(candidate => <div className="tip-item" key={candidate.account.id}>
+                <strong>{candidate.account.label} · {candidate.fit ? "Eligible" : "Low headroom"}</strong>
+                <span>{candidate.remaining.toFixed(1)}% tightest remaining · score {candidate.score.toFixed(1)} · {candidate.reason}</span>
+              </div>)}
+              {advisor.excluded.map(item => <div className="tip-item" key={item.account.id}>
+                <strong>{item.account.label} · Not recommended</strong><span>{item.reason}</span>
+              </div>)}
+            </div>
+          </section>
+
           <TokenAnalyticsPanel
             analytics={tokenAnalytics}
             status={tokenStatus}
@@ -1882,7 +1951,7 @@ export function QuotaDashboard() {
                   {recommended ? (
                     <div className="tip-item">
                       <strong>{recommended.label}</strong>
-                      <span>Currently has the best usable capacity for the next task.</span>
+                      <span>{advisor.recommended?.reason ?? "Recommended for the selected task."}</span>
                     </div>
                   ) : null}
                 </>

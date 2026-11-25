@@ -82,7 +82,33 @@ try {
   const after = await page.evaluate(() => JSON.parse(localStorage.getItem("quotaops:accounts:v2") ?? "[]"));
   assert.equal(after[0].windows.length, 4);
   assert.equal(after[0].source, "manual");
-  console.log("PASS: Google / Antigravity manual dashboard E2E, model groups, local persistence, no credentials.");
+  // Verify the actual dashboard's advisor using isolated synthetic manual readings.
+  await page.evaluate(() => {
+    const now=Date.now();
+    const sample=(id,provider,short,week,age=0)=>({id,label:id,provider,plan:"Test",source:"manual",
+      updatedAt:new Date(now-age).toISOString(),windows:[
+        {id:"five-hour",label:"5-hour",usedPercent:short,resetAt:new Date(now+14400000).toISOString()},
+        {id:"weekly",label:"Weekly",usedPercent:week,resetAt:new Date(now+259200000).toISOString()},
+      ]});
+    localStorage.setItem("quotaops:accounts:v2",JSON.stringify([
+      sample("Advisor-bottleneck","claude",94,0), sample("Advisor-balanced","claude",40,40),
+      sample("Advisor-stale","claude",0,0,25*3600000), sample("Advisor-openai","openai",90,90),
+    ]));
+  });
+  await page.reload({waitUntil:"domcontentloaded"});
+  const advisor=page.getByRole("region",{name:"Smart Account Advisor"});
+  const recommendation=advisor.getByRole("status");
+  await recommendation.getByText("Advisor-balanced",{exact:true}).waitFor();
+  assert.match(await advisor.innerText(),/Advisor-stale · Not recommended/);
+  assert.match(await advisor.innerText(),/Advisor-bottleneck · Low headroom/);
+  await advisor.getByLabel("Provider").selectOption("openai");
+  await recommendation.getByText("No reliable recommendation",{exact:true}).waitFor();
+  await advisor.getByLabel("Task").selectOption("quick");
+  await recommendation.getByText("Advisor-openai",{exact:true}).waitFor();
+  assert.equal(await page.locator(".metric-highlight strong").innerText(),"Advisor-openai");
+  await advisor.getByLabel("Task").selectOption("heavy");
+  await recommendation.getByText("No reliable recommendation",{exact:true}).waitFor();
+  console.log("PASS: Google manual dashboard and Smart Account Advisor provider/task/freshness E2E (synthetic, no credentials).");
 } finally {
   await browser?.close().catch(() => undefined);
   if (server && server.exitCode === null) {
