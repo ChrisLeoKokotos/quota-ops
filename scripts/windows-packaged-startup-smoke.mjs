@@ -3,7 +3,9 @@
 // with zero provider accounts and verifies the bundled collector starts.
 // On completion, terminates only the process tree spawned by this test.
 //
-// Usage: node scripts/windows-packaged-startup-smoke.mjs [--quit]
+// Usage: node scripts/windows-packaged-startup-smoke.mjs [--quit | --advisor] [--installed]
+// --advisor uses five synthetic Antigravity statusLine inputs (no provider network).
+// --installed is restricted to a disposable GitHub-hosted Windows CI job.
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -13,13 +15,22 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
-const testQuit = process.argv.length === 3 && process.argv[2] === "--quit";
-if (process.argv.length > 2 && !testQuit) {
-  throw new Error("Only the explicit --quit isolated smoke mode is supported");
+const args = process.argv.slice(2);
+const testQuit = args.includes("--quit");
+const testAdvisor = args.includes("--advisor");
+const installed = args.includes("--installed");
+if (new Set(args).size !== args.length || args.some(a => !["--quit", "--advisor", "--installed"].includes(a)) ||
+    (testQuit && testAdvisor)) {
+  throw new Error("Usage: [--quit | --advisor] [--installed]");
+}
+if (installed && (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted" || !process.env.LOCALAPPDATA)) {
+  throw new Error("--installed requires a disposable GitHub-hosted runner");
 }
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const executable = join(root, "release", "windows", "win-unpacked", "QuotaOps.exe");
-const resourceRoot = join(root, "release", "windows", "win-unpacked", "resources");
+const appDir = installed ? join(process.env.LOCALAPPDATA, "Programs", "QuotaOps") :
+  join(root, "release", "windows", "win-unpacked");
+const executable = join(appDir, "QuotaOps.exe");
+const resourceRoot = join(appDir, "resources");
 const HOST = "127.0.0.1";
 const PORT = 4317;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,13 +103,24 @@ try {
     mkdir(localAppData, { recursive: true }),
   ]);
   await writeFile(join(collectorHome, "collector.token"), token + "\n", { flag: "wx", mode: 0o600 });
+  const fixtures = [
+    { id: "advisor-bottleneck", label: "Advisor bottleneck", short: 94, weekly: 0 },
+    { id: "advisor-balanced", label: "Advisor balanced", short: 40, weekly: 40 },
+    { id: "advisor-weekly", label: "Advisor weekly bottleneck", short: 0, weekly: 96 },
+    { id: "advisor-missing", label: "Advisor missing reading" },
+    { id: "advisor-exhausted", label: "Advisor exhausted", short: 100, weekly: 0 },
+  ];
+  const accounts = testAdvisor ? fixtures.map(f => ({
+    id: f.id, label: f.label, provider: "google", enabled: true,
+    profileDir: join(collectorHome, "browser-profiles", f.id),
+  })) : [];
   await writeFile(join(collectorHome, "collector.json"), JSON.stringify({
     version: 1,
     port: PORT,
     pollIntervalSeconds: 300,
     tokenAnalyticsEnabled: false,
     tokenAnalyticsSources: { claudeCode: false, codex: false },
-    accounts: [],
+    accounts,
   }) + "\n", { flag: "wx", mode: 0o600 });
 
   const env = {
@@ -125,7 +147,26 @@ try {
     throw new Error("Windows USERPROFILE isolation preflight failed; refusing packaged launch");
   }
 
-  child = spawn(executable, [], {
+  if (testAdvisor) {
+    // Exercise the actual packaged statusLine input path; no mock server,
+    // credentials, provider calls, or modifications of runtime security.
+    for (const fixture of fixtures) {
+      if (fixture.short === undefined) continue;
+      const now = Date.now();
+      const hook = join(resourceRoot, "collector-runtime", "collector", "google-hook.ts");
+      const event = {
+        product: "antigravity", plan_tier: "Synthetic",
+        quota: {
+          "five-hour": { remaining_fraction: (100-fixture.short)/100, reset_time: new Date(now+4*3600000).toISOString() },
+          weekly: { remaining_fraction: (100-fixture.weekly)/100, reset_time: new Date(now+3*86400000).toISOString() },
+        },
+      };
+      const result = spawnSync(process.execPath, ["--experimental-strip-types", hook, fixture.id],
+        { env, cwd: appDir, input: JSON.stringify(event), encoding: "utf8", windowsHide: true, timeout: 20_000 });
+      if (result.status !== 0) throw new Error("Synthetic packaged statusLine input failed");
+    }
+  }
+  child = spawn(executable, testAdvisor ? ["--force-renderer-accessibility"] : [], {
     cwd: dirname(executable),
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -167,6 +208,39 @@ try {
     );
   }
 
+  if (testAdvisor) {
+    // Wait for all five real collector results, including missing data. No
+    // fake snapshot endpoint is injected. Then inspect the actual packaged
+    // renderer using Windows UI Automation scoped to the spawned PID.
+    let ready = false;
+    const advisorDeadline = Date.now() + 45_000;
+    while (Date.now() < advisorDeadline && observedExit === null) {
+      try {
+        const response = await fetch(`http://${HOST}:${PORT}/snapshot`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+          signal: AbortSignal.timeout(1200), redirect: "error",
+        });
+        if (response.ok) {
+          const body = await response.json();
+          const byId = new Map((body.accounts ?? []).map(a => [a.id, a]));
+          ready = body.accounts?.length === 5 &&
+            fixtures.filter(f => f.short !== undefined).every(f => byId.get(f.id)?.status === "ok") &&
+            byId.get("advisor-missing")?.status === "unavailable";
+          if (ready) break;
+        }
+      } catch { /* not ready yet */ }
+      await sleep(350);
+    }
+    if (!ready) throw new Error("Synthetic five-account collector did not settle");
+    const driver = spawnSync("powershell.exe", ["-NoProfile", "-File",
+      join(root, "scripts", "windows-advisor-uia.ps1"), "-TargetPid", String(child.pid)],
+      { windowsHide: true, encoding: "utf8", timeout: 100_000 });
+    if (driver.status !== 0 || !String(driver.stdout).includes("ADVISOR_UI_PASS")) {
+      throw new Error("Packaged advisor UI Automation did not confirm the recommendation and headroom");
+    }
+    process.stdout.write("PASS: packaged collector -> authenticated IPC -> rendered Smart Account Advisor (five synthetic profiles, balanced account recommended).\n");
+  }
+
   // A brief stable period distinguishes healthy startup from immediate exit.
   await sleep(3000);
   if (observedExit !== null && !testQuit) {
@@ -175,7 +249,7 @@ try {
 
   // Confirm environment isolation via the collector files in the test home.
   const cfg = JSON.parse(await readFile(join(collectorHome, "collector.json"), "utf8"));
-  if (cfg.accounts?.length !== 0 || cfg.tokenAnalyticsEnabled !== false) {
+  if (cfg.accounts?.length !== accounts.length || cfg.tokenAnalyticsEnabled !== false) {
     throw new Error("temporary collector settings unexpectedly changed");
   }
 
@@ -206,7 +280,8 @@ try {
     (testQuit
       ? "PASS: packaged QuotaOps quit gracefully and closed its collector.\n"
       : "PASS: packaged QuotaOps stayed alive and started its authenticated collector.\n") +
-    "PASS: smoke ran with zero provider accounts in an isolated temporary home.\n" +
+    (testAdvisor ? "PASS: smoke used five synthetic provider profiles in an isolated temporary home.\n" :
+      "PASS: smoke ran with zero provider accounts in an isolated temporary home.\n") +
     "No real session, browser profile, or QuotaOps configuration was used.\n",
   );
 } catch (error) {

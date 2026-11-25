@@ -1841,7 +1841,7 @@ export function QuotaDashboard() {
                   </select>
                 </label>
               </div>
-              <div className="tip-item" role="status">
+              <div className="tip-item" role="status" aria-label={recommended ? "Recommended account: " + recommended.label : "No reliable recommendation"}>
                 <strong>{recommended ? recommended.label : "No reliable recommendation"}</strong>
                 <span>{advisor.recommended ? advisor.recommended.reason : "Refresh quota readings or choose a less demanding task."}</span>
                 {advisor.recommended ? <span>
