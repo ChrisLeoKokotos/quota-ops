@@ -59,3 +59,8 @@ test("rejects ambiguous commands with multiple possible percentages", () => {
     null,
   );
 });
+
+
+test("voice commands cannot modify a collector-owned observation", () => {
+  assert.equal(parseVoiceUsageCommand("Dev 1 weekly 82", accounts.map(a=>({...a,source:"collector"}))),null);
+});

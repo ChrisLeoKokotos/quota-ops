@@ -673,18 +673,18 @@ async function setTokenAnalytics(turnOn, parentWindow) {
       const options = {
         type: "question",
         buttons: ["Cancel", "Turn on"],
-        defaultId: 1,
+        defaultId: 0,
         cancelId: 0,
         noLink: true,
         title: "QuotaOps token analytics",
         message: "Count tokens from Claude Code and Codex session logs on this PC?",
         detail:
-          "QuotaOps reads only numeric token counts (input, output, cache), their dates, " +
+          "QuotaOps parses local session-history files to extract numeric token counts (input, output, cache), dates, " +
           "and the Claude account each Claude Code session ran under, from the local " +
           "session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
           "(%USERPROFILE%\\.codex). Account ids are kept only as a one-way hash. " +
-          "Prompts, responses and file contents are not read into QuotaOps and nothing " +
-          "leaves this PC. Totals cover only sessions on this PC. You can turn this off " +
+          "Those files may contain private prompts, responses and code. QuotaOps does not retain or export their content. " +
+          "Token analytics stays on this PC. Totals cover only sessions on this PC. You can turn this off " +
           "at any time in the dashboard or the tray menu.",
       };
       choice = parentWindow && !parentWindow.isDestroyed()

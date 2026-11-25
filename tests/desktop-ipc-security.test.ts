@@ -564,7 +564,8 @@ test("account and window counts are capped", () => {
   });
 
   assert.equal(projected.accounts.length, security.MAX_ACCOUNTS);
-  assert.equal(projected.accounts[0]?.account?.windows.length, 16);
+  assert.equal(projected.accounts[0]?.account, null);
+  assert.equal(projected.accounts[0]?.status, "unavailable");
 });
 
 test("non-string and non-finite values are dropped rather than forwarded", () => {
@@ -765,4 +766,12 @@ test("malformed token analytics fail closed instead of fabricating totals", () =
     });
     assert.equal(result.tokens, null);
   }
+});
+
+
+test("a valid exhausted seventeenth Google window survives the IPC boundary", () => {
+  const windows = Array.from({length: 17}, (_, i) => ({id: "google-bucket:" + i, label: "Window "+i, usedPercent: i===16?100:0, resetAt: "2099-01-01T00:00:00Z"}));
+  const projected = security.projectSnapshot({version:1, accounts:[{id:"google-1",status:"ok",account:{windows}}]});
+  assert.equal(projected.accounts[0]?.account?.windows.length,17);
+  assert.equal(projected.accounts[0]?.account?.windows[16]?.usedPercent,100);
 });

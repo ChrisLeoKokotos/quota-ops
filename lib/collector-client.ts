@@ -65,12 +65,15 @@ function isQuotaAccount(value: unknown): value is QuotaAccount {
     typeof account.updatedAt === "string" &&
     Array.isArray(account.windows) &&
     account.windows.length > 0 &&
+    account.windows.length <= 32 &&
+    new Set(account.windows.map(window => window?.id)).size === account.windows.length &&
     account.windows.every(
       (window) =>
         !!window &&
         typeof window.id === "string" &&
         typeof window.label === "string" &&
         typeof window.usedPercent === "number" &&
+        Number.isFinite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent <= 100 &&
         (typeof window.resetAt === "string" || window.resetAt === null),
     )
   );
@@ -270,15 +273,25 @@ export async function fetchCollectorSnapshot(
     throw new Error("Collector returned an unsupported response.");
   }
 
-  const accounts = payload.accounts
-    .map((result) => result.account)
+  if (payload.accounts.length > 64 || payload.accounts.some(result =>
+    !result || typeof result.id !== "string" || typeof result.label !== "string") ||
+    new Set(payload.accounts.map(result => result.id)).size !== payload.accounts.length) {
+    throw new Error("Collector returned invalid account identities.");
+  }
+  const results = payload.accounts.map(result =>
+    result.status === "ok" && (!isQuotaAccount(result.account) || result.account.id !== result.id)
+      ? { ...result, status: "unavailable" as const, account: null, message: "Invalid or incomplete quota reading." }
+      : result);
+  const accounts = results
+    .filter(result => result.status === "ok")
+    .map(result => result.account)
     .filter(isQuotaAccount)
-    .map((account) => ({ ...account, source: "collector" as const }));
+    .map(account => ({ ...account, source: "collector" as const }));
 
   return {
     generatedAt: payload.generatedAt,
     accounts,
-    issues: payload.accounts.filter((result) => result.status !== "ok"),
+    issues: results.filter((result) => result.status !== "ok"),
     tokens: parseTokenAnalytics(payload.tokens),
     tokenStatus: parseTokenScanStatus(payload.tokenStatus),
   };

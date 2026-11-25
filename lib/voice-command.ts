@@ -26,7 +26,7 @@ export function parseVoiceUsageCommand(
   const normalized = transcript.toLowerCase().replaceAll(",", ".");
 
   const account = accounts.find((candidate) =>
-    normalized.includes(candidate.label.toLowerCase()),
+    candidate.source !== "collector" && normalized.includes(candidate.label.toLowerCase()),
   );
   if (!account) return null;
 

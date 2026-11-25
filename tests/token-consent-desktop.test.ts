@@ -20,7 +20,9 @@ test("the tray asks before turning token analytics on and says what is read", as
   // Only "Turn on" (response 1) proceeds; the tray and the dashboard button
   // share this one function.
   assert.match(body, /if \(choice\.response !== 1\) return "cancelled";/);
-  assert.match(body, /Prompts, responses and file contents are not read/);
+  assert.match(body, /files may contain private prompts, responses and code/);
+  assert.match(body, /does not retain or export their content/);
+  assert.match(body, /defaultId: 0/);
   assert.match(main, /"Turn on token analytics\.\.\."/);
 });
 

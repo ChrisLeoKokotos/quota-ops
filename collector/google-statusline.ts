@@ -35,10 +35,14 @@ export interface GoogleProjection{
 export function projectGoogleStatusline(payload:unknown,now=Date.now()):GoogleProjection|null{
   const root=obj(payload);if(!root||root.product!=="antigravity")return null;
   const windows:QuotaWindow[]=[];
-  for(const [id,raw] of Object.entries(obj(root.quota)??{}).slice(0,32)){
+  const buckets=Object.entries(obj(root.quota)??{});
+  // Unsupported fields are not quotas. If the full set exceeds our bound,
+  // publish no windows rather than an apparently healthy partial set.
+  for(const [id,raw] of (buckets.length<=32?buckets:[])){
     const bucket=obj(raw),fraction=bucket?.remaining_fraction;
+    if(!bucket||!Object.hasOwn(bucket,"remaining_fraction"))continue;
     if(!BUCKET.test(id)||typeof fraction!=="number"||!Number.isFinite(fraction)||
-      fraction<0||fraction>1)continue;
+      fraction<0||fraction>1){windows.length=0;break;}
     windows.push({
       id:"google-bucket:"+id,
       label:id.replace(/[-_:]+/g," ").slice(0,80),

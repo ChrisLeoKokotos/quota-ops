@@ -166,3 +166,19 @@ test("the snapshot request never carries the retired client marker", async () =>
     assert.equal(headers.get("X-QuotaOps-Client"), null);
   }
 });
+
+
+test("invalid, failed or mismatched observations never enter the advisor input", async () => {
+  const account = {id:"a",label:"A",provider:"claude",plan:"Team",updatedAt:"2026-11-25T12:00:00Z",windows:[{id:"weekly",label:"Weekly",usedPercent:0,resetAt:null}]};
+  for (const result of [
+    {id:"a",label:"A",status:"ok",account:{...account,windows:[{...account.windows[0],usedPercent:-1}]}},
+    {id:"b",label:"B",status:"ok",account},
+    {id:"a",label:"A",status:"unavailable",account},
+  ]) {
+    globalThis.fetch = (async (...args: FetchArgs) => String(args[0]).endsWith("/capability") ?
+      jsonResponse({capability:"qo1.1.test"}) : jsonResponse({...EMPTY_SNAPSHOT,accounts:[result]})) as typeof fetch;
+    const snapshot = await fetchCollectorSnapshot();
+    assert.equal(snapshot.accounts.length,0);
+    assert.equal(snapshot.issues.length,1);
+  }
+});

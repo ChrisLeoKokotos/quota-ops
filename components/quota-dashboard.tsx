@@ -1021,7 +1021,7 @@ function TokenAnalyticsPanel({
           <h2 id="token-analytics-title">Locally observed work</h2>
           <p>
             Numeric usage only, from Claude Code and Codex session logs and opted-in
-            Antigravity CLI events on this PC. Prompts and responses are not included.
+            Antigravity CLI events on this PC. Session files may contain private prompts and responses; they are parsed locally, not included in the aggregates.
           </p>
         </div>
         <span className="token-state" data-state={state}>
@@ -1042,8 +1042,8 @@ function TokenAnalyticsPanel({
             <strong>Token analytics is off.</strong>
             <p>
               Turn it on to see the total tokens processed by Claude Code and Codex on
-              this PC. QuotaOps asks for your consent first and reads only numbers and
-              dates.
+              this PC. QuotaOps asks for consent before parsing local history files.
+              Only usage aggregates and limited operational metadata are retained.
             </p>
           </div>
           {canSwitch ? (
@@ -1286,11 +1286,12 @@ export function QuotaDashboard() {
 
     const sync = async () => {
       controller?.abort();
-      controller = new AbortController();
+      const request = new AbortController();
+      controller = request;
 
       try {
-        const snapshot = await fetchCollectorSnapshot(controller.signal);
-        if (cancelled) return;
+        const snapshot = await fetchCollectorSnapshot(request.signal);
+        if (cancelled || request.signal.aborted) return;
 
         setCollectorState("connected");
         const failedIds = new Set(snapshot.issues.map(issue => issue.id));
@@ -1360,7 +1361,7 @@ export function QuotaDashboard() {
           });
         }
       } catch {
-        if (cancelled) return;
+        if (cancelled || request.signal.aborted) return;
         setCollectorState("offline");
         setAdvisorFreshIds([]);
       }
@@ -1496,7 +1497,14 @@ export function QuotaDashboard() {
 
   const updateAccount = (next: QuotaAccount) => {
     setAccounts((current) =>
-      current.map((account) => (account.id === next.id ? next : account)),
+      current.map((account) => {
+        if (account.id !== next.id) return account;
+        if (account.source !== "collector") return next;
+        // Metadata edits must preserve the latest actual observation, even
+        // if a render holding older data initiated this change.
+        const { email: _email, ...observed } = account;
+        return { ...observed, label: next.label, ...(next.email ? { email: next.email } : {}) };
+      }),
     );
   };
 
@@ -1567,6 +1575,10 @@ export function QuotaDashboard() {
   };
 
   const startVoiceCommand = async () => {
+    if (getDesktopBridge()) {
+      showToast("Voice input is unavailable in the local-only desktop app.");
+      return;
+    }
     const speechWindow = window as typeof window & {
       SpeechRecognition?: SpeechRecognitionConstructor;
       webkitSpeechRecognition?: SpeechRecognitionConstructor;
@@ -1581,6 +1593,7 @@ export function QuotaDashboard() {
       return;
     }
 
+    if (!window.confirm("Browser voice recognition may send microphone audio to your browser provider's speech service. Continue?")) return;
     if (!(await ensureMicrophonePermission())) {
       setListening(false);
       return;
@@ -1617,7 +1630,7 @@ export function QuotaDashboard() {
 
       setAccounts((current) =>
         current.map((account) => {
-          if (account.id !== command.accountId) return account;
+          if (account.id !== command.accountId || account.source === "collector") return account;
           return {
             ...account,
             windows: account.windows.map((window) =>

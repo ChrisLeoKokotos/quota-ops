@@ -255,7 +255,7 @@ function buildContentSecurityPolicy(scriptHashes = []) {
 }
 
 const MAX_ACCOUNTS = 64;
-const MAX_WINDOWS_PER_ACCOUNT = 16;
+const MAX_WINDOWS_PER_ACCOUNT = 32;
 
 /** Truncates a collector-supplied string, or drops it if it is not one. */
 function boundedText(value, maxLength) {
@@ -400,15 +400,18 @@ function projectSnapshot(parsed) {
     generatedAt: boundedText(parsed.generatedAt, 64),
     accounts: parsed.accounts.slice(0, MAX_ACCOUNTS).map((entry) => {
       const source = entry && typeof entry === "object" ? entry : {};
-      const account =
+      const rawAccount =
         source.account && typeof source.account === "object" ? source.account : null;
+      // An incomplete quota set must never be represented as a successful reading.
+      const oversized = Array.isArray(rawAccount?.windows) && rawAccount.windows.length > MAX_WINDOWS_PER_ACCOUNT;
+      const account = oversized ? null : rawAccount;
 
       return {
         id: boundedText(source.id, 64),
         label: boundedText(source.label, 128),
-        status: boundedText(source.status, 32),
+        status: oversized ? "unavailable" : boundedText(source.status, 32),
         checkedAt: boundedText(source.checkedAt, 64),
-        message: boundedText(source.message, 512),
+        message: oversized ? "Quota window limit exceeded; refresh required." : boundedText(source.message, 512),
         lastSuccessAt: boundedText(source.lastSuccessAt, 64),
         account: account
           ? {
@@ -419,11 +422,11 @@ function projectSnapshot(parsed) {
               email: boundedText(account.email, 128),
               updatedAt: boundedText(account.updatedAt, 64),
               windows: Array.isArray(account.windows)
-                ? account.windows.slice(0, MAX_WINDOWS_PER_ACCOUNT).map((candidate) => {
+                ? account.windows.map((candidate) => {
                     const window =
                       candidate && typeof candidate === "object" ? candidate : {};
                     return {
-                      id: boundedText(window.id, 64),
+                      id: boundedText(window.id, 128),
                       label: boundedText(window.label, 128),
                       usedPercent:
                         typeof window.usedPercent === "number" &&
