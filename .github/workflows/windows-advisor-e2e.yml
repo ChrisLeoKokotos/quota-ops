@@ -43,6 +43,7 @@ jobs:
       - name: Build branded unsigned test installer
         run: npm run desktop:installer:win
       - name: Clean per-user install and verify files
+        id: install
         shell: pwsh
         run: |
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
@@ -62,6 +63,7 @@ jobs:
       - name: Installed startup and graceful Quit
         run: node scripts/windows-packaged-startup-smoke.mjs --quit --installed
       - name: Clean uninstall
+        if: ${{ always() && steps.install.outcome == 'success' }}
         shell: pwsh
         run: |
           $app = Join-Path $env:LOCALAPPDATA 'Programs\QuotaOps'

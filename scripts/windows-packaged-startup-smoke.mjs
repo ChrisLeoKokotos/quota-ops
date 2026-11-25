@@ -16,11 +16,12 @@ import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
 const args = process.argv.slice(2);
-const testQuit = args.includes("--quit");
-const testAdvisor = args.includes("--advisor");
+const testQuit = process.argv[2] === "--quit";
+const testAdvisor = process.argv[2] === "--advisor";
 const installed = args.includes("--installed");
-if (new Set(args).size !== args.length || args.some(a => !["--quit", "--advisor", "--installed"].includes(a)) ||
-    (testQuit && testAdvisor)) {
+const expectedArgs = [...(testQuit ? ["--quit"] : testAdvisor ? ["--advisor"] : []),
+  ...(installed ? ["--installed"] : [])];
+if (JSON.stringify(args) !== JSON.stringify(expectedArgs)) {
   throw new Error("Usage: [--quit | --advisor] [--installed]");
 }
 if (installed && (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted" || !process.env.LOCALAPPDATA)) {
@@ -114,14 +115,19 @@ try {
     id: f.id, label: f.label, provider: "google", enabled: true,
     profileDir: join(collectorHome, "browser-profiles", f.id),
   })) : [];
-  await writeFile(join(collectorHome, "collector.json"), JSON.stringify({
+  const config = {
     version: 1,
     port: PORT,
     pollIntervalSeconds: 300,
     tokenAnalyticsEnabled: false,
     tokenAnalyticsSources: { claudeCode: false, codex: false },
-    accounts,
-  }) + "\n", { flag: "wx", mode: 0o600 });
+    accounts: [],
+  };
+  // The established startup and Quit modes always use zero accounts.
+  // Only the explicit advisor mode creates synthetic Google profiles.
+  if (testAdvisor) config.accounts = accounts;
+  await writeFile(join(collectorHome, "collector.json"), JSON.stringify(config) + "\n",
+    { flag: "wx", mode: 0o600 });
 
   const env = {
     ...process.env,
