@@ -1705,13 +1705,13 @@ export function QuotaDashboard() {
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
-            <a className="nav-item active" href="#overview">
+            <a className="nav-item active" href="#overview" aria-label="Overview" title="Overview">
               <OverviewIcon />
-              Overview
+              <span>Overview</span>
             </a>
-            <a className="nav-item" href="#accounts">
+            <a className="nav-item" href="#accounts" aria-label="Accounts" title="Accounts">
               <AccountsIcon />
-              Accounts
+              <span>Accounts</span>
             </a>
           </nav>
 
@@ -1720,6 +1720,8 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}
+              aria-label={theme === "light" ? "Dark mode" : "Light mode"}
+              title={theme === "light" ? "Dark mode" : "Light mode"}
             >
               {theme === "light" ? <MoonIcon /> : <SunIcon />}
               <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>
@@ -1729,6 +1731,9 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={toggleNotifications}
+              aria-label={notificationsEnabled ? "Notifications on" : "Enable notifications"}
+              aria-pressed={notificationsEnabled}
+              title={notificationsEnabled ? "Notifications on" : "Enable notifications"}
             >
               <BellIcon />
               <span>{notificationsEnabled ? "Notifications on" : "Enable notifications"}</span>
@@ -1738,6 +1743,8 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={() => setShortcutHelpOpen(true)}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts"
             >
               <KeyboardIcon />
               <span>Keyboard shortcuts</span>
@@ -1821,13 +1828,12 @@ export function QuotaDashboard() {
             </div>
           </section>
 
-          <section className="tips-panel" aria-label="Smart Account Advisor">
+          <section className="tips-panel advisor-panel" aria-label="Smart Account Advisor">
             <div className="tips-heading">
               <span className="page-kicker">Recommendation</span>
               <h2>Smart Account Advisor</h2>
             </div>
-            <div className="tips-list">
-              <div className="tip-item">
+            <div className="advisor-controls">
                 <label>Provider{" "}
                   <select value={selectedProvider} onChange={event => setAdvisorProvider(event.target.value as Provider)}>
                     <option value="claude">Claude</option>
@@ -1841,7 +1847,7 @@ export function QuotaDashboard() {
                   </select>
                 </label>
               </div>
-              <div className="tip-item" role="status" aria-label={advisor.recommended ? "Recommended account: " + advisor.recommended.account.label + "; tightest remaining quota: " + advisor.recommended.remaining.toFixed(1) + "%" : "No reliable recommendation"}>
+              <div className="advisor-status" role="status" aria-label={advisor.recommended ? "Recommended account: " + advisor.recommended.account.label + "; tightest remaining quota: " + advisor.recommended.remaining.toFixed(1) + "%" : "No reliable recommendation"}>
                 <strong>{recommended ? recommended.label : "No reliable recommendation"}</strong>
                 <span>{advisor.recommended ? advisor.recommended.reason : "Refresh quota readings or choose a less demanding task."}</span>
                 {advisor.recommended ? <span>
@@ -1851,15 +1857,16 @@ export function QuotaDashboard() {
                 <span>Task reserve: {TASKS[advisorTask].reserve}% in every window. Estimates are not guarantees.</span>
                 {advisor.retained ? <span>Previous recommendation retained within the stability margin.</span> : null}
               </div>
-              {advisor.upcomingReset ? <div className="tip-item">
+              <div className="tips-list advisor-results">
+              {advisor.upcomingReset ? <div className="tip-item advisor-result">
                 <strong>{advisor.upcomingReset.account.label} — check after reset</strong>
                 <span>{formatCountdown(advisor.upcomingReset.resetAt, nowMs)}. Refresh before relying on new capacity.</span>
               </div> : null}
-              {advisor.candidates.map(candidate => <div className="tip-item" key={candidate.account.id}>
+              {advisor.candidates.map(candidate => <div className="tip-item advisor-result" key={candidate.account.id}>
                 <strong>{candidate.account.label} · {candidate.fit ? "Eligible" : "Low headroom"}</strong>
                 <span>{candidate.remaining.toFixed(1)}% tightest remaining · score {candidate.score.toFixed(1)} · {candidate.reason}</span>
               </div>)}
-              {advisor.excluded.map(item => <div className="tip-item" key={item.account.id}>
+              {advisor.excluded.map(item => <div className="tip-item advisor-result" key={item.account.id}>
                 <strong>{item.account.label} · Not recommended</strong><span>{item.reason}</span>
               </div>)}
             </div>

@@ -15,7 +15,7 @@
 //   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
 //     authenticated. That boundary is untouched by this work.
 
-const { Menu, Notification, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, session, shell, utilityProcess } = require("electron");
+const { Menu, Notification, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, screen, session, shell, utilityProcess } = require("electron");
 const { readFile } = require("node:fs/promises");
 const { readFileSync, existsSync } = require("node:fs");
 const { createReadStream } = require("node:fs");
@@ -341,9 +341,14 @@ function hardenSession() {
 }
 
 function createWindow() {
+  // Electron bounds are DIP, not physical pixels. Fit the work area so
+  // high Windows scaling or a small display cannot start off-screen.
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: Math.min(1280, workArea.width),
+    height: Math.min(860, workArea.height),
+    minWidth: Math.min(480, workArea.width),
+    minHeight: Math.min(360, workArea.height),
     show: false,
     backgroundColor: "#111317",
     title: "QuotaOps",
