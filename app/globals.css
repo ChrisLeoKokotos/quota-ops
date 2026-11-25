@@ -84,7 +84,7 @@ a {
 }
 
 .app-shell {
-  --sidebar-width: 244px;
+  --sidebar-width: clamp(76px, calc(105vw - 1100px), 244px);
   min-height: 100vh;
 }
 
@@ -798,8 +798,6 @@ a {
   cursor: pointer;
 }
 
-
-
 .notice {
   display: flex;
   gap: 8px;
@@ -1232,12 +1230,6 @@ select:focus {
   color: var(--muted);
 }
 
-
-
-
-
-
-
 .header-actions {
   display: flex;
   align-items: center;
@@ -1315,8 +1307,6 @@ kbd {
   background: var(--surface-hover);
 }
 
-
-
 .status-badge[data-status="needs_setup"] .status-dot {
   background: var(--subtle);
 }
@@ -1367,8 +1357,6 @@ kbd {
   font-weight: 600;
 }
 
-
-
 .auto-sync-label {
   color: var(--muted);
   font-size: 0.72rem;
@@ -1405,6 +1393,7 @@ kbd {
 .sidebar-nav, .sidebar-footer { flex-shrink: 0; }
 .sidebar-brand { min-width: 0; }
 .sidebar-brand strong { overflow-wrap: anywhere; }
+.sidebar-toggle-inside:focus-visible { outline-offset: 1px; }
 .account-header { flex-wrap: wrap; gap: 10px 20px; }
 .account-header > div { flex: 1 1 180px; }
 .account-name-row { flex-wrap: wrap; }
@@ -1413,6 +1402,8 @@ kbd {
 .account-settings-grid { flex-wrap: wrap; }
 .account-settings-grid label { flex: 1 1 180px; width: auto; }
 .account-settings-grid button { flex: 0 0 auto; max-width: 100%; }
+.inline-editor[open] { min-width: 0; }
+.edit-grid { max-width: 100%; }
 .quota-copy, .token-total, .token-hero { min-width: 0; }
 .quota-row { gap: clamp(10px, 2vw, 24px); }
 .token-hero strong, .token-total strong, .token-source-card strong,
@@ -1457,8 +1448,7 @@ kbd {
 @media (min-width: 1800px) {
   .workspace { padding-inline: 48px; }
 }
-@media (max-width: 1120px) {
-  .app-shell { --sidebar-width: 76px; }
+@media (max-width: 1200px) {
   .sidebar { padding-inline: 8px; }
   .sidebar-top { flex-direction: column; gap: 4px; }
   .sidebar-brand { padding: 0; text-align: center; }

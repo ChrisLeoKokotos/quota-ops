@@ -35,7 +35,7 @@ function service(script,args,pattern){
   });
 }
 // Full production dashboard, real local collector with synthetic inputs.
-const viewports = [[2560,1440],[1920,1080],[1536,864],[1366,768],[1280,720],[1121,720],[1120,720],
+const viewports = [[2560,1440],[1920,1080],[1536,864],[1366,768],[1281,720],[1280,720],[1201,720],[1200,720],[1121,720],[1120,720],
   [1024,768],[960,540],[768,1024],[761,540],[760,540],[640,480],[480,360],[390,844],[320,568]];
 const longLabel = "LongAccountName".repeat(3);
 try {
@@ -88,10 +88,14 @@ try {
         ".token-range",".token-total strong",".account-card",".account-header",".account-header h2",".account-header p",
         ".quota-row",".quota-row-main",".reset-copy",".edit-grid",".account-settings-grid",".modal-card",".modal-actions"];
       for(const selector of selectors)for(const el of document.querySelectorAll(selector)){
+        // Chromium retains layout geometry for closed details descendants;
+        // they are not rendered. Keep the summary and every open editor.
+        const closed=el.closest("details:not([open])");
+        if(closed && !el.closest("summary"))continue;
         const r=el.getBoundingClientRect(), style=getComputedStyle(el);
-        if(!r.width||!r.height||style.display==="none")continue;
+        if(!r.width||!r.height||style.display==="none"||style.visibility==="hidden")continue;
         if(r.left< -1||r.right>width+1)failures.push(selector+" outside viewport");
-        if(el.scrollWidth>el.clientWidth+1)failures.push(selector+" local overflow");
+        if(el.scrollWidth>el.clientWidth+1)failures.push(selector+" local overflow "+el.scrollWidth+"/"+el.clientWidth);
       }
       for(const e of document.querySelectorAll(".token-hero strong,.token-breakdown strong,.token-source-card strong,.token-total strong,.metric-highlight strong")){
         if(getComputedStyle(e).textOverflow==="ellipsis")failures.push("numeric/recommendation text truncated");
@@ -101,6 +105,16 @@ try {
       return failures.slice(0,25);
     });
     assert.deepEqual(bad,[],label+" : "+bad.join("; "));
+  }
+  // The old 940px break abruptly changed the content width. On the fluid
+  // rail the shell width must vary continuously over its transition band.
+  let previousWidth = null;
+  for (const width of [1119,1120,1121,1199,1200,1201,1279,1280,1281]) {
+    await page.setViewportSize({width,height:720});
+    const actual=await page.locator(".workspace").evaluate(el=>el.getBoundingClientRect().width);
+    if(previousWidth && width-previousWidth.viewport===1)
+      assert.ok(Math.abs(actual-previousWidth.actual)<3,"workspace jumps at "+width);
+    previousWidth={viewport:width,actual};
   }
   let checks=0;
   for(const [width,height] of viewports){

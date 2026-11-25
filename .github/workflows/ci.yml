@@ -59,7 +59,7 @@ jobs:
       - name: Google manual provider browser E2E (no credentials)
         run: node scripts/google-dashboard-e2e.mjs
 
-      - name: Responsive dashboard E2E (16 viewports, both themes and sidebar states)
+      - name: Responsive dashboard E2E (19 viewports, both themes and sidebar states)
         run: node scripts/responsive-dashboard-e2e.mjs
 
   windows-security:
