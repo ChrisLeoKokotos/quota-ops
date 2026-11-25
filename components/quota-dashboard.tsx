@@ -1846,7 +1846,7 @@ export function QuotaDashboard() {
                 <span>{advisor.recommended ? advisor.recommended.reason : "Refresh quota readings or choose a less demanding task."}</span>
                 {advisor.recommended ? <span>
                   Tightest remaining quota: {advisor.recommended.remaining.toFixed(1)}%.
-                  {advisor.recommended.trendKnown ? " Trend-adjusted headroom: " + advisor.recommended.projectedRemaining.toFixed(1) + "%." : " Forecast unavailable."}
+                  {advisor.recommended.trendKnown || advisor.recommended.trendPartial ? " Trend-adjusted headroom" + (advisor.recommended.trendPartial ? " (partial history)" : "") + ": " + advisor.recommended.projectedRemaining.toFixed(1) + "%." : " Forecast unavailable."}
                 </span> : null}
                 <span>Task reserve: {TASKS[advisorTask].reserve}% in every window. Estimates are not guarantees.</span>
                 {advisor.retained ? <span>Previous recommendation retained within the stability margin.</span> : null}

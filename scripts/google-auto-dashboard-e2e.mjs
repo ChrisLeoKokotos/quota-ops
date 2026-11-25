@@ -60,6 +60,10 @@ try{
   assert.match(text,/auto-synced/);
   assert.match(text,/25%/);
   assert.match(text,/45%/);
+  // The real collector snapshot must also drive the advisor, not just manual rows.
+  const advisor=page.getByRole("region",{name:"Smart Account Advisor"});
+  await advisor.getByRole("status").getByText("Google Automatic E2E",{exact:true}).waitFor({timeout:30000});
+  assert.match(await advisor.getByRole("status").innerText(),/55\.0%/);
   // Token panel: all-time headline, per-source card and completion state.
   const antigravity=page.locator(".token-source-card").filter({hasText:"Antigravity"});
   await antigravity.waitFor({timeout:30000});

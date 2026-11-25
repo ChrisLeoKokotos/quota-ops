@@ -133,3 +133,15 @@ test("prototype-like account IDs are ordinary data, not inherited history", () =
   assert.equal(h.constructor instanceof Array, true);
   assert.equal(advise([a], {history: {}}).recommended?.account.id, "constructor");
 });
+
+test("partial rate evidence is disclosed without discarding an observed bottleneck", () => {
+  const a=account("A",20,20);
+  a.windows[0]!.resetAt=null;
+  a.windows[0]!.usedPercent=0;
+  const samples=[30,15].map((m,i)=>({ ...a, updatedAt:new Date(NOW-m*min).toISOString(),
+    windows:[{...a.windows[0]!},{...a.windows[1]!,usedPercent:i*10}] }));
+  const r=advise([a],{history:{A:samples}});
+  assert.equal(r.recommended?.trendKnown,false);
+  assert.equal(r.recommended?.trendPartial,true);
+  assert.equal(r.recommended?.projectedRemaining,40);
+});

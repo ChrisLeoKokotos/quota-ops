@@ -13,3 +13,18 @@ History is in-memory only, bounded to twelve samples per current successful acco
 ## Reproducible evaluation
 
 Run npm test (tests/smart-advisor.test.ts includes baseline comparisons and 30,603 exhaustive integer quota combinations). Synthetic cases exercise bottlenecks, stale/failed snapshots, exhaustion, reset handling, task eligibility, provider scope, deterministic ties, hysteresis, same-reset trends, missing data and history minimization. These tests evaluate policy invariants, not real-world predictive accuracy. Actual Windows E2E and real session outcomes remain separate acceptance gates. No release or installation is implied by this document.
+
+## Synthetic five-account policy benchmark
+
+Run `node --experimental-strip-types scripts/evaluate-smart-advisor.mjs`. Fixed seed 0x51554f54, 10,000 scenarios, five Claude Team accounts each, integer usage sampled uniformly 0–100 per window, each account independently marked not freshly collected with probability 0.15, coding mode (15-point reserve), no consumption histories or resets due. This is a deliberately synthetic distribution and not a forecast of field reliability. "Unsafe" below means a recommendation that violates the **v2 policy** (reserve or freshness), not a security incident.
+
+| Metric | V1 | V2 |
+|---|---:|---:|
+| Recommendations | 10000 | 9909 |
+| Below reserve | 531 | 0 |
+| Failed snapshot selected | 1469 | 0 |
+| Either policy violation | 1923 | 0 |
+| No recommendation | 0 | 91 |
+| Mean tightest headroom on the 9909 paired selections | 58.44% | 60.68% |
+
+All 91 withheld recommendations had no eligible account. The rule-based comparison measures compliance and headroom on generated examples, not actual longer sessions, token savings or improved provider access. Browser E2E assertions are included in the existing Google dashboard scripts (manual and synthetic collector). Actual Windows installer and authenticated E2E still require separate validation.

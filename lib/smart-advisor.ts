@@ -29,6 +29,7 @@ export interface AdvisorCandidate {
   remaining: number;
   projectedRemaining: number;
   trendKnown: boolean;
+  trendPartial: boolean;
   fit: boolean;
   reason: string;
 }
@@ -135,6 +136,7 @@ export function adviseAccounts(accounts: readonly QuotaAccount[], options: Advis
     const headrooms = account.windows.map(w => 100 - w.usedPercent);
     const rates = account.windows.map(w => rate(account, w, history));
     const trendKnown = rates.every(r => r !== null);
+    const trendPartial = !trendKnown && rates.some(r => r !== null);
     const projected = headrooms.map((h, i) => Math.max(0, h - (rates[i] ?? 0) * profile.hours));
     const remaining = Math.min(...headrooms);
     const projectedRemaining = Math.min(...projected);
@@ -145,8 +147,10 @@ export function adviseAccounts(accounts: readonly QuotaAccount[], options: Advis
       ? "Below the selected task's headroom reserve."
       : trendKnown
         ? "Balanced quota headroom, adjusted using recent observed usage."
-        : "Balanced quota headroom; consumption trend is not yet established.";
-    candidates.push({ account, score, remaining, projectedRemaining, trendKnown, fit, reason });
+        : trendPartial
+          ? "Balanced quota headroom, adjusted using partial consumption history."
+          : "Balanced quota headroom; consumption trend is not yet established.";
+    candidates.push({ account, score, remaining, projectedRemaining, trendKnown, trendPartial, fit, reason });
   }
   candidates.sort((a, b) => Number(b.fit) - Number(a.fit) || b.score - a.score ||
     (a.account.id < b.account.id ? -1 : a.account.id > b.account.id ? 1 : 0));

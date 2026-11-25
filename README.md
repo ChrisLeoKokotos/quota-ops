@@ -16,7 +16,7 @@ Today it supports:
 - provider-neutral quota windows with usage percentages and exact reset timestamps;
 - live reset countdowns;
 - account states such as Available, Low capacity, At limit, Max usage, Needs setup, and Refresh required;
-- best-capacity recommendations and contextual attention items;
+- task-aware Smart Account Advisor with provider selection, freshness checks, bottleneck reserves, trend estimates and explainable recommendations ([design and evaluation](docs/smart-account-advisor.md));
 - experimental same-PC automatic collection for Claude and OpenAI accounts through isolated local browser profiles;
 - local Token Analytics from Claude Code and Codex session logs, plus opted-in Antigravity CLI statusLine counters;
 - total token activity with Input, Output, Cache read, and Cache write breakdowns;
