@@ -80,6 +80,7 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
       candidate.tokenAnalyticsSources.googleAntigravity === true) &&
     (candidate.tokenConsentRevision === undefined ||
       (typeof candidate.tokenConsentRevision === "string" && /^[a-f0-9-]{36}$/.test(candidate.tokenConsentRevision))) &&
+    (candidate.tokenLedger === undefined || typeof candidate.tokenLedger === "boolean") &&
     (candidate.googleTokenConsentEpoch === undefined ||
       (typeof candidate.googleTokenConsentEpoch === "string" && /^[a-f0-9-]{36}$/.test(candidate.googleTokenConsentEpoch))) &&
     Array.isArray(candidate.accounts) &&
@@ -244,7 +245,7 @@ export function tokenConsentKey(c: CollectorConfig): string {
   return JSON.stringify([
     c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
     c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
-    c.tokenConsentRevision ?? null,
+    c.tokenConsentRevision ?? null, c.tokenLedger === true,
   ]);
 }
 

@@ -36,6 +36,12 @@ export interface CollectorConfig {
   googleTokenConsentEpoch?: string;
   /** Changes even for a rapid off/on cycle with identical final flags. */
   tokenConsentRevision?: string;
+  /**
+   * Opt-in local usage ledger ("observed lifetime" totals that survive the
+   * deletion of session files). Off when absent. Numbers only; see
+   * collector/token-ledger.ts. Turning it off deletes the ledger file.
+   */
+  tokenLedger?: boolean;
   accounts: CollectorAccountConfig[];
   /**
    * Unattended (scheduled) collection, never on the person's screen:

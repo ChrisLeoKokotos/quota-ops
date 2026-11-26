@@ -2,7 +2,10 @@ import { collectProviderUsage, openProviderLogin } from "./provider.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { collectLocalTokenAnalytics } from "./token-analytics.ts";
+import { collectLocalTokenAnalytics, tokenScanPending } from "./token-analytics.ts";
+import { formatReconcileReport, reconcile } from "./token-reconcile.ts";
+import { getCollectorTokenPath, getTokenLedgerPath } from "./paths.ts";
+import { readFile, rm } from "node:fs/promises";
 import {
   bootstrapFiveAccounts,
   createAccountConfig,
@@ -30,6 +33,8 @@ function usage(): never {
       "  collect <id> [--visible]",
       "  tokens",
       "  tokens-auto <enable|disable|status> [claude-code|codex|google-antigravity|all]",
+      "  tokens-ledger <enable|disable|status>  (opt-in lifetime usage ledger; disable deletes it)",
+      "  tokens-reconcile [--show-values] [--json]  (independent check of the token totals)",
       "  enable <id> [id...]",
       "  disable <id> [id...]",
       "  google-hook <id>  (print Antigravity setup command)",
@@ -185,6 +190,75 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "tokens-ledger") {
+    const [action] = args;
+    if (!action || !["enable", "disable", "status"].includes(action) || args.length !== 1) usage();
+    if (action === "status") {
+      const config = await loadCollectorConfig();
+      const exists = await readFile(getTokenLedgerPath()).then(() => true, () => false);
+      process.stdout.write(
+        `Usage ledger: ${config.tokenLedger === true ? "on" : "off"}; file ${exists ? "present" : "absent"}.\n` +
+          "It keeps numeric usage records (no content) so lifetime totals survive deleted session files.\n",
+      );
+      return;
+    }
+    const on = action === "enable";
+    await updateCollectorConfig((current) => {
+      if (on && !current.tokenAnalyticsEnabled) {
+        throw new Error("Turn on token analytics for a source first (tokens-auto enable claude-code); the ledger only records consented sources.");
+      }
+      const { tokenLedger: _previous, ...rest } = current;
+      return on ? { ...rest, tokenLedger: true } : rest;
+    });
+    // Off: delete the stored records now. The collector writes to the ledger
+    // only inside the configuration lock after re-reading `tokenLedger`, so
+    // once the flag is off no later write can recreate the file.
+    if (!on) await rm(getTokenLedgerPath(), { force: true });
+    process.stdout.write(on
+      ? "Usage ledger on. From the next scan, QuotaOps keeps numeric usage records so lifetime totals survive deleted session files.\n"
+      : "Usage ledger off; its file was deleted. Totals again cover only the session files on this PC.\n");
+    return;
+  }
+
+  if (command === "tokens-reconcile") {
+    const flags = new Set(args);
+    if ([...flags].some((flag) => flag !== "--show-values" && flag !== "--json")) usage();
+    const config = await loadCollectorConfig();
+    const consent = config.tokenAnalyticsSources;
+    if (!config.tokenAnalyticsEnabled || (!consent.claudeCode && !consent.codex)) {
+      process.stdout.write("No Claude Code or Codex source is enabled, so nothing was read.\n");
+      return;
+    }
+    // The running collector's snapshot, if it is up (loopback, local token).
+    let snapshot: { tokens?: unknown } | null = null;
+    try {
+      const token = (await readFile(getCollectorTokenPath(), "utf8")).trim();
+      const response = await fetch(`http://127.0.0.1:${config.port}/snapshot`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(5_000),
+        redirect: "error",
+      });
+      if (response.ok) snapshot = await response.json() as { tokens?: unknown };
+    } catch {
+      snapshot = null;
+    }
+    const report = await reconcile({ claudeCode: consent.claudeCode, codex: consent.codex }, snapshot);
+    await withCollectorConfig((latest) => {
+      if (tokenConsentKey(latest) !== tokenConsentKey(config)) throw new Error("Consent changed during the check; nothing printed.");
+      if (flags.has("--json")) {
+        const hide = !flags.has("--show-values");
+        const rows = report.rows.map((row) => hide
+          ? { metric: row.metric, status: row.status, relativeDifference: row.relativeDifference }
+          : row);
+        process.stdout.write(JSON.stringify({ ...report, rows, valuesHidden: hide, sources: hide ? Object.fromEntries(
+          Object.entries(report.sources).map(([key, value]) => [key, value ? { ...value, totals: undefined } : null])) : report.sources }, null, 2) + "\n");
+      } else {
+        process.stdout.write(formatReconcileReport(report, flags.has("--show-values")));
+      }
+    });
+    return;
+  }
+
   if (command === "tokens") {
     const config = await loadCollectorConfig();
     const consent = config.tokenAnalyticsSources;
@@ -197,7 +271,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    const analytics = await mergeGoogleAnalytics(await collectLocalTokenAnalytics(consent),config.accounts,consent.googleAntigravity === true);
+    // A one-off process starts with empty caches: keep reading until every
+    // file is covered (bounded), instead of printing a first partial pass.
+    let local = await collectLocalTokenAnalytics(consent);
+    for (let pass = 1; tokenScanPending() && pass < 50; pass++) local = await collectLocalTokenAnalytics(consent);
+    const analytics = await mergeGoogleAnalytics(local,config.accounts,consent.googleAntigravity === true);
     await withCollectorConfig(latest => {
       if (tokenConsentKey(latest) !== tokenConsentKey(config)) throw new Error("Consent changed during scan; no token results published.");
       // Queue output under the consent lock, without letting a blocked stdout

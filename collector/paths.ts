@@ -23,6 +23,11 @@ export function getCollectorRunDir(): string {
 }
 
 /** Attention holds only (statuses, timestamps); see attention-hold.ts. */
+/** Opt-in usage ledger (numbers only); see token-ledger.ts. */
+export function getTokenLedgerPath(): string {
+  return join(getQuotaOpsHome(), "token-ledger.jsonl");
+}
+
 export function getCollectorStatePath(): string {
   return join(getQuotaOpsHome(), "collector-state.json");
 }

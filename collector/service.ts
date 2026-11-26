@@ -3,8 +3,12 @@ import { watchFile, unwatchFile } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { collectProviderUsage } from "./provider.ts";
-import { collectLocalTokenAnalytics, resetTokenScanCache, tokenScanPending } from "./token-analytics.ts";
+import {
+  collectLocalTokenUsage, currentClaudeAccountKey, loadAccountSalt, resetTokenScanCache, tokenScanPending,
+} from "./token-analytics.ts";
 import { TokenRunner } from "./token-runner.ts";
+import { applyLedgerView, TokenLedger } from "./token-ledger.ts";
+import type { TokenSourceId } from "../lib/token-analytics.ts";
 import { mergeGoogleAnalytics } from "./google-analytics.ts";
 import { MonitoringController } from "./monitoring.ts";
 import { createCollectorShutdown } from "./shutdown.ts";
@@ -14,7 +18,7 @@ import {
   persistHolds,
   type RefreshTrigger,
 } from "./attention-hold.ts";
-import { getCollectorRunDir, getCollectorStatePath, getCollectorConfigPath } from "./paths.ts";
+import { getCollectorRunDir, getCollectorStatePath, getCollectorConfigPath, getTokenLedgerPath } from "./paths.ts";
 import { collectInHiddenDesktop, hiddenDesktopSupported } from "./hidden-desktop.ts";
 import { CollectionCancelledError } from "./browser-session.ts";
 import { openProfileForPerson, type InteractiveProfile } from "./manual-verification.ts";
@@ -61,9 +65,39 @@ async function main(): Promise<void> {
   // Local private histories are read only with the stored consent.
   let observedConsent = consentKey(config);
   let consentChanging = false;
+  // Opt-in "observed lifetime" ledger (token-ledger.ts). Created lazily, only
+  // while the person has turned it on.
+  let ledger: TokenLedger | null = null;
+  const ledgerFor = async (): Promise<TokenLedger> => {
+    ledger ??= new TokenLedger(getTokenLedgerPath(), await loadAccountSalt());
+    return ledger;
+  };
+  const consentedSources = (current: typeof config): Set<TokenSourceId> => {
+    const allowed = new Set<TokenSourceId>();
+    if (!current.tokenAnalyticsEnabled) return allowed;
+    if (current.tokenAnalyticsSources.claudeCode) allowed.add("claude-code");
+    if (current.tokenAnalyticsSources.codex) allowed.add("codex");
+    return allowed;
+  };
+  /** Ledger off, or a source's consent withdrawn: remove the rows now. */
+  const enforceLedgerConsent = async (current: typeof config): Promise<void> => {
+    if (current.tokenLedger !== true) {
+      // Turning the ledger off deletes it (also covers an edit by hand).
+      await (await ledgerFor()).destroy();
+      ledger = null;
+      return;
+    }
+    await (await ledgerFor()).purge(consentedSources(current));
+  };
   const tokens: TokenRunner = new TokenRunner({
     clearCache: resetTokenScanCache,
     scan: async (signal) => {
+      // A configuration that cannot be read right now (lock held by another
+      // QuotaOps process, antivirus EBUSY) is a failed pass, not a consent
+      // change: the runner reports "unavailable" and retries, and the cached
+      // scan stays. An earlier version treated it as "consent changed" and
+      // threw every cache away, so the next pass started from zero and the
+      // published totals dropped, then climbed back (issue #57).
       const current = await loadCollectorConfig();
       signal.throwIfAborted();
       if (consentKey(current) !== observedConsent) {
@@ -71,24 +105,43 @@ async function main(): Promise<void> {
         tokens.invalidate();
         return null;
       }
+      await enforceLedgerConsent(current);
       if (!current.tokenAnalyticsEnabled) return null;
       const sources = current.tokenAnalyticsSources;
       if (!sources.claudeCode && !sources.codex && sources.googleAntigravity !== true) return null;
+      const ledgerOn = current.tokenLedger === true;
+      const usage = await collectLocalTokenUsage(sources, signal, ledgerOn);
+      signal.throwIfAborted();
+      let local = usage.snapshot;
+      if (ledgerOn) {
+        // Write under the configuration lock, re-checking the switch, so an
+        // "off" that happens meanwhile can never be followed by a write.
+        const allowed = consentedSources(current);
+        const book = await ledgerFor();
+        await withCollectorConfig(async (latest) => {
+          if (latest.tokenLedger !== true || consentKey(latest) !== consentKey(current)) return;
+          await book.ingest(usage.events, allowed);
+        });
+        const salt = await loadAccountSalt();
+        local = applyLedgerView(local, book.view(allowed, await currentClaudeAccountKey(salt)));
+        if (book.limitReached) {
+          local = {
+            ...local,
+            sources: local.sources.map((source) => source.state === "ok"
+              ? { ...source, state: "partial" as const, message: "The usage ledger reached its size limit; newer records are not stored." }
+              : source),
+          };
+        }
+      }
       const snapshot = await mergeGoogleAnalytics(
-        await collectLocalTokenAnalytics(sources, signal),
+        local,
         current.accounts, sources.googleAntigravity === true,
       );
       signal.throwIfAborted();
       // CLI consent changes are also observed before any scan is published.
-      const latest = await loadCollectorConfig().catch(() => null);
+      // A read failure here is a failed pass (thrown), never "consent changed".
+      const latest = await loadCollectorConfig();
       signal.throwIfAborted();
-      if (!latest) {
-        if (observedConsent !== "invalid") {
-          observedConsent = "invalid";
-          tokens.invalidate();
-        }
-        return null;
-      }
       if (consentKey(latest) !== consentKey(current)) {
         observedConsent = consentKey(latest);
         tokens.invalidate();
@@ -105,7 +158,12 @@ async function main(): Promise<void> {
     const version = ++observation;
     let key: string;
     try { key = consentKey(await loadCollectorConfig()); }
-    catch { key = "invalid"; }
+    catch {
+      // Unreadable for a moment (busy lock): look again shortly instead of
+      // discarding the scan. Publication re-checks consent on every request.
+      setTimeout(() => { if (version === observation) void observeConsent(); }, 2_000).unref?.();
+      return;
+    }
     if (version !== observation || key === observedConsent) return;
     observedConsent = key;
     tokens.invalidate();
@@ -454,13 +512,10 @@ async function main(): Promise<void> {
         });
       }).catch(() => {
         if (response.headersSent || response.destroyed) return;
-        if (observedConsent !== "invalid") {
-          observation++;
-          observedConsent = "invalid";
-          tokens.invalidate();
-        }
         // An invalid or busy configuration must not expose cached private
-        // aggregates; provider quota data remains separately available.
+        // aggregates; provider quota data remains separately available. The
+        // cache is kept (not invalidated): consent is re-checked on the next
+        // request, and only a real consent change discards it (issue #57).
         sendJson(request, response, 200, {
           ...snapshot(), tokens: null,
           tokenStatus: { state: "unavailable", scannedAt: null, pending: false },

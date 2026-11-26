@@ -40,6 +40,7 @@ import {
   voiceWindowLabel,
 } from "@/lib/voice-command";
 import {
+  formatExactTokens,
   formatTokenCount,
   summarizeTokenRange,
   tokenPanelState,
@@ -940,10 +941,6 @@ const TOKEN_SOURCES: Array<{ source: TokenSourceStatus["source"]; provider: Prov
   { source: "google-antigravity", provider: "google", label: "Antigravity" },
 ];
 
-function exactTokens(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
-}
-
 function sourceStateLabel(source: TokenSourceStatus | undefined): string {
   if (!source) return "Not reported";
   switch (source.state) {
@@ -962,12 +959,15 @@ function TokenBreakdown({ totals }: { totals: TokenTotals }) {
   return (
     <div className="token-breakdown">
       <div>
-        <span>Input</span>
-        <strong>{formatTokenCount(totals.inputTokens)}</strong>
+        <span>Generated (output)</span>
+        <strong>{formatTokenCount(totals.outputTokens)}</strong>
+        {totals.reasoningTokens !== undefined ? (
+          <small>incl. {formatTokenCount(totals.reasoningTokens)} reasoning</small>
+        ) : null}
       </div>
       <div>
-        <span>Output</span>
-        <strong>{formatTokenCount(totals.outputTokens)}</strong>
+        <span>Input</span>
+        <strong>{formatTokenCount(totals.inputTokens)}</strong>
       </div>
       <div>
         <span>Cache read</span>
@@ -979,6 +979,20 @@ function TokenBreakdown({ totals }: { totals: TokenTotals }) {
       </div>
     </div>
   );
+}
+
+/** One line per consented source: what the totals are based on. */
+function coverageLine(source: TokenSourceStatus): string | null {
+  const c = source.coverage;
+  if (!c || source.state === "disabled") return null;
+  const label = source.source === "claude-code" ? "Claude Code" : source.source === "codex" ? "Codex" : "Antigravity";
+  const parts = [`${label}: ${c.filesRead} of ${c.filesDiscovered} session file${c.filesDiscovered === 1 ? "" : "s"} read`];
+  if (c.oldestDate) parts.push(`activity from ${c.oldestDate}`);
+  if (c.filesRemoved > 0) parts.push(`${c.filesRemoved} file${c.filesRemoved === 1 ? "" : "s"} removed from disk since QuotaOps started`);
+  if (c.malformed > 0) parts.push(`${c.malformed} unreadable line${c.malformed === 1 ? "" : "s"} skipped`);
+  if (c.oversized > 0) parts.push(`${c.oversized} oversized usage record${c.oversized === 1 ? "" : "s"} skipped`);
+  if (c.duplicates > 0) parts.push(`${formatExactTokens(c.duplicates)} repeated reports merged`);
+  return parts.join(" · ");
 }
 
 function TokenAnalyticsPanel({
@@ -1070,15 +1084,53 @@ function TokenAnalyticsPanel({
         </div>
       ) : (
         <>
-          <div className="token-hero">
-            <span>Total tokens processed · All time</span>
-            <strong>{formatTokenCount(analytics.totals.totalTokens)}</strong>
-            <small>
-              {exactTokens(analytics.totals.totalTokens)} tokens, locally observed
-              {state === "partial" ? " so far" : ""}
-            </small>
-          </div>
-          <TokenBreakdown totals={analytics.totals} />
+          {(() => {
+            const lifetime = analytics.basis === "observed_lifetime";
+            const scope = lifetime
+              ? `Observed lifetime${analytics.ledger?.since ? ` since ${analytics.ledger.since.slice(0, 10)}` : ""}`
+              : "All time · retained history";
+            const progress = analytics.sources
+              .map((source) => source.coverage)
+              .filter((coverage): coverage is NonNullable<typeof coverage> => Boolean(coverage));
+            const read = progress.reduce((sum, coverage) => sum + coverage.filesRead, 0);
+            const found = progress.reduce((sum, coverage) => sum + coverage.filesDiscovered, 0);
+            return (
+              <>
+                <div className="token-hero token-hero-pair">
+                  <div>
+                    <span>Generated tokens · {scope}</span>
+                    <strong>{formatTokenCount(analytics.totals.outputTokens)}</strong>
+                    <small>
+                      {formatExactTokens(analytics.totals.outputTokens)} output tokens
+                      {state === "partial" ? " so far" : ""}
+                    </small>
+                  </div>
+                  <div>
+                    <span>Total processed · {scope}</span>
+                    <strong>{formatTokenCount(analytics.totals.totalTokens)}</strong>
+                    <small>
+                      {formatExactTokens(analytics.totals.totalTokens)} tokens: input + output + cache
+                      {state === "partial" ? " so far" : ""}
+                    </small>
+                  </div>
+                </div>
+                {state === "partial" && found > 0 ? (
+                  <div className="token-progress" role="progressbar" aria-valuemin={0} aria-valuemax={found} aria-valuenow={read}>
+                    <span style={{ width: `${Math.min(100, Math.round((100 * read) / found))}%` }} />
+                    <small>Reading local history: {read} of {found} files. Totals grow until every file is read.</small>
+                  </div>
+                ) : null}
+                <TokenBreakdown totals={analytics.totals} />
+                <p className="token-basis-note">
+                  {lifetime
+                    ? `Kept by the local usage ledger (${formatExactTokens(analytics.ledger?.records ?? 0)} records), including sessions whose files were later deleted.` +
+                      (analytics.retainedTotals ? ` Files on disk now: ${formatTokenCount(analytics.retainedTotals.totalTokens)} processed, ${formatTokenCount(analytics.retainedTotals.outputTokens)} generated.` : "") +
+                      (analytics.ledger && analytics.ledger.corrupt > 0 ? ` ${analytics.ledger.corrupt} damaged ledger line(s) ignored.` : "")
+                    : "Counted from the session files currently on this PC. Claude Code deletes old session files, so this total can go down when it does; QuotaOps does not keep copies unless the usage ledger is turned on."}
+                </p>
+              </>
+            );
+          })()}
 
           <div className="token-source-grid">
             {TOKEN_SOURCES.map((item) => {
@@ -1128,6 +1180,21 @@ function TokenAnalyticsPanel({
             </div>
           ) : null}
 
+          {(analytics.models ?? []).length > 0 ? (
+            <div className="token-accounts token-models">
+              <h3>By model · {analytics.basis === "observed_lifetime" ? "observed lifetime" : "all time"}</h3>
+              <ul>
+                {(analytics.models ?? []).map((item) => (
+                  <li key={`${item.provider}:${item.model}`}>
+                    <span>{item.model}</span>
+                    <span className="token-account-sessions">{formatTokenCount(item.totals.outputTokens)} generated</span>
+                    <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="token-range-section">
             <div className="token-range-heading">
               <h3>By period</h3>
@@ -1148,9 +1215,9 @@ function TokenAnalyticsPanel({
             {summary ? (
               <div className="token-total-row">
                 <div className="token-total">
-                  <span>Total tokens processed</span>
-                  <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
-                  <small>{ranges.find((option) => option.id === range)?.label}</small>
+                  <span>Generated · {ranges.find((option) => option.id === range)?.label}</span>
+                  <strong>{formatTokenCount(summary.totals.outputTokens)}</strong>
+                  <small>{formatTokenCount(summary.totals.totalTokens)} total processed</small>
                 </div>
                 <TokenBreakdown totals={summary.totals} />
               </div>
@@ -1163,6 +1230,7 @@ function TokenAnalyticsPanel({
               : null}
             Scanned {formatUpdatedAt(status?.scannedAt ?? analytics.generatedAt)}. Counts cover only
             sessions on this PC, not provider-wide usage.
+            {analytics.sources.map(coverageLine).filter(Boolean).map((line) => ` ${line}.`).join("")}
             {analytics.sources
               .filter((source) => source.state === "partial" && source.message)
               .map((source) => ` ${source.message}`)

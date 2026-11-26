@@ -70,7 +70,7 @@ try{
   const antigravity=page.locator(".token-source-card").filter({hasText:"Antigravity"});
   await antigravity.waitFor({timeout:30000});
   assert.match(await antigravity.innerText(),/150[\s\S]*Complete/);
-  assert.match(await page.locator(".token-hero").innerText(),/Total tokens processed · All time[\s\S]*150/);
+  assert.match(await page.locator(".token-hero").innerText(),/Generated tokens · All time · retained history[\s\S]*50[\s\S]*Total processed · All time · retained history[\s\S]*150/);
   assert.equal(await page.locator(".token-state").innerText(),"Complete");
   // Claude Code and Codex were not consented: shown as off, never as zero work.
   assert.match(await page.locator(".token-source-card").filter({hasText:"Claude Code"}).innerText(),/Off/);
@@ -116,8 +116,8 @@ try{
   console.log("PASS: acknowledged CLI revoke -> live collector snapshot -> browser hides tokens, retains quota.");
   run("collector/cli.ts",["tokens-auto","enable","google-antigravity"]);
   await page.reload({waitUntil:"domcontentloaded"});
-  await page.locator(".token-hero strong").waitFor({timeout:30000});
-  assert.match(await page.locator(".token-hero").innerText(),/Total tokens processed · All time[\s\S]*150/);
+  await page.locator(".token-hero strong").first().waitFor({timeout:30000});
+  assert.match(await page.locator(".token-hero").innerText(),/Generated tokens · All time · retained history[\s\S]*50[\s\S]*Total processed · All time · retained history[\s\S]*150/);
   console.log("PASS: re-opt-in restores previously consented aggregates through real browser path.");
 }finally{
   await browser?.close().catch(()=>undefined);

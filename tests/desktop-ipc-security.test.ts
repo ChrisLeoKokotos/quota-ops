@@ -629,9 +629,13 @@ test("token analytics cannot smuggle private history or extra keys through IPC",
       message: null,
     }],
     accounts: [],
+    models: [],
+    basis: "retained_history",
   });
   const serialized = JSON.stringify(result);
-  for (const secret of ["private prompt", "credentials", "secret.ts", "privateFile", "history"]) {
+  // The path fragments, not the bare word "history": the projection's own
+  // basis value is "retained_history".
+  for (const secret of ["private prompt", "credentials", "secret.ts", "privateFile", ".claude", "Users", "path"]) {
     assert.equal(serialized.includes(secret), false);
   }
 });

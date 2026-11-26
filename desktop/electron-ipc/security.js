@@ -279,8 +279,38 @@ function projectTokenTotals(raw) {
     }
     result[name] = value;
   }
+  // Optional: reasoning is a subset of output, so it can never exceed it.
+  if (raw.reasoningTokens !== undefined) {
+    const value = raw.reasoningTokens;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 ||
+        value > result.outputTokens) return null;
+    result.reasoningTokens = value;
+  }
   return result;
 }
+
+const TOKEN_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TOKEN_COVERAGE_COUNTS = [
+  "filesDiscovered", "filesRead", "filesPending", "filesRemoved",
+  "records", "duplicates", "malformed", "oversized",
+];
+/** Counts and two dates only; anything else drops the coverage, not the snapshot. */
+function projectCoverage(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const result = {};
+  for (const name of TOKEN_COVERAGE_COUNTS) {
+    const value = raw[name];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
+    result[name] = value;
+  }
+  for (const name of ["oldestDate", "newestDate"]) {
+    const value = raw[name];
+    if (!(value === null || (typeof value === "string" && TOKEN_DATE.test(value)))) return undefined;
+    result[name] = value;
+  }
+  return result;
+}
+const TOKEN_MODEL_ID = /^[A-Za-z0-9._:@/-]{1,64}$/;
 function validProvider(value) {
   return value === "claude" || value === "openai" || value === "google";
 }
@@ -327,13 +357,48 @@ function projectTokens(raw) {
         TOKEN_SOURCE_PROVIDER[item.source] !== item.provider ||
         !["ok", "not_found", "partial", "disabled"].includes(item.state) ||
         !Number.isSafeInteger(item.files) || item.files < 0) return null;
+    const coverage = projectCoverage(item.coverage);
     sources.push({
       source: item.source,
       provider: item.provider,
       state: item.state,
       files: item.files,
       message: boundedText(item.message, 256),
+      ...(coverage ? { coverage } : {}),
     });
+  }
+  // Per-model split: provider-reported model ids, bounded and pattern-checked.
+  const models = [];
+  if (raw.models !== undefined) {
+    if (!Array.isArray(raw.models) || raw.models.length > 16) return null;
+    for (const item of raw.models) {
+      if (!item || !validProvider(item.provider) ||
+          typeof item.model !== "string" || !TOKEN_MODEL_ID.test(item.model)) return null;
+      const itemTotals = projectTokenTotals(item.totals);
+      if (!itemTotals) return null;
+      models.push({ provider: item.provider, model: item.model, totals: itemTotals });
+    }
+  }
+  // What "all time" means: retained history (default) or the opt-in ledger.
+  if (raw.basis !== undefined && raw.basis !== "retained_history" && raw.basis !== "observed_lifetime") return null;
+  const basis = raw.basis ?? "retained_history";
+  let retainedTotals;
+  if (raw.retainedTotals !== undefined) {
+    retainedTotals = projectTokenTotals(raw.retainedTotals);
+    if (!retainedTotals) return null;
+  }
+  let ledger;
+  if (raw.ledger !== undefined) {
+    const value = raw.ledger;
+    if (!value || typeof value !== "object" ||
+        !(value.since === null || typeof value.since === "string") ||
+        !Number.isSafeInteger(value.records) || value.records < 0 ||
+        !Number.isSafeInteger(value.corrupt) || value.corrupt < 0) return null;
+    ledger = {
+      since: value.since === null ? null : value.since.slice(0, 64),
+      records: value.records,
+      corrupt: value.corrupt,
+    };
   }
   // Per-account split: salted short hashes only, never an account id.
   const accounts = [];
@@ -361,7 +426,9 @@ function projectTokens(raw) {
   return {
     generatedAt: raw.generatedAt.slice(0, 64),
     scope: "locally_observed",
-    totals, providers, daily, sources, accounts,
+    totals, providers, daily, sources, accounts, models, basis,
+    ...(retainedTotals ? { retainedTotals } : {}),
+    ...(ledger ? { ledger } : {}),
   };
 }
 
