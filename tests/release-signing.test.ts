@@ -24,3 +24,14 @@ test("signing dry run cannot publish, keeps no certificate and pins its actions"
   const config = JSON.parse(await readFile(new URL("../desktop/electron-builder.json", import.meta.url), "utf8"));
   assert.equal(config.publish, null);
 });
+
+// Signed and unsigned builds must use the same explicitly pinned candidate
+// toolchain; a successful dry run must exercise the actual installer version.
+test("signed and unsigned installer builder pins agree", async () => {
+  const unsigned = await readFile(new URL("../desktop/build-installer.mjs", import.meta.url), "utf8");
+  const signed = await readFile(new URL("../desktop/build-signed-candidate.mjs", import.meta.url), "utf8");
+  for (const source of [unsigned, signed]) {
+    assert.match(source, /electron-builder@26\.13\.1/);
+    assert.equal((source.match(/--package=electron-builder@/g) ?? []).length, 1);
+  }
+});

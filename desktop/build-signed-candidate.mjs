@@ -48,7 +48,7 @@ for (const name of ["quotaops-icon.ico", "quotaops-tray.ico"]) {
 }
 const started = Date.now();
 run("npm.cmd", [
-  "exec", "--yes", "--package=electron-builder@26.4.0", "--",
+  "exec", "--yes", "--package=electron-builder@26.13.1", "--",
   "electron-builder", "--win", "nsis", "--x64",
   "--config", "desktop/electron-builder.json", "--publish", "never",
 ], { shell: true });
