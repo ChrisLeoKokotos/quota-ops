@@ -192,7 +192,7 @@ Also fixed in the same change:
 
 Ruled out on the real history:
 
-- The 200,000-record limit: the history has about a third of that.
+- The 200,000-record limit: the history was well below it.
 - Claude `usage.iterations`: their sum equals the top-level usage on every record.
 - Missing final output counts: see "Accounting contract" above.
 
