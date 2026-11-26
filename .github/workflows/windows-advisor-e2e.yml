@@ -7,6 +7,7 @@ on:
       - "components/quota-dashboard.tsx"
       - "scripts/windows-packaged-startup-smoke.mjs"
       - "scripts/windows-advisor-uia.ps1"
+      - "scripts/windows-installer-crash-diagnostics.ps1"
       - "scripts/windows-packaged-tray-quit-e2e.mjs"
       - "scripts/windows-tray-menu-invoke.ps1"
       - "scripts/windows-uia-invoke-button.ps1"
@@ -47,6 +48,9 @@ jobs:
         run: node --experimental-strip-types scripts/evaluate-smart-advisor.mjs
       - name: Build branded unsigned test installer
         run: npm run desktop:installer:win
+      - name: Verify crash diagnostic projection
+        shell: pwsh
+        run: ./scripts/windows-installer-crash-diagnostics.ps1 -SelfTest
       - name: Clean per-user install and verify files
         id: install
         shell: pwsh
@@ -55,7 +59,9 @@ jobs:
           $app = Join-Path $env:LOCALAPPDATA 'Programs\QuotaOps'
           if (Test-Path $app) { throw 'Install directory already exists' }
           $installer = (Resolve-Path 'release/windows/QuotaOps-Setup-0.2.0-x64.exe').Path
+          "started_utc=$([DateTime]::UtcNow.ToString('o'))" >> $env:GITHUB_OUTPUT
           $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          "exit_code=$($p.ExitCode)" >> $env:GITHUB_OUTPUT
           if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
           foreach ($file in @('QuotaOps.exe','resources\app.asar','resources\static-dist\index.html')) {
             $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $app $file)).Hash
@@ -63,6 +69,13 @@ jobs:
             if ($actual -ne $built) { throw "Installed file mismatch: $file" }
           }
           Get-FileHash -Algorithm SHA256 $installer | Format-List
+      - name: Collect scoped installer crash diagnostics (failure only)
+        if: ${{ failure() && steps.install.outcome == 'failure' && steps.install.outputs.started_utc != '' }}
+        shell: pwsh
+        env:
+          INSTALL_STARTED_UTC: ${{ steps.install.outputs.started_utc }}
+          INSTALL_EXIT_CODE: ${{ steps.install.outputs.exit_code }}
+        run: ./scripts/windows-installer-crash-diagnostics.ps1 -StartedUtc $env:INSTALL_STARTED_UTC -ExitCode $env:INSTALL_EXIT_CODE
       - name: Installed Advisor renderer E2E (synthetic, no provider credentials)
         run: node scripts/windows-packaged-startup-smoke.mjs --advisor --installed
       - name: Installed startup and graceful Quit
