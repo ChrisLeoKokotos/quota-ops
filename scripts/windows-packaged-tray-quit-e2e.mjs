@@ -62,6 +62,12 @@ const option = (name) => {
 const scenario = option("--scenario") ?? "idle";
 const cycles = Number(option("--cycles") ?? "1");
 const allowNetwork = args.includes("--allow-provider-network");
+const installed = args.includes("--installed");
+if (installed && (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted" || !process.env.LOCALAPPDATA)) {
+  throw new Error("--installed requires a disposable GitHub-hosted runner");
+}
+// The installed path is only needed for the credential-free consent scenario.
+if (installed && scenario !== "token-consent") throw new Error("--installed supports token-consent only");
 const SCENARIOS = ["idle", "inflight", "after-error", "verify-path", "background-focus", "visible-consent",
   "lifecycle", "crash-recovery", "port-foreign", "main-killed", "token-consent"];
 // Scenarios that need no provider account and no network.
@@ -75,7 +81,9 @@ if (!OFFLINE_SCENARIOS.has(scenario) && !allowNetwork) {
 if (process.platform !== "win32") throw new Error("Windows only.");
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const unpacked = join(root, "release", "windows", "win-unpacked");
+const unpacked = installed
+  ? join(process.env.LOCALAPPDATA, "Programs", "QuotaOps")
+  : join(root, "release", "windows", "win-unpacked");
 const executable = join(unpacked, "QuotaOps.exe");
 const trayDriver = join(root, "scripts", "windows-tray-menu-invoke.ps1");
 const buttonDriver = join(root, "scripts", "windows-uia-invoke-button.ps1");
@@ -222,6 +230,21 @@ function mainWindowVisible(pid) {
   }
 }
 
+// Fixed-label, read-only UIA proof. Restrict lookup to the test-owned window.
+async function waitForTokenOff(pid) {
+  const body = "if($w){$c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Token analytics is off.');" +
+    "if($w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$c)){'OFF'}}";
+  const until=Date.now()+30000;
+  while(Date.now()<until){
+    const found=await new Promise(resolve=>{
+      execFile("powershell.exe",["-NoProfile","-Command",mainWindowScript(pid,body)],
+        {windowsHide:true,timeout:5000},(error,stdout)=>resolve(!error&&stdout.trim()==="OFF"));
+    });
+    if(found)return true;
+    await sleep(500);
+  }
+  return false;
+}
 const TOKEN_PROMPT = "PRIVATE E2E PROMPT that must never reach the snapshot";
 
 async function snapshot(token) {
@@ -324,7 +347,7 @@ async function runCycle(cycle) {
   const marks = new Map();
   let exitedAt = null;
   let exitCode = null;
-  const child = spawn(executable, [], { cwd: unpacked, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(executable, scenario === "token-consent" ? ["--force-renderer-accessibility"] : [], { cwd: unpacked, env, stdio: ["ignore", "pipe", "pipe"] });
   child.on("exit", (code) => { exitedAt = Date.now(); exitCode = code; });
   let buffer = "";
   let partialLine = "";
@@ -437,6 +460,7 @@ async function runCycle(cycle) {
       }
       if (!received) failures.push("the dashboard did not receive token analytics through IPC after Turn on");
       else tokenDisplay = " rendererTokens=present total=1350";
+      const offTraceStart = ipcTrace.length;
       const off = await invokeTrayItem(child.pid, "Token analytics: on (turn off)");
       if (!off.ok) failures.push(`tray "turn off" item not available: ${off.output}`);
       await sleep(2_000);
@@ -444,6 +468,20 @@ async function runCycle(cycle) {
       if ((await consent()).claudeCode !== false || after?.tokens !== null || after?.tokenStatus?.state !== "disabled") {
         failures.push("turning token analytics off did not stop it");
       }
+      if (!await waitForTokenOff(child.pid)) failures.push("installed renderer did not show token analytics off");
+      const until=Date.now()+15000;
+      while(Date.now()<until && !ipcTrace.slice(offTraceStart).some(line=>line.includes("tokens=none"))) await sleep(500);
+      if (!ipcTrace.slice(offTraceStart).some(line=>line.includes("tokens=none"))) {
+        failures.push("renderer did not receive a token-free IPC snapshot after revoke");
+      }
+      // Once the UI confirms off, any subsequent delivered snapshot must stay
+      // token-free. This uses actual native IPC, not a Playwright mock bridge.
+      const offConfirmedAt=ipcTrace.length;
+      await sleep(3500);
+      if(ipcTrace.slice(offConfirmedAt).some(line=>line.includes("tokens=present"))) {
+        failures.push("revoked token snapshot resurfaced after renderer showed off");
+      }
+      else tokenDisplay += " rendererOff=confirmed";
     }
     if (scenario === "crash-recovery") {
       const collectorPid = utilityCollectorPid();

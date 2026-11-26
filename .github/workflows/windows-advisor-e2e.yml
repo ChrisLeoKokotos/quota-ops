@@ -7,6 +7,11 @@ on:
       - "components/quota-dashboard.tsx"
       - "scripts/windows-packaged-startup-smoke.mjs"
       - "scripts/windows-advisor-uia.ps1"
+      - "scripts/windows-packaged-tray-quit-e2e.mjs"
+      - "scripts/windows-tray-menu-invoke.ps1"
+      - "scripts/windows-uia-invoke-button.ps1"
+      - "collector/**"
+      - "desktop/electron-ipc/**"
       - ".github/workflows/windows-advisor-e2e.yml"
   workflow_dispatch:
 
@@ -21,7 +26,7 @@ jobs:
   installed:
     name: Windows unsigned installer and Advisor E2E
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -62,6 +67,8 @@ jobs:
         run: node scripts/windows-packaged-startup-smoke.mjs --advisor --installed
       - name: Installed startup and graceful Quit
         run: node scripts/windows-packaged-startup-smoke.mjs --quit --installed
+      - name: Installed native tray consent and renderer E2E (synthetic)
+        run: node scripts/windows-packaged-tray-quit-e2e.mjs --scenario token-consent --installed
       - name: Clean uninstall
         if: ${{ always() && steps.install.outcome == 'success' }}
         shell: pwsh
