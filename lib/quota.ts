@@ -1,4 +1,4 @@
-export type Provider = "claude" | "openai";
+export type Provider = "claude" | "openai" | "google";
 export type Plan = string;
 
 export interface QuotaWindow {
@@ -174,5 +174,5 @@ export function formatCountdown(resetAt: string | null, nowMs: number): string {
 }
 
 export function providerLabel(provider: Provider): string {
-  return provider === "claude" ? "Claude" : "OpenAI";
+  return provider === "claude" ? "Claude" : provider === "openai" ? "OpenAI" : "Google / Antigravity";
 }

@@ -231,7 +231,9 @@ export function looksLikeClaudeUsageUrl(
       parsed.port === "" &&
       parsed.username === "" &&
       parsed.password === "" &&
-      parsed.search === "" &&
+      // Claude's own page now adds query parameters to this endpoint
+      // (observed Nov 2026). Host and path stay exact; only the response of
+      // that endpoint is read, so a query string changes nothing we trust.
       parsed.hash === "" &&
       match !== null &&
       (!expectedOrganizationId || match[1] === expectedOrganizationId)

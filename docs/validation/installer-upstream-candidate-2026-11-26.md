@@ -1,0 +1,19 @@
+# Installer upstream candidate — 2026-11-26
+
+Baseline 91169bc installer job 140051949231 failed during the actual per-user silent installation; the newly added failure-only diagnostic reported System.dll, exception c0000005, offset 00001581. The subsequent installed tests and uninstall were not run on this failed job. The privacy preflight and all six other prior gates passed.
+
+The crash signature matches upstream electron-builder reports [#7921](https://github.com/electron-userland/electron-builder/issues/7921) and [#8536](https://github.com/electron-userland/electron-builder/issues/8536). Upstream merged [#9564](https://github.com/electron-userland/electron-builder/pull/9564) in 26.9.0; 26.12.0 additionally contains #9769 (safe UserProgramFiles path copy). The 26.13.1 tagged multiUser.nsh no longer contains System::Store calls. See the [upstream changelog](https://www.electron.build/changelog/).
+
+Candidate: pin signed and unsigned builders to 26.13.1, a narrow v26 compatibility experiment before the larger 26.14/26.15 toolset migration. Keep existing NSIS assisted/per-user behavior, real silent installation and file verification, signing checks, consent, and cleanup tests unchanged. No installer error is ignored or retried. The pin test verifies both build scripts match. No runtime updater or Electron version is changed.
+
+This is not a claim that the crash is fixed or that this toolchain is release-approved. Fresh CI and repeated clean installer runs must validate it; local standard-user and upgrade acceptance, dependency/security review and locked packaging toolchain remain release gates. If candidate build compatibility fails, diagnose rather than weakening verification. Privacy, authenticated Windows and independent reviewer gates remain open.
+
+Hosted privacy audit at 91169bc (job 140051948940): 127 advertised refs matched the mirror (44 heads, 83 PR refs, zero tags); 3085 reachable objects, 988 blobs, 653 commits, 1444 trees, no oversized skips; fsck and expected candidate/base checks passed. Both known affected blobs remain reachable from 12 refs. Selected credential patterns returned zero matches; two objects matched usage-number patterns. This is coverage evidence, not clearance. No rewrite, literal values, or remote mutation.
+
+## Follow-up — 26.13.1 packaging compatibility failure
+
+At 6d88108 both packaging gates failed before an installer could be tested: unsigned job 140057666088 and signed dry-run job 140057665376. Both report TypeError: spawnAndWriteWithOutput is not a function, from NsisTarget.executeMakensis. Six other gates passed, including Windows security and hosted privacy preflight. This is a build-tool compatibility failure, not another observed installer access violation.
+
+Upstream tagged source inspection: electron-builder@26.13.1 app-builder-lib invokes the new function, while the builder-util package manifest retains version 26.13.0; the 26.13.0 tagged util source does not define the new function. This supports a published-package compatibility mismatch; actual resolved dependency versions were not independently captured. See https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.13.1/packages/builder-util/package.json and https://github.com/electron-userland/electron-builder/blob/electron-builder%4026.13.0/packages/builder-util/src/util.ts.
+
+Revised candidate: pin both build scripts to 26.13.0 and update both pin assertions. The tagged 26.13.0 NsisTarget uses the existing spawnAndWrite API, and multiUser.nsh retains the safe known-folder logic without System::Store. This preserves the intended upstream NSIS remediation while avoiding the new 26.13.1 API dependency. No change to signed/unsigned verification, installer behavior, build options, or runtime dependencies. Fresh CI required; no claim of successful installation or final root-cause closure. Full transitive build-tool lock remains a release gate.

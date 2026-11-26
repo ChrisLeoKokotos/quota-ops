@@ -20,8 +20,13 @@ export interface DailyTokenBucket extends TokenTotals {
   provider: Provider;
 }
 
-export type TokenSourceId = "claude-code" | "codex";
-export type TokenSourceState = "ok" | "not_found" | "partial";
+export type TokenSourceId = "claude-code" | "codex" | "google-antigravity";
+/**
+ * `disabled` means QuotaOps never opened the source because the user has not
+ * consented to it. It is deliberately distinct from `not_found`, which would
+ * claim a search happened and came back empty.
+ */
+export type TokenSourceState = "ok" | "not_found" | "partial" | "disabled";
 
 export interface TokenSourceStatus {
   source: TokenSourceId;
@@ -31,6 +36,27 @@ export interface TokenSourceStatus {
   message: string | null;
 }
 
+/**
+ * All-time usage of one source split by the provider account that ran it.
+ *
+ * Claude Code writes a `session-owner` record (account and organization id)
+ * into newer session logs. Usage is attributed to an account only when its
+ * session has exactly one such account: never inferred, never spread out.
+ * `account` is a salted one-way hash (12 hex characters), never the id.
+ * Usage without that evidence stays explicitly unattributed (`account: null`).
+ */
+export type TokenAttribution = "attributed" | "no_account_record" | "several_accounts";
+
+export interface TokenAccountTotals {
+  source: TokenSourceId;
+  account: string | null;
+  attribution: TokenAttribution;
+  /** The account Claude Code is signed in to right now. */
+  current: boolean;
+  sessions: number;
+  totals: TokenTotals;
+}
+
 export interface TokenAnalyticsSnapshot {
   generatedAt: string;
   scope: "locally_observed";
@@ -38,6 +64,17 @@ export interface TokenAnalyticsSnapshot {
   providers: ProviderTokenTotals[];
   daily: DailyTokenBucket[];
   sources: TokenSourceStatus[];
+  /** All-time per-account split, where a source records account ids. */
+  accounts?: TokenAccountTotals[];
+}
+
+/** How far the collector has got with token analytics. */
+export type TokenScanState = "disabled" | "scanning" | "ready" | "unavailable";
+
+export interface TokenScanStatus {
+  state: TokenScanState;
+  scannedAt: string | null;
+  pending: boolean;
 }
 
 export function emptyTokenTotals(): TokenTotals {
@@ -139,4 +176,33 @@ export function formatTokenCount(value: number): string {
     notation: value >= 1_000 ? "compact" : "standard",
     maximumFractionDigits: value >= 1_000_000 ? 2 : 1,
   }).format(Math.round(value));
+}
+
+/** What the token panel shows, from the collector's status and its data. */
+export type TokenPanelState =
+  | "checking"
+  | "offline"
+  | "disabled"
+  | "scanning"
+  | "unavailable"
+  | "partial"
+  | "complete"
+  | "zero";
+
+export function tokenPanelState(
+  analytics: TokenAnalyticsSnapshot | null,
+  status: TokenScanStatus | null,
+  collector: "checking" | "connected" | "offline",
+): TokenPanelState {
+  // Before the first snapshot arrives, say so; never "start the collector".
+  if (collector === "checking") return "checking";
+  if (collector === "offline") return "offline";
+  // An older collector reports no status: data means on, no data means off.
+  if (status?.state === "disabled" || (!status && !analytics)) return "disabled";
+  if (!analytics) return status?.state === "unavailable" ? "unavailable" : "scanning";
+  if (status?.state === "unavailable") return "unavailable";
+  const consented = analytics.sources.filter((source) => source.state !== "disabled");
+  if (status?.pending || consented.some((source) => source.state === "partial")) return "partial";
+  if (analytics.totals.totalTokens === 0) return "zero";
+  return "complete";
 }

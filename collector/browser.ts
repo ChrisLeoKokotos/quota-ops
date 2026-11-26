@@ -1,11 +1,27 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
-import { createServer } from "node:net";
 import { join } from "node:path";
 
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+// Type-only: playwright-core (~63 MB resident once loaded) is imported on
+// first browser launch, not when the collector starts.
+import type { BrowserContext, Page } from "playwright-core";
 
 import { assertSafeProfileDirectory } from "./security.ts";
+import {
+  BROWSER_LAUNCH_TIMEOUT_MS,
+  CollectionCancelledError,
+  PAGE_EVALUATE_TIMEOUT_MS,
+  withCancellableContext,
+  withTimeout,
+} from "./browser-session.ts";
+import { collectionLaunchMode } from "./claude-launch-mode.ts";
+import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "./visible-usage.ts";
+import {
+  isChallengeResponseHeader,
+  isClaudeChallengeLocation,
+  isTrustedChallengeFrameUrl,
+  requiresManualClaudeVerification,
+} from "./verification-state.ts";
 import type { CollectorAccountConfig, CollectorAccountResult } from "./types.ts";
 import {
   looksLikeClaudeUsageUrl,
@@ -15,7 +31,7 @@ import {
 
 const CLAUDE_USAGE_URL = "https://claude.ai/settings/usage";
 
-async function findWindowsBrowserExecutable(): Promise<string> {
+export async function findWindowsBrowserExecutable(): Promise<string> {
   const roots = [
     process.env.LOCALAPPDATA,
     process.env.PROGRAMFILES,
@@ -99,16 +115,21 @@ async function openInteractiveWindowsLogin(
 
 async function launchProfile(
   account: CollectorAccountConfig,
-  headless: boolean,
+  visible: boolean,
 ): Promise<BrowserContext> {
   await assertSafeProfileDirectory(account.profileDir);
+  // Unattended collection is headless: no window, no focus change.
+  const mode = collectionLaunchMode(visible ? "visible" : "background");
+  const { chromium } = await import("playwright-core");
 
   const options = {
-    headless,
+    headless: mode.headless,
     viewport: { width: 1280, height: 900 },
     acceptDownloads: false,
     chromiumSandbox: true,
-    args: ["--disable-extensions"],
+    args: mode.args,
+    // Explicit bound; Playwright's default is 180 s per channel.
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
   };
 
   try {
@@ -125,135 +146,6 @@ async function launchProfile(
     } catch {
       throw chromeError;
     }
-  }
-}
-
-async function reserveLoopbackPort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Could not reserve a loopback DevTools port."));
-        return;
-      }
-
-      const port = address.port;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
-
-async function waitForDevToolsEndpoint(
-  port: number,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  const url = `http://127.0.0.1:${port}/json/version`;
-
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, {
-        method: "GET",
-        cache: "no-store",
-        signal: AbortSignal.timeout(500),
-      });
-      if (response.ok) return;
-    } catch {
-      // The browser may still be starting.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  throw new Error("devtools_not_ready");
-}
-
-async function stopSpawnedBrowser(
-  browser: Browser | null,
-  child: ChildProcess | null,
-): Promise<void> {
-  if (browser) {
-    await browser.close().catch(() => undefined);
-  }
-
-  if (child && child.exitCode === null && !child.killed) {
-    child.kill();
-  }
-}
-
-async function launchWindowsCollectionBrowser(
-  account: CollectorAccountConfig,
-): Promise<{ browser: Browser; context: BrowserContext; child: ChildProcess }> {
-  await assertSafeProfileDirectory(account.profileDir);
-
-  const executablePath = await findWindowsBrowserExecutable();
-  const port = await reserveLoopbackPort();
-
-  const child = spawn(
-    executablePath,
-    [
-      `--user-data-dir=${account.profileDir}`,
-      "--remote-debugging-address=127.0.0.1",
-      `--remote-debugging-port=${port}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-extensions",
-      "--disable-background-mode",
-      "--start-minimized",
-      "--window-position=-32000,-32000",
-      "--window-size=1280,900",
-      "about:blank",
-    ],
-    {
-      detached: false,
-      stdio: "ignore",
-      windowsHide: true,
-    },
-  );
-
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", () => reject(new Error("browser_spawn_failed")));
-  });
-
-  try {
-    await waitForDevToolsEndpoint(port);
-  } catch {
-    if (child.exitCode === null && !child.killed) {
-      child.kill();
-    }
-    throw new Error("devtools_not_ready");
-  }
-
-  try {
-    const browser = await chromium.connectOverCDP(
-      `http://127.0.0.1:${port}`,
-      { timeout: 10_000 },
-    );
-    const context = browser.contexts()[0];
-    if (!context) {
-      await browser.close().catch(() => undefined);
-      throw new Error("profile_context_missing");
-    }
-
-    return { browser, context, child };
-  } catch (error) {
-    if (child.exitCode === null && !child.killed) {
-      child.kill();
-    }
-    if (error instanceof Error && error.message === "profile_context_missing") {
-      throw error;
-    }
-    throw new Error("devtools_connect_failed");
   }
 }
 
@@ -283,7 +175,8 @@ function claudeUsageOrganizationId(url: string): string | null {
     if (
       parsed.protocol !== "https:" ||
       parsed.hostname !== "claude.ai" ||
-      parsed.search !== "" ||
+      // Query parameters are allowed (Claude's page now sends them); the
+      // host and path stay exact.
       parsed.hash !== "" ||
       !match
     ) {
@@ -303,7 +196,6 @@ function isClaudeOrganizationsUrl(url: string): boolean {
       parsed.protocol === "https:" &&
       parsed.hostname === "claude.ai" &&
       parsed.pathname === "/api/organizations" &&
-      parsed.search === "" &&
       parsed.hash === ""
     );
   } catch {
@@ -339,9 +231,15 @@ async function readJsonResponse(
   }
 }
 
+/** Main-frame document last served as a Cloudflare challenge, if any. */
+interface ChallengeObservation {
+  challengedUrl: string | null;
+}
+
 async function collectUsageFromRealPageRequests(
   page: Page,
   preferredOrganizationId: string | null,
+  observed: ChallengeObservation,
   timeoutMs = 10_000,
 ): Promise<{
   parsed: ReturnType<typeof parseClaudeUsagePayload>;
@@ -355,6 +253,19 @@ async function collectUsageFromRealPageRequests(
 
   const onResponse = async (response: import("playwright-core").Response) => {
     const url = response.url();
+
+    // Language-independent challenge evidence: Cloudflare's own header on a
+    // main-frame navigation. Only the URL is kept, to compare with where the
+    // page ends up; nothing from the response body is read.
+    try {
+      if (response.request().isNavigationRequest() &&
+          response.frame() === page.mainFrame() &&
+          isChallengeResponseHeader(response.headers()["cf-mitigated"])) {
+        observed.challengedUrl = url;
+      }
+    } catch {
+      // Detached frame or closed page: no evidence either way.
+    }
 
     if (isClaudeOrganizationsUrl(url)) {
       const payload = await readJsonResponse(response, 262_144);
@@ -374,7 +285,10 @@ async function collectUsageFromRealPageRequests(
     if (parsed) usageByOrganization.set(organizationId, parsed);
   };
 
-  page.on("response", onResponse);
+  // Context-level responses include requests driven by service workers or other
+  // frames which a page-only listener can miss. Still filter by exact Claude
+  // origin and organization endpoint before parsing.
+  page.context().on("response", onResponse);
 
   try {
     await page.goto(CLAUDE_USAGE_URL, {
@@ -457,7 +371,120 @@ async function collectUsageFromRealPageRequests(
       reason: "claude_page_api_not_observed",
     };
   } finally {
-    page.off("response", onResponse);
+    page.context().off("response", onResponse);
+  }
+}
+
+/**
+ * Fallback for a real, visibly rendered Settings > Usage panel when the page's
+ * API response was not observable. Read only the bounded quota panel into the
+ * local process; do not serialize whole-page text, cookies or browser state.
+ * A changed/ambiguous UI returns null instead of invented quota values.
+ */
+async function readVisibleUsagePanel(
+  page: Page,
+): Promise<ReturnType<typeof parseVisibleClaudeUsagePanel>> {
+  try {
+    // page.evaluate has no timeout of its own; an unresponsive page must not
+    // hold the collection (and therefore Quit) open.
+    const panel = await withTimeout(page.evaluate(() => {
+      const text = document.body?.innerText ?? "";
+      // A screenshot-verified 2026 Claude layout starts its quota widget at
+      // "Current session", with "Weekly limit · All models" further down.
+      // Return only this bounded widget, never entire page or browser state.
+      const boundaries = /^(?:Limit resets|Usage credits)$/i;
+      const weeklyLabels = /^(?:Weekly limits|Weekly limit\s*[·•]\s*All models(?:\s*[›>])?)$/i;
+      const lines = text.split(/\r?\n/);
+      for (let start = 0; start < lines.length; start++) {
+        const heading = lines[start];
+        if (heading === undefined ||
+            heading.trim().replace(/\s+/g, " ").toLowerCase() !== "current session") {
+          continue;
+        }
+        let length = heading.length;
+        let seenWeekly = false;
+        for (let end = start + 1; end < lines.length; end++) {
+          const line = lines[end];
+          if (line === undefined) break;
+          length += line.length + 1;
+          if (length > 4096) break;
+          const normalized = line.trim().replace(/\s+/g, " ");
+          if (weeklyLabels.test(normalized)) seenWeekly = true;
+          if (seenWeekly && boundaries.test(normalized)) {
+            return lines.slice(start, end + 1).join("\n");
+          }
+        }
+      }
+      return null;
+    }), PAGE_EVALUATE_TIMEOUT_MS, null);
+    return parseVisibleClaudeUsagePanel(panel);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect a provider-owned human verification challenge after normal Usage
+ * collection failed. No challenge is clicked or solved, and no page text,
+ * frame URL, user data or challenge token is returned to the collector.
+ */
+async function hasManualClaudeVerification(
+  page: Page,
+  observed: ChallengeObservation,
+): Promise<boolean> {
+  // Browser-side, language-independent evidence first (issue #49). Frame URLs
+  // come from Playwright, which also sees frames inside shadow roots.
+  let currentUrl = "";
+  try { currentUrl = page.url(); } catch { currentUrl = ""; }
+  const browserSignals = {
+    challengeLocation: isClaudeChallengeLocation(currentUrl),
+    challengeResponse: observed.challengedUrl !== null && observed.challengedUrl === currentUrl,
+    trustedChallengeFrame: (() => {
+      try {
+        return page.frames().some((frame) => isTrustedChallengeFrameUrl(frame.url()));
+      } catch {
+        return false;
+      }
+    })(),
+  };
+  if (requiresManualClaudeVerification({
+    titleIsChallenge: false,
+    visibleChallengePrompt: false,
+    ...browserSignals,
+  })) {
+    return true;
+  }
+  try {
+    const signals = await withTimeout(page.evaluate(() => {
+      const title = (document.title ?? "").trim();
+      const titleIsChallenge =
+        /^(?:just a moment\.{0,3}|verify you are human|checking your browser)\s*$/i.test(title);
+      const challengePrompt = /^(?:verify you are human|verify you're human|confirm you are human|checking your browser|checking if the site connection is secure)$/i;
+      const visibleChallengePrompt = Array
+        .from(document.querySelectorAll("h1, h2, label"))
+        .slice(0, 80)
+        .some((node) => challengePrompt.test((node.textContent ?? "").trim().replace(/\s+/g, " ")));
+      const trustedChallengeFrame = Array
+        .from(document.querySelectorAll("iframe[src]"))
+        .slice(0, 32)
+        .some((frame) => {
+          try {
+            const src = frame.getAttribute("src");
+            if (!src) return false;
+            const url = new URL(src, document.baseURI);
+            return url.protocol === "https:" &&
+              url.hostname === "challenges.cloudflare.com";
+          } catch {
+            return false;
+          }
+        });
+      return { titleIsChallenge, visibleChallengePrompt, trustedChallengeFrame };
+    }), PAGE_EVALUATE_TIMEOUT_MS, null);
+    // Timed out: not observed, so no claim of a challenge either way.
+    if (signals === null) return false;
+    return requiresManualClaudeVerification(signals);
+  } catch {
+    return false;
   }
 }
 
@@ -500,9 +527,11 @@ async function collectFromContext(
   const preferredOrganizationId =
     await preferredClaudeOrganizationId(context);
 
+  const observed: ChallengeObservation = { challengedUrl: null };
   const collected = await collectUsageFromRealPageRequests(
     page,
     preferredOrganizationId,
+    observed,
   );
 
   const currentUrl = page.url();
@@ -515,7 +544,21 @@ async function collectFromContext(
     );
   }
 
-  if (!collected.parsed) {
+  const selected = await selectClaudeUsageSource(
+    collected.parsed,
+    collected.reason,
+    () => readVisibleUsagePanel(page),
+  );
+  const usage = selected.usage;
+
+  if (!usage) {
+    if (await hasManualClaudeVerification(page, observed)) {
+      return result(
+        account,
+        "verification_required",
+        "Claude requires manual human verification in this local profile. Open the profile interactively and complete the provider's verification; QuotaOps will not bypass it.",
+      );
+    }
     return result(
       account,
       "unsupported",
@@ -524,7 +567,10 @@ async function collectFromContext(
   }
 
   const checkedAt = new Date().toISOString();
-  return result(account, "ok", null, checkedAt, {
+  const sourceMessage = selected.source === "visible"
+    ? "Usage percentages read from the visible Claude page; precise reset timestamps unavailable."
+    : null;
+  return result(account, "ok", sourceMessage, checkedAt, {
     id: account.id,
     label: account.label,
     provider: "claude",
@@ -533,12 +579,12 @@ async function collectFromContext(
       {
         id: "five-hour",
         label: "5-hour",
-        ...collected.parsed.fiveHour,
+        ...usage.fiveHour,
       },
       {
         id: "weekly",
         label: "Weekly",
-        ...collected.parsed.weekly,
+        ...usage.weekly,
       },
     ],
     updatedAt: checkedAt,
@@ -553,74 +599,61 @@ export async function openClaudeLogin(
     return;
   }
 
-  const context = await launchProfile(account, false);
-  const page = context.pages()[0] ?? (await context.newPage());
+  const context = await launchProfile(account, true);
+  try {
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(CLAUDE_USAGE_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
 
-  await page.goto(CLAUDE_USAGE_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 30_000,
-  });
+    process.stdout.write(
+      [
+        "",
+        `Opened the isolated browser profile for ${account.label}.`,
+        "Complete Claude's normal login and any provider verification in that window.",
+        "When Settings > Usage is visible, return here and press Enter.",
+        "",
+      ].join("\n"),
+    );
 
-  process.stdout.write(
-    [
-      "",
-      `Opened the isolated browser profile for ${account.label}.`,
-      "Complete Claude's normal login and any provider verification in that window.",
-      "When Settings > Usage is visible, return here and press Enter.",
-      "",
-    ].join("\n"),
-  );
-
-  await waitForEnter();
-  await context.close();
+    await waitForEnter();
+  } finally {
+    await context.close().catch(() => undefined);
+  }
 }
 
+/**
+ * Launch Chrome/Edge over Playwright's private pipe instead of opening an
+ * unauthenticated loopback DevTools HTTP port. The authenticated profile stays
+ * on this machine and is always closed after each collection.
+ *
+ * Real-account E2E showed Claude Usage working with headed Chromium while
+ * Windows headless collection missed the Usage API. The default Windows mode
+ * now uses the normal headed Chromium launched minimized/offscreen; whether
+ * that mode behaves identically still needs explicit Windows E2E validation.
+ */
 export async function collectClaudeUsageFromBrowser(
   account: CollectorAccountConfig,
+  options: { visible?: boolean; signal?: AbortSignal | undefined } = {},
 ): Promise<CollectorAccountResult> {
-  if (process.platform === "win32") {
-    let browser: Browser | null = null;
-    let child: ChildProcess | null = null;
-
-    try {
-      const launched = await launchWindowsCollectionBrowser(account);
-      browser = launched.browser;
-      child = launched.child;
-      return await collectFromContext(account, launched.context);
-    } catch (error) {
-      const reason =
-        error instanceof Error &&
-        [
-          "browser_spawn_failed",
-          "devtools_not_ready",
-          "devtools_connect_failed",
-          "profile_context_missing",
-        ].includes(error.message)
-          ? error.message
-          : "collection_failed";
-
-      return result(
-        account,
-        "unavailable",
-        `Local browser collector is unavailable (${reason}).`,
-      );
-    } finally {
-      await stopSpawnedBrowser(browser, child);
-    }
-  }
-
-  let context: BrowserContext | null = null;
-
   try {
-    context = await launchProfile(account, true);
-    return await collectFromContext(account, context);
-  } catch {
+    // On Windows normal collection uses headed Chrome/Edge minimized/offscreen.
+    // --visible is only for explicit user diagnostics; no automated login.
+    // Cancellation (collector shutdown) closes the profile immediately.
+    return await withCancellableContext(
+      () => launchProfile(account, options.visible === true),
+      (context) => collectFromContext(account, context),
+      options.signal,
+    );
+  } catch (error) {
+    if (error instanceof CollectionCancelledError) {
+      return result(account, "unavailable", "Collection stopped because QuotaOps is closing.");
+    }
     return result(
       account,
       "unavailable",
       "Local browser collector is unavailable for this account.",
     );
-  } finally {
-    await context?.close().catch(() => undefined);
   }
 }

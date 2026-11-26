@@ -1,0 +1,20 @@
+[package]
+name = "quotaops"
+version = "0.0.0"
+edition = "2021"
+description = "Tauri proof of concept for the QuotaOps architecture benchmark."
+publish = false
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

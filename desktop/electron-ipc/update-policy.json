@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "provider": "github",
+  "owner": "ChrisLeoKokotos",
+  "repo": "quota-ops",
+  "expectedPublisherName": ""
+}

@@ -1,0 +1,1281 @@
+// QuotaOps desktop shell — IPC architecture proof of concept.
+//
+// The difference from desktop/electron: there is no Next.js server and no
+// dashboard HTTP listener at all. The UI is a static bundle served from a
+// private scheme, and the renderer reaches the collector through one
+// read-only IPC channel.
+//
+// What that buys, and what it changes for security:
+//
+//   * The ~100 MB Node server process is gone.
+//   * The renderer never holds the collector's bearer token.
+//   * There is no loopback dashboard port, so QO-SEC-01's peer boundary and
+//     its Risk C transparent-relay exposure do not apply to the UI at all —
+//     there is nothing for a relay to forward to.
+//   * The collector itself is unchanged: still 127.0.0.1:4317, still bearer
+//     authenticated. That boundary is untouched by this work.
+
+const { Menu, Notification, Tray, app, BrowserWindow, dialog, ipcMain, net, protocol, screen, session, shell, utilityProcess } = require("electron");
+const { readFile } = require("node:fs/promises");
+const { readFileSync, existsSync } = require("node:fs");
+const { createReadStream } = require("node:fs");
+const { homedir } = require("node:os");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const {
+  MAX_ACCOUNTS,
+  buildContentSecurityPolicy,
+  isTrustedIpcSender,
+  projectSnapshot,
+  guardTokenSnapshot,
+  readBoundedBody,
+  resolveExternalUrl,
+  resolveStaticAsset,
+} = require("./security.js");
+const { RefreshScheduler } = require("./scheduler.js");
+const { createUpdateManager, validateUpdateGate } = require("./update-manager.js");
+const UPDATE_POLICY = require("./update-policy.json");
+
+const STATIC_ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "static-dist")
+  : path.join(__dirname, "..", "static-dist");
+
+/**
+ * Resolves a branding asset for both layouts.
+ *
+ * electron-builder flattens the app directory, so packaged icons sit beside
+ * main.js; in the repository they live under `desktop/branding/`. A missing
+ * asset returns null and the caller falls back, so a packaging mistake shows
+ * up as the default Electron icon rather than a crash on startup.
+ */
+function brandingAsset(name) {
+  const packaged = path.join(__dirname, name);
+  if (existsSync(packaged)) return packaged;
+
+  const source = path.join(__dirname, "..", "branding", name);
+  return existsSync(source) ? source : null;
+}
+
+const APP_ICON = brandingAsset("quotaops-icon.ico");
+const TRAY_ICON = brandingAsset("quotaops-tray.ico");
+// Packaged editions ship the collector with their own Electron/Node runtime.
+// Dev still accepts an explicitly started external collector for comparison.
+const BUNDLED_COLLECTOR = app.isPackaged
+  ? path.join(process.resourcesPath, "collector-runtime", "collector", "service.ts")
+  : null;
+const COLLECTOR_SNAPSHOT = "http://127.0.0.1:4317/snapshot";
+const COLLECTOR_CONTROLS = Object.freeze({
+  pause: "http://127.0.0.1:4317/monitoring/pause",
+  resume: "http://127.0.0.1:4317/monitoring/resume",
+  refresh: "http://127.0.0.1:4317/monitoring/refresh",
+  refreshVisible: "http://127.0.0.1:4317/monitoring/refresh-visible",
+});
+const MAX_RESPONSE_BYTES = 262_144;
+const MIN_SNAPSHOT_INTERVAL_MS = 1_000;
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const APP_ORIGIN = "app://quotaops";
+
+let mainWindow = null;
+let tray = null;
+let cachedToken = null;
+let quitting = false;
+/** Identity the IPC handler checks every sender against. */
+let trustedSender = null;
+let scheduler = null;
+/** One snapshot request at a time; the rest observe the result. */
+let inFlightSnapshot = null;
+let tokenConsentGeneration = 0;
+let tokenConsentPending = false;
+let lastSnapshotAt = 0;
+let trayCommandPending = false;
+let trayCommandError = null;
+let ownedCollector = null;
+let collectorStarted = false;
+// A downloaded update may install only after user confirmation and the same
+// graceful collector shutdown used by Quit.
+let updateManager = null;
+let installUpdateOnQuit = false;
+
+// Explicit opt-in startup markers: no account names, URLs, paths, cookies,
+// bearer tokens, HTTP bodies or raw stack traces ever enter the probe output.
+const STARTUP_DIAGNOSTICS = process.env.QUOTAOPS_STARTUP_DIAGNOSTICS === "1";
+
+// Windows default: software rendering. Measured idle private memory 319 MB
+// with GPU acceleration, 242 MB without (GPU process 99 -> 21 MB); the static
+// dashboard does not need the GPU. QUOTAOPS_HARDWARE_ACCELERATION=1 restores
+// it for diagnosis. Must run before the app is ready.
+if (process.platform === "win32" && process.env.QUOTAOPS_HARDWARE_ACCELERATION !== "1") {
+  app.disableHardwareAcceleration();
+}
+function startupMark(code) {
+  if (STARTUP_DIAGNOSTICS) process.stdout.write(`[quotaops-startup] ${code}\n`);
+}
+function classifyCollectorError(value) {
+  const line = String(value).slice(0, 4096);
+  if (/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|ERR_UNKNOWN_FILE_EXTENSION/.test(line)) return "ts_loader";
+  if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find package/.test(line)) return "module_resolution";
+  if (/EACCES|EPERM|access denied/i.test(line)) return "permission";
+  if (/SyntaxError/.test(line)) return "syntax";
+  return "other";
+}
+
+// The isolated Windows packaged-smoke process must use a DIFFERENT Electron
+// profile and single-instance-lock namespace, not just different Node HOME.
+// Chromium's Windows appData resolution can ignore a child APPDATA override.
+// This opt-in path is constrained to our disposable test sandbox and must be
+// set before requestSingleInstanceLock() / the first ready event.
+// Ordinary desktop launches always keep Electron's normal userData directory.
+let validatedSmokeHome = false;
+const smokeUserData = process.env.QUOTAOPS_SMOKE_USER_DATA;
+if (smokeUserData !== undefined) {
+  const home = process.env.USERPROFILE;
+  const appData = process.env.APPDATA;
+  const isIsolatedHome = typeof home === "string" &&
+    path.isAbsolute(home) &&
+    path.basename(home).toLowerCase() === "user" &&
+    /^quotaops-packaged-test-[a-z0-9-]+$/i.test(path.basename(path.dirname(home)));
+  const expectedUserData = typeof appData === "string"
+    ? path.resolve(appData, "QuotaOpsSmoke")
+    : "";
+  if (!app.isPackaged || process.platform !== "win32" ||
+      !STARTUP_DIAGNOSTICS || !isIsolatedHome ||
+      !path.isAbsolute(smokeUserData) ||
+      !existsSync(smokeUserData) ||
+      path.resolve(smokeUserData).toLowerCase() !== expectedUserData.toLowerCase() ||
+      path.resolve(appData).toLowerCase() !==
+        path.resolve(path.dirname(home), "Roaming").toLowerCase()) {
+    throw new Error("Refusing an unsafe packaged-smoke Electron userData override");
+  }
+  app.setPath("userData", smokeUserData);
+  validatedSmokeHome = true;
+  startupMark("smoke_electron_userdata_isolated");
+}
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "app",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: false,
+    },
+  },
+]);
+
+async function collectorToken() {
+  if (cachedToken) return cachedToken;
+
+  const file = path.join(homedir(), ".quotaops", "collector.token");
+  const token = (await readFile(file, "utf8")).trim();
+  if (!TOKEN_PATTERN.test(token)) {
+    throw new Error("collector token is missing or malformed");
+  }
+  cachedToken = token;
+  return token;
+}
+
+/**
+ * The only privileged operation the renderer can trigger.
+ *
+ * Returns a projected snapshot or a fixed error enum. The token stays in the
+ * main process, and the renderer receives only fields this module rebuilds —
+ * never the collector's own error text and never an unknown key.
+ */
+async function readSnapshot() {
+  let token;
+  try {
+    token = await collectorToken();
+  } catch {
+    return { error: "collector_unavailable" };
+  }
+
+  let response;
+  try {
+    response = await fetch(COLLECTOR_SNAPSHOT, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(3_000),
+      redirect: "error",
+    });
+  } catch {
+    return { error: "collector_offline" };
+  }
+
+  if (response.status === 401) {
+    // The token was rotated; re-read it once and retry.
+    cachedToken = null;
+    try {
+      const retryToken = await collectorToken();
+      response = await fetch(COLLECTOR_SNAPSHOT, {
+        headers: { Authorization: `Bearer ${retryToken}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(3_000),
+        redirect: "error",
+      });
+    } catch {
+      return { error: "collector_offline" };
+    }
+  }
+
+  if (!response.ok) return { error: "collector_unavailable" };
+
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    return { error: "collector_invalid_response" };
+  }
+
+  // Bound the body while it streams. Checking the length after `text()` has
+  // already buffered everything is not an allocation bound: by then the
+  // memory is spent.
+  const body = await readBoundedBody(response, MAX_RESPONSE_BYTES);
+  if (!body.ok) {
+    return {
+      error: body.reason === "too_large"
+        ? "collector_response_too_large"
+        : "collector_invalid_response",
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(body.text);
+  } catch {
+    return { error: "collector_invalid_response" };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "collector_invalid_response" };
+  }
+  if (parsed.version !== 1 || !Array.isArray(parsed.accounts)) {
+    return { error: "collector_invalid_response" };
+  }
+  if (parsed.accounts.length > MAX_ACCOUNTS) {
+    return { error: "collector_invalid_response" };
+  }
+
+  return projectSnapshot(parsed);
+}
+
+/**
+ * Serves the exported bundle, refusing anything outside it.
+ *
+ * Containment is delegated to `resolveStaticAsset`, which compares path
+ * segments and re-checks after following links rather than testing a string
+ * prefix. A sibling directory whose name begins with the bundle's name would
+ * pass a prefix test; so would a symlink inside the bundle.
+ */
+function registerStaticProtocol() {
+  protocol.handle("app", async (request) => {
+    let url;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return new Response("bad request", { status: 400 });
+    }
+
+    if (url.host !== "quotaops") return new Response("not found", { status: 404 });
+
+    const resolved = resolveStaticAsset(STATIC_ROOT, url.pathname);
+    if (!resolved.ok) {
+      return new Response("forbidden", { status: 403 });
+    }
+
+    if (resolved.exists) {
+      try {
+        return await net.fetch(pathToFileURL(resolved.path).toString());
+      } catch {
+        return new Response("not found", { status: 404 });
+      }
+    }
+
+    // Client-side routing: an unknown path falls back to the entry document.
+    const entry = resolveStaticAsset(STATIC_ROOT, "/index.html");
+    if (!entry.ok || !entry.exists) {
+      return new Response("not found", { status: 404 });
+    }
+    try {
+      return await net.fetch(pathToFileURL(entry.path).toString());
+    } catch {
+      return new Response("not found", { status: 404 });
+    }
+  });
+}
+
+/**
+ * Inline script hashes recorded by the static build.
+ *
+ * Allowing them by hash keeps `unsafe-inline` out of `script-src`. If the
+ * manifest is missing the shell fails closed on scripts rather than widening
+ * the policy: a blank dashboard is a visible, diagnosable failure, whereas a
+ * silently relaxed CSP is not.
+ */
+function inlineScriptHashes() {
+  try {
+    const raw = readFileSync(path.join(STATIC_ROOT, "csp-script-hashes.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed?.version !== 1 || !Array.isArray(parsed.scriptHashes)) return [];
+    return parsed.scriptHashes.filter(
+      (hash) => typeof hash === "string" && /^sha256-[A-Za-z0-9+/]+=*$/.test(hash),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function hardenSession() {
+  const target = session.defaultSession;
+  const policy = buildContentSecurityPolicy(inlineScriptHashes());
+
+  target.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [policy],
+        "X-Content-Type-Options": ["nosniff"],
+      },
+    });
+  });
+
+  target.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  target.setPermissionCheckHandler(() => false);
+
+  if (process.env.QUOTAOPS_IPC_TRACE) {
+    process.stdout.write(`[csp] ${policy}\n`);
+  }
+}
+
+function createWindow() {
+  // Electron bounds are DIP, not physical pixels. Fit the work area so
+  // high Windows scaling or a small display cannot start off-screen.
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  mainWindow = new BrowserWindow({
+    width: Math.min(1280, workArea.width),
+    height: Math.min(860, workArea.height),
+    minWidth: Math.min(480, workArea.width),
+    minHeight: Math.min(360, workArea.height),
+    show: false,
+    backgroundColor: "#111317",
+    title: "QuotaOps",
+    // Drives the window frame and the taskbar button. Without it both fall
+    // back to Electron's default icon even when the executable is branded.
+    ...(APP_ICON ? { icon: APP_ICON } : {}),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      preload: path.join(__dirname, "preload.js"),
+    },
+  });
+
+  mainWindow.removeMenu();
+
+  // `shell.openExternal` launches whatever handler Windows has registered, so
+  // an unfiltered call lets the renderer invoke arbitrary protocol handlers.
+  // Only https destinations are passed on; everything else is dropped.
+  const openExternalIfAllowed = (target) => {
+    // Pass the parsed form: `new URL()` strips tabs and leading whitespace and
+    // rewrites backslashes, so validating one spelling and handing ShellExecute
+    // another means the string checked is not the string executed.
+    const safe = resolveExternalUrl(target);
+    if (safe) void shell.openExternal(safe);
+  };
+
+  mainWindow.webContents.on("will-navigate", (event, target) => {
+    if (!target.startsWith(`${APP_ORIGIN}/`)) {
+      event.preventDefault();
+      openExternalIfAllowed(target);
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalIfAllowed(url);
+    return { action: "deny" };
+  });
+
+  // Closing the window hides it; quitting is a separate, explicit action.
+  // Settings must say so plainly, because a window that will not close is
+  // otherwise indistinguishable from a bug.
+  mainWindow.on("close", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  if (process.env.QUOTAOPS_CSP_PROBE) {
+    mainWindow.webContents.once("did-finish-load", async () => {
+      const probe = `(async () => {
+        const out = {};
+        try { await fetch("https://example.com", { signal: AbortSignal.timeout(2500) }); out.connect = "ALLOWED"; }
+        catch (error) { out.connect = "BLOCKED:" + String(error).slice(0, 60); }
+        try {
+          const el = document.createElement("script");
+          el.text = "window.__cspProbe = 1;";
+          document.body.appendChild(el);
+          out.inlineScript = window.__cspProbe === 1 ? "ALLOWED" : "BLOCKED";
+        } catch (error) { out.inlineScript = "THREW:" + String(error).slice(0, 40); }
+        out.metaCsp = document.querySelector('meta[http-equiv="Content-Security-Policy"]') ? "present" : "absent";
+        return JSON.stringify(out);
+      })()`;
+      try {
+        const result = await mainWindow.webContents.executeJavaScript(probe, true);
+        process.stdout.write(`[csp-probe] ${result}
+`);
+      } catch (error) {
+        process.stdout.write(`[csp-probe] failed: ${String(error).slice(0, 120)}
+`);
+      }
+    });
+  }
+
+  mainWindow.once("ready-to-show", () => {
+    startupMark("window_ready");
+    mainWindow.show();
+    const t0 = Number(process.env.QUOTAOPS_T0 ?? 0);
+    if (t0) process.stdout.write(`[poc] window visible after ${Date.now() - t0} ms\n`);
+  });
+
+  trustedSender = {
+    webContentsId: mainWindow.webContents.id,
+    origin: APP_ORIGIN,
+  };
+
+  mainWindow.webContents.on("did-fail-load", () => startupMark("renderer_load_failed"));
+  mainWindow.webContents.on("render-process-gone", () => startupMark("renderer_process_gone"));
+  void mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
+}
+
+/**
+ * Control the actual collector process, not Electron's read-only scheduler.
+ * These three fixed POST destinations are reachable only from the trusted main
+ * process, with the local bearer token. No renderer IPC control surface.
+ */
+/** POST to a fixed collector URL; returns the HTTP status, or 0 on failure. */
+async function collectorPost(url) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let token;
+    try { token = await collectorToken(); }
+    catch { return 0; }
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(3000),
+        redirect: "error",
+      });
+    } catch { return 0; }
+    if (response.status === 401 && attempt === 0) {
+      cachedToken = null;
+      continue;
+    }
+    return response.status;
+  }
+  return 0;
+}
+
+async function collectorControl(action) {
+  const url = COLLECTOR_CONTROLS[action];
+  if (!url) return false;
+  const status = await collectorPost(url);
+  return status >= 200 && status < 300;
+}
+
+// Same rule as the collector's config: the id is the only request input.
+const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const NEEDS_PERSON_STATUSES = new Set(["verification_required", "login_required"]);
+
+// Accounts whose last result needs a person (issue #49). Read from the local
+// projected snapshot on the tray's own 30 s tick: the scheduler's snapshot
+// interval (5 min) would leave the tray item missing for minutes after a
+// challenge. Local, bounded, token-authenticated; no provider access.
+let attentionAccounts = [];
+async function refreshAttention() {
+  let result;
+  try { result = await readSnapshot(); } catch { return; }
+  if (!result || result.error || !Array.isArray(result.accounts)) return;
+  attentionAccounts = result.accounts
+    .filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status) && ACCOUNT_ID_PATTERN.test(entry.id))
+    .slice(0, 8);
+}
+
+function accountsNeedingPerson() {
+  return attentionAccounts;
+}
+
+// What the tray needs from collector.json: the background mode and how many
+// accounts a visible refresh would open. Read-only, bounded; nothing else.
+let collectorSettings = {
+  background: process.platform === "win32" ? "hidden" : "headless",
+  enabledAccounts: 0,
+  tokenAnalyticsOn: false,
+};
+async function refreshCollectorSettings() {
+  try {
+    const file = path.join(homedir(), ".quotaops", "collector.json");
+    const raw = await readFile(file, "utf8");
+    if (raw.length > 1_048_576) return;
+    const parsed = JSON.parse(raw);
+    collectorSettings = {
+      background: parsed?.backgroundCollection === "off" ? "off"
+        : parsed?.backgroundCollection === "headless" || process.platform !== "win32" ? "headless"
+          : "hidden",
+      enabledAccounts: Array.isArray(parsed?.accounts)
+        ? parsed.accounts.filter((account) => account && account.enabled === true).length
+        : 0,
+      tokenAnalyticsOn: parsed?.tokenAnalyticsSources?.claudeCode === true ||
+        parsed?.tokenAnalyticsSources?.codex === true,
+    };
+  } catch {
+    // Keep the last known settings.
+  }
+}
+
+/**
+ * Person-initiated collection in visible browser windows. Background
+ * collection is headless and cannot reach a page that the provider only
+ * serves to a visible browser; this is the consented alternative.
+ */
+let visibleConsentOpen = false;
+async function runVisibleRefresh() {
+  // One consent dialog and one visible batch at a time.
+  if (trayCommandPending || visibleConsentOpen || collectorBusy) return;
+  visibleConsentOpen = true;
+  refreshTray();
+  let choice;
+  try {
+    await refreshCollectorSettings();
+    if (collectorSettings.enabledAccounts === 0) return;
+    choice = await askVisibleRefreshConsent(collectorSettings.enabledAccounts);
+  } finally {
+    visibleConsentOpen = false;
+    refreshTray();
+  }
+  if (choice !== 1 || quitting) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  const requestedAt = new Date().toISOString();
+  try {
+    if (!(await collectorControl("refreshVisible"))) {
+      trayCommandError = "Collector command failed; nothing was opened";
+      return;
+    }
+    if (Notification.isSupported()) {
+      try {
+        new Notification({
+          title: "QuotaOps is refreshing",
+          body: "Browser windows will open and close for each account. Avoid typing until it finishes.",
+        }).show();
+      } catch { /* optional */ }
+    }
+    void followVisibleRefresh(requestedAt);
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
+async function askVisibleRefreshConsent(count) {
+  const minutes = Math.max(1, Math.round((count * 15) / 60));
+  const result = await dialog.showMessageBox({
+    type: "info",
+    buttons: ["Cancel", "Open browser windows"],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    title: "QuotaOps visible refresh",
+    message: `Open a browser window for each of your ${count} account${count === 1 ? "" : "s"}?`,
+    detail:
+      "QuotaOps will open one window at a time, read the usage page and close it " +
+      `(about 15 seconds each, about ${minutes} minute${minutes === 1 ? "" : "s"} in total). ` +
+      "Windows may switch to these windows; avoid typing until QuotaOps finishes. " +
+      "QuotaOps does not complete verifications for you: if a provider asks you to " +
+      "verify, use Manual verification required in this menu.",
+  });
+  return result.response;
+}
+
+// Feedback for a person-initiated refresh: the tray says that accounts are
+// being checked until the collector is idle again, then a notification says
+// what happened. Counts only; no account names or values.
+let collectorBusy = false;
+async function collectorIsCollecting() {
+  try {
+    const token = await collectorToken();
+    const response = await fetch("http://127.0.0.1:4317/health", {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(3000),
+      redirect: "error",
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return typeof body?.collecting === "boolean" ? body.collecting : null;
+  } catch {
+    return null;
+  }
+}
+
+async function followVisibleRefresh(requestedAt) {
+  collectorBusy = true;
+  refreshTray();
+  const deadline = Date.now() + 15 * 60_000;
+  // Give the collector a moment to start the queued batch.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  while (!quitting && Date.now() < deadline && (await collectorIsCollecting()) !== false) {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
+  collectorBusy = false;
+  if (quitting) return;
+  await refreshAttention();
+  refreshTray();
+  const snapshot = await readSnapshot();
+  if (!snapshot || snapshot.error || !Array.isArray(snapshot.accounts) || !Notification.isSupported()) return;
+  // Count only accounts checked by this run, never an older snapshot.
+  const checked = snapshot.accounts.filter((entry) =>
+    typeof entry.checkedAt === "string" && entry.checkedAt >= requestedAt);
+  const updated = checked.filter((entry) => entry.status === "ok").length;
+  const attention = checked.filter((entry) => NEEDS_PERSON_STATUSES.has(entry.status)).length;
+  const other = checked.length - updated - attention;
+  try {
+    new Notification(checked.length === 0
+      ? {
+          title: "QuotaOps refresh did not run",
+          body: "Monitoring was paused or QuotaOps was busy. Nothing was updated.",
+        }
+      : {
+          title: "QuotaOps refresh finished",
+          body: `${updated} updated` +
+            (attention ? `, ${attention} need${attention === 1 ? "s" : ""} your attention (see tray)` : "") +
+            (other ? `, ${other} could not be read` : "") + ".",
+        }).show();
+  } catch { /* optional */ }
+}
+
+/**
+ * Token analytics is off until the person turns it on here. The dialog says
+ * exactly what is read; turning it off needs no dialog.
+ */
+async function runTokenAnalyticsToggle() {
+  if (trayCommandPending) return;
+  await refreshCollectorSettings();
+  await setTokenAnalytics(!collectorSettings.tokenAnalyticsOn, null);
+}
+
+/**
+ * The one place token analytics is switched, from the tray or from the
+ * dashboard button. Turning it on always shows this native dialog first:
+ * the renderer can ask, but only the person's click here gives consent.
+ * Returns "on" | "off" | "cancelled" | "busy" | "error".
+ */
+function invalidateTokenSnapshots() {
+  tokenConsentGeneration++;
+  // A notification only, never data or a privileged renderer-controlled action.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try { mainWindow.webContents.send("quotaops:token-consent-changed"); } catch { /* closing */ }
+  }
+}
+
+async function setTokenAnalytics(turnOn, parentWindow) {
+  if (trayCommandPending) return "busy";
+  if (turnOn) {
+    trayCommandPending = true;
+    let choice;
+    try {
+      const options = {
+        type: "question",
+        buttons: ["Cancel", "Turn on"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: "QuotaOps token analytics",
+        message: "Count tokens from Claude Code and Codex session logs on this PC?",
+        detail:
+          "QuotaOps parses local session-history files to extract numeric token counts (input, output, cache), dates, " +
+          "and the Claude account each Claude Code session ran under, from the local " +
+          "session logs of Claude Code (%USERPROFILE%\\.claude) and Codex " +
+          "(%USERPROFILE%\\.codex). Account ids are kept only as a one-way hash. " +
+          "Those files may contain private prompts, responses and code. QuotaOps does not retain or export their content. " +
+          "Token analytics stays on this PC. Totals cover only sessions on this PC. You can turn this off " +
+          "at any time in the dashboard or the tray menu.",
+      };
+      choice = parentWindow && !parentWindow.isDestroyed()
+        ? await dialog.showMessageBox(parentWindow, options)
+        : await dialog.showMessageBox(options);
+    } finally {
+      trayCommandPending = false;
+    }
+    if (choice.response !== 1) return "cancelled";
+  }
+  trayCommandPending = true;
+  trayCommandError = null;
+  tokenConsentPending = true;
+  invalidateTokenSnapshots();
+  refreshTray();
+  try {
+    const flag = turnOn ? "1" : "0";
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/token-analytics/consent?claude-code=${flag}&codex=${flag}`,
+    );
+    if (status !== 200) trayCommandError = "Could not change token analytics";
+    await refreshCollectorSettings();
+    if (status !== 200) return "error";
+    return turnOn ? "on" : "off";
+  } finally {
+    tokenConsentPending = false;
+    invalidateTokenSnapshots();
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
+/** Open one isolated profile in the normal browser for manual verification. */
+async function runVerifyCommand(accountId) {
+  if (trayCommandPending || !ACCOUNT_ID_PATTERN.test(accountId)) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const status = await collectorPost(
+      `http://127.0.0.1:4317/accounts/verify?id=${encodeURIComponent(accountId)}`,
+    );
+    if (status === 202) return;
+    trayCommandError =
+      status === 409 ? "Wait for the current check to finish, or close the open profile window"
+        : status === 503 ? "Chrome or Edge was not found for manual verification"
+          : "Could not open the profile for verification";
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
+async function runTrayCommand(action) {
+  if (trayCommandPending) return;
+  trayCommandPending = true;
+  trayCommandError = null;
+  refreshTray();
+  try {
+    const ok = await collectorControl(action);
+    if (!ok) {
+      trayCommandError = "Collector command failed; monitoring state unchanged";
+      return;
+    }
+    if (action === "pause") scheduler?.pause();
+    if (action === "resume") scheduler?.resume();
+    // Manual provider refresh is asynchronous; a successful 202 only queues
+    // it. Do not pretend the next cached snapshot is newly collected.
+  } finally {
+    trayCommandPending = false;
+    refreshTray();
+  }
+}
+
+/**
+ * Supervised local utility process: no separate Node.js installation or
+ * command prompt required by the installed app. The collector still binds
+ * only 127.0.0.1 and requires its local token. We do not send provider
+ * session material or HTTP responses over utility-process IPC.
+ */
+function startBundledCollector() {
+  if (!BUNDLED_COLLECTOR || collectorStarted) return;
+  collectorStarted = true;
+  if (!existsSync(BUNDLED_COLLECTOR)) {
+    startupMark("collector_missing");
+    trayCommandError = "Bundled collector missing (installation incomplete)";
+    return;
+  }
+  try {
+    ownedCollector = utilityProcess.fork(BUNDLED_COLLECTOR, [], {
+      cwd: path.dirname(path.dirname(BUNDLED_COLLECTOR)),
+      execArgv: ["--experimental-strip-types"],
+      serviceName: "QuotaOps Collector",
+      // Only explicit packaged startup smoke captures child output. Never
+      // forward it verbatim: provider logs can contain private state.
+      stdio: STARTUP_DIAGNOSTICS ? "pipe" : "ignore",
+    });
+    startupMark("collector_fork_requested");
+    if (STARTUP_DIAGNOSTICS) {
+      ownedCollector.once("spawn", () => startupMark("collector_spawned"));
+      ownedCollector.once("error", () => startupMark("collector_fatal_error"));
+      let reportedStderr = false;
+      ownedCollector.stderr?.on("data", (chunk) => {
+        if (reportedStderr) return;
+        reportedStderr = true;
+        startupMark(`collector_stderr_${classifyCollectorError(chunk)}`);
+      });
+      let reportedListening = false;
+      let stdoutTail = "";
+      ownedCollector.stdout?.on("data", (chunk) => {
+        stdoutTail = (stdoutTail + String(chunk)).slice(-1024);
+        if (!reportedListening && stdoutTail.includes("QuotaOps collector listening")) {
+          reportedListening = true;
+          startupMark("collector_listening");
+        }
+      });
+    }
+    ownedCollector.once("exit", (code) => {
+      startupMark(`collector_exited_${Number.isInteger(code) ? code : "unknown"}`);
+      ownedCollector = null;
+      if (!quitting) onCollectorStoppedUnexpectedly(code);
+    });
+  } catch {
+    startupMark("collector_fork_threw");
+    ownedCollector = null;
+    trayCommandError = "Bundled collector could not start";
+  }
+}
+
+// Collector supervision. Exit code 5: port 4317 already in use. Anything
+// else while not quitting is unexpected: restart with backoff, but stop
+// after 3 restarts in 10 minutes instead of looping.
+const COLLECTOR_EXIT_PORT_IN_USE = 5;
+const COLLECTOR_RESTART_DELAYS_MS = [2_000, 10_000, 30_000];
+const COLLECTOR_RESTART_WINDOW_MS = 10 * 60_000;
+const collectorRestartTimes = [];
+
+function onCollectorStoppedUnexpectedly(code) {
+  if (code === COLLECTOR_EXIT_PORT_IN_USE) {
+    void explainCollectorPortInUse();
+    return;
+  }
+  const now = Date.now();
+  while (collectorRestartTimes.length > 0 && now - collectorRestartTimes[0] > COLLECTOR_RESTART_WINDOW_MS) {
+    collectorRestartTimes.shift();
+  }
+  if (collectorRestartTimes.length >= COLLECTOR_RESTART_DELAYS_MS.length) {
+    startupMark("collector_restart_gave_up");
+    trayCommandError = "Collector stopped repeatedly; quit and reopen QuotaOps";
+    refreshTray();
+    return;
+  }
+  const delay = COLLECTOR_RESTART_DELAYS_MS[collectorRestartTimes.length];
+  collectorRestartTimes.push(now);
+  startupMark("collector_restart_scheduled");
+  trayCommandError = "Collector stopped; restarting...";
+  refreshTray();
+  setTimeout(() => {
+    if (quitting) return;
+    collectorStarted = false;
+    trayCommandError = null;
+    startBundledCollector();
+    refreshTray();
+  }, delay);
+}
+
+/** Port 4317 taken: tell "another QuotaOps collector" from "some other program". */
+async function explainCollectorPortInUse() {
+  // /health answers only with this PC's QuotaOps token.
+  const otherQuotaOpsCollector = (await collectorIsCollecting()) !== null;
+  startupMark(otherQuotaOpsCollector ? "collector_external_in_use" : "collector_port_blocked");
+  trayCommandError = otherQuotaOpsCollector
+    ? "Using the QuotaOps collector already running on this PC"
+    : "Port 4317 is used by another program; QuotaOps cannot collect usage";
+  refreshTray();
+}
+
+function formatLastUpdate(status) {
+  if (!status || status.lastSuccessAt === null) return "Last snapshot check: never";
+  const minutes = Math.floor((status.ageMs ?? 0) / 60_000);
+  const when =
+    minutes < 1 ? "just now" : minutes === 1 ? "1 minute ago" : `${minutes} minutes ago`;
+  // Say "stale" rather than only showing a time: a reader given a timestamp
+  // alone treats it as current, which is the thing to avoid.
+  // Local scheduler only reads a cached snapshot; this is not the time
+  // provider usage was collected. Avoid claiming provider freshness.
+  return status.stale ? `Last snapshot check: ${when} (stale)` : `Last snapshot check: ${when}`;
+}
+
+function trayMenuTemplate() {
+  const status = scheduler ? scheduler.status() : null;
+  const updateStatus = updateManager?.status() ?? { state: "disabled", version: null };
+  const offeredVersion = updateStatus.version ? ` (v${updateStatus.version})` : "";
+  const updateRows = [
+    { label: updateStatus.state === "disabled"
+        ? "Updates unavailable (unsigned test build)" : "Check for updates",
+      enabled: updateStatus.state !== "disabled" &&
+        !["checking", "downloading", "installing"].includes(updateStatus.state),
+      click: () => { void updateManager?.check(); } },
+    ...(updateStatus.state === "available" ? [
+      { label: `Download update${offeredVersion}`, click: () => {
+        void updateManager?.download();
+      } },
+    ] : []),
+    ...(updateStatus.state === "ready" ? [
+      { label: `Install update${offeredVersion} and restart...`, click: () => {
+        void updateManager?.install();
+      } },
+    ] : []),
+    ...(["checking", "downloading", "installing"].includes(updateStatus.state)
+      ? [{ label: `Update: ${updateStatus.state}`, enabled: false }] : []),
+    ...(updateStatus.state === "error"
+      ? [{ label: "Update check failed (retry from menu)", enabled: false }] : []),
+  ];
+  const paused = status?.paused ?? false;
+  // Accounts QuotaOps cannot read without a person: a provider verification
+  // challenge or a signed-out profile. Automatic checks are paused for them;
+  // this opens the profile in the normal browser. Nothing is bypassed.
+  const attention = accountsNeedingPerson();
+  const attentionRows = attention.length === 0 ? [] : [
+    { type: "separator" },
+    { label: "Needs your attention", enabled: false },
+    ...attention.map((entry) => ({
+      label: `${entry.status === "login_required" ? "Sign in" : "Manual verification required"}: ` +
+        `${String(entry.label).slice(0, 40)}...`,
+      enabled: !trayCommandPending,
+      // The id makes the menu key differ per account, not just per label.
+      id: `verify-${entry.id}`,
+      click: () => { void runVerifyCommand(entry.id); },
+    })),
+  ];
+
+  return [
+    { label: "Open QuotaOps", click: () => showWindow() },
+    { type: "separator" },
+    {
+      label: trayCommandPending ? "Sending command..." : "Refresh now",
+      enabled: !trayCommandPending && !paused,
+      click: () => {
+        void runTrayCommand("refresh");
+      },
+    },
+    {
+      // Visible browser windows only after the person agrees, every time.
+      label: "Refresh with visible browser...",
+      enabled: !trayCommandPending && !collectorBusy && !visibleConsentOpen && !paused &&
+        collectorSettings.enabledAccounts > 0,
+      click: () => {
+        void runVisibleRefresh();
+      },
+    },
+    {
+      label: paused ? "Resume monitoring" : "Pause monitoring",
+      enabled: !trayCommandPending,
+      click: () => {
+        void runTrayCommand(paused ? "resume" : "pause");
+      },
+    },
+    { type: "separator" },
+    ...(collectorBusy ? [{ label: "Checking accounts now...", enabled: false }] : []),
+    { label: formatLastUpdate(status), enabled: false },
+    ...(trayCommandError ? [{ label: trayCommandError, enabled: false }] : []),
+    {
+      label: paused ? "Monitoring paused" : "Monitoring active",
+      enabled: false,
+    },
+    {
+      label: collectorSettings.background === "off"
+        ? "Background checks: off (refresh manually)"
+        : collectorSettings.background === "hidden"
+          ? "Background checks: on, nothing shown on screen"
+          : "Background checks: headless (Claude may require verification)",
+      enabled: false,
+    },
+    ...attentionRows,
+    { type: "separator" },
+    {
+      label: collectorSettings.tokenAnalyticsOn ? "Token analytics: on (turn off)" : "Turn on token analytics...",
+      enabled: !trayCommandPending,
+      click: () => { void runTokenAnalyticsToggle(); },
+    },
+    { label: "Settings", click: () => showWindow() },
+    { type: "separator" },
+    ...updateRows,
+    {
+      label: "Quit",
+      click: () => {
+        startupMark("tray_quit_requested");
+        quitting = true;
+        scheduler?.cancel();
+        app.quit();
+      },
+    },
+  ];
+}
+
+// The tray ticks every 30 s; building a new native menu each time grew the
+// main process during a 2-hour idle run. Rebuild only when what the menu
+// shows (labels, enabled states, ids) has changed. Click handlers read the
+// same state the labels show, so an unchanged key means unchanged behaviour.
+let lastTrayMenuKey = null;
+function refreshTray() {
+  if (!tray) return;
+  const template = trayMenuTemplate();
+  const key = JSON.stringify(template, (name, value) => (typeof value === "function" ? undefined : value));
+  if (key !== lastTrayMenuKey) {
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    lastTrayMenuKey = key;
+  }
+  const status = scheduler ? scheduler.status() : null;
+  tray.setToolTip(status?.paused ? "QuotaOps (paused)" : "QuotaOps");
+}
+
+function showWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function configureSignedUpdates() {
+  const allowed = validateUpdateGate({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    resourcesPath: process.resourcesPath,
+    policy: UPDATE_POLICY,
+  });
+  if (!allowed) {
+    startupMark("auto_update_disabled_untrusted_build");
+    return;
+  }
+  let updater;
+  try {
+    // Only the Electron main process loads the pinned runtime dependency.
+    // No browser API or collector credential crosses into the updater.
+    ({ autoUpdater: updater } = require("electron-updater"));
+  } catch {
+    startupMark("auto_update_dependency_missing");
+    return;
+  }
+  let lastNotifiedUpdate = null;
+  updateManager = createUpdateManager({
+    updater,
+    onChange: ({ state, version }) => {
+      refreshTray();
+      if (state === "available" && version &&
+          lastNotifiedUpdate !== version && Notification.isSupported()) {
+        lastNotifiedUpdate = version;
+        try {
+          const notice = new Notification({
+            title: "QuotaOps update available",
+            body: `Version ${version} is ready to download from the QuotaOps tray menu.`,
+          });
+          notice.show();
+        } catch {
+          // System notifications are optional; the tray update action stays visible.
+          startupMark("update_notification_unavailable");
+        }
+      }
+    },
+    askInstall: async (version) => {
+      const result = await dialog.showMessageBox({
+        type: "question",
+        buttons: ["Not now", "Install and restart"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: "QuotaOps update",
+        message: `Install QuotaOps ${version ?? "update"}?`,
+        detail: "Monitoring will pause while QuotaOps closes its active browser sessions. Your account configuration and saved sessions are not deleted.",
+      });
+      return result.response === 1;
+    },
+    requestQuitForInstall: () => {
+      installUpdateOnQuit = true;
+      quitting = true;
+      scheduler?.cancel();
+      app.quit();
+    },
+  });
+  updateManager.start();
+  refreshTray();
+}
+
+function createTray() {
+  // The tray build is cropped to the artwork: at 16x16 the logo's transparent
+  // margin costs legibility that the notification area cannot spare.
+  tray = new Tray(TRAY_ICON ?? path.join(__dirname, "icon.ico"));
+  refreshTray();
+  tray.on("click", () => {
+    if (mainWindow?.isVisible()) mainWindow.hide();
+    else showWindow();
+  });
+
+  // The menu shows live state, so it is rebuilt on a slow tick rather than
+  // only when something is clicked.
+  const tick = () => {
+    void Promise.all([refreshAttention(), refreshCollectorSettings()]).finally(refreshTray);
+  };
+  void refreshCollectorSettings().finally(refreshTray);
+  setTimeout(tick, 15_000).unref();
+  setInterval(tick, 30_000).unref();
+}
+
+const firstInstance = app.requestSingleInstanceLock();
+startupMark(firstInstance ? "instance_lock_acquired" : "instance_lock_rejected");
+if (!firstInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => showWindow());
+  app.whenReady().then(() => {
+  startupMark("electron_ready");
+  registerStaticProtocol();
+  hardenSession();
+  // The dashboard's "Turn on token analytics" / "Turn off" button. Same
+  // sender check as the snapshot; exactly one boolean argument; turning on
+  // still needs the person's click in the native consent dialog.
+  ipcMain.handle("quotaops:token-analytics", async (event, enabled) => {
+    if (!isTrustedIpcSender(event, trustedSender)) return { error: "forbidden" };
+    if (typeof enabled !== "boolean") return { error: "invalid" };
+    const result = await setTokenAnalytics(enabled, mainWindow);
+    startupMark(`token_analytics_${result}`);
+    return { status: result };
+  });
+
+  ipcMain.handle("quotaops:snapshot", async (event) => {
+    // Identity comes from Electron, never from a value the renderer sends.
+    // Without this, any frame the renderer can create could reach the
+    // privileged path.
+    if (!isTrustedIpcSender(event, trustedSender)) {
+      return { error: "forbidden" };
+    }
+
+    // One request at a time. A renderer loop would otherwise open a new
+    // collector connection per call.
+    if (inFlightSnapshot) return inFlightSnapshot;
+
+    const now = Date.now();
+    if (now - lastSnapshotAt < MIN_SNAPSHOT_INTERVAL_MS) {
+      return { error: "rate_limited" };
+    }
+    lastSnapshotAt = now;
+
+    const startedGeneration = tokenConsentGeneration;
+    inFlightSnapshot = readSnapshot()
+      .then((rawResult) => {
+        const result = guardTokenSnapshot(rawResult, startedGeneration, tokenConsentGeneration, tokenConsentPending);
+        if (process.env.QUOTAOPS_IPC_TRACE) {
+          // Shape only, never contents: a trace must not become a data leak.
+          const shape = result && result.error
+            ? `error=${result.error}`
+            : `version=${result.version} accounts=${Array.isArray(result.accounts) ? result.accounts.length : "?"}` +
+              ` tokens=${result.tokens ? "present" : "none"}`;
+          process.stdout.write(`[ipc] snapshot -> ${shape}
+`);
+        }
+        return result;
+      })
+      .finally(() => {
+        inFlightSnapshot = null;
+      });
+
+    return inFlightSnapshot;
+  });
+
+  scheduler = new RefreshScheduler({
+    collect: async () => {
+      const result = await readSnapshot();
+      // An error payload is a failed collection, not a successful one that
+      // happens to contain an error: treating it as success would reset the
+      // backoff and mark the data fresh.
+      if (result && result.error) throw new Error(result.error);
+      return result;
+    },
+  });
+
+  startBundledCollector();
+  createWindow();
+  createTray();
+  configureSignedUpdates();
+  startupMark("ui_initialised");
+
+  // Test-only Quit request. Validated disposable homes have an isolated
+  // Electron lock and zero real provider accounts in the smoke fixture.
+  // Ordinary installs and user environments cannot enable this path.
+  if (validatedSmokeHome && process.env.QUOTAOPS_SMOKE_REQUEST_QUIT === "1") {
+    setTimeout(() => {
+      startupMark("smoke_quit_requested");
+      quitting = true;
+      scheduler?.cancel();
+      app.quit();
+    }, 12_000).unref();
+  }
+
+  // Drive the schedule from one timer; the scheduler decides whether a tick
+  // is due, so the interval here is only a resolution, not a policy.
+  setInterval(() => {
+    if (scheduler?.isDue()) void scheduler.refresh().then(refreshTray);
+  }, 15_000).unref();
+
+  // Hiding to tray leaves no window open, which would otherwise quit the app.
+  app.on("window-all-closed", () => {
+    if (quitting) app.quit();
+  });
+  });
+}
+
+// The collector bounds its own shutdown (drain 8 s, hard exit 12 s; see
+// collector/shutdown.ts). This parent deadline is only the backstop for a
+// collector that cannot run its own timers, and must exceed that bound.
+const COLLECTOR_QUIT_DEADLINE_MS = 20_000;
+
+// Acknowledge Quit at once. While the collector closes its browser profile
+// the app must not look as if Quit was ignored (issue #47): hide the window
+// and remove the tray icon immediately, before any waiting.
+function acknowledgeQuit() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  if (tray) {
+    const closingTray = tray;
+    tray = null;
+    // Deferred: Quit is usually invoked from inside this tray's own menu.
+    setImmediate(() => {
+      try { closingTray.destroy(); } catch { /* already destroyed */ }
+    });
+  }
+}
+
+let quitWaitingForCollector = false;
+app.on("before-quit", (event) => {
+  startupMark("before_quit");
+  quitting = true;
+  scheduler?.cancel();
+  updateManager?.stop();
+  acknowledgeQuit();
+  if (!ownedCollector) {
+    if (installUpdateOnQuit) {
+      event.preventDefault();
+      installUpdateOnQuit = false;
+      try { updateManager?.launchInstaller(); }
+      catch { app.quit(); }
+    }
+    return;
+  }
+  event.preventDefault();
+  if (quitWaitingForCollector) return;
+  quitWaitingForCollector = true;
+  const child = ownedCollector;
+  // Give Playwright time to close the active browser normally. Do not hold
+  // Quit indefinitely if a provider has hung.
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(deadline);
+    child.off("exit", finish);
+    startupMark("collector_shutdown_completed");
+    ownedCollector = null;
+    if (installUpdateOnQuit) {
+      installUpdateOnQuit = false;
+      try { updateManager?.launchInstaller(); }
+      catch { app.quit(); }
+    } else {
+      app.quit();
+    }
+  };
+  const deadline = setTimeout(() => {
+    startupMark("collector_shutdown_deadline");
+    // Terminating the utility process also ends its browser children
+    // (verified on Windows: no chrome.exe survives the kill).
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }, COLLECTOR_QUIT_DEADLINE_MS);
+  child.once("exit", finish);
+  try {
+    child.postMessage({ action: "shutdown" });
+    startupMark("collector_shutdown_posted");
+  } catch {
+    try { child.kill(); } catch { /* already exited */ }
+    finish();
+  }
+});
+
+app.on("will-quit", () => startupMark("electron_will_quit"));

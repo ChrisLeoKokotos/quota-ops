@@ -1,0 +1,94 @@
+name: Windows Advisor installed E2E
+# Internal unsigned build on disposable hosted Windows; no artifacts or release.
+on:
+  pull_request:
+    paths:
+      - "lib/smart-advisor.ts"
+      - "components/quota-dashboard.tsx"
+      - "scripts/windows-packaged-startup-smoke.mjs"
+      - "scripts/windows-advisor-uia.ps1"
+      - "scripts/windows-installer-crash-diagnostics.ps1"
+      - "scripts/windows-packaged-tray-quit-e2e.mjs"
+      - "scripts/windows-tray-menu-invoke.ps1"
+      - "scripts/windows-uia-invoke-button.ps1"
+      - "collector/**"
+      - "desktop/electron-ipc/**"
+      - ".github/workflows/windows-advisor-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-advisor-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed:
+    name: Windows unsigned installer and Advisor E2E
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.21.0"
+          cache: npm
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix desktop/electron-ipc --ignore-scripts --no-audit --no-fund
+      - name: Reproduce policy evaluation
+        run: node --experimental-strip-types scripts/evaluate-smart-advisor.mjs
+      - name: Build branded unsigned test installer
+        run: npm run desktop:installer:win
+      - name: Verify crash diagnostic projection
+        shell: pwsh
+        run: ./scripts/windows-installer-crash-diagnostics.ps1 -SelfTest
+      - name: Clean per-user install and verify files
+        id: install
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\QuotaOps'
+          if (Test-Path $app) { throw 'Install directory already exists' }
+          $installer = (Resolve-Path 'release/windows/QuotaOps-Setup-0.2.0-x64.exe').Path
+          "started_utc=$([DateTime]::UtcNow.ToString('o'))" >> $env:GITHUB_OUTPUT
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          "exit_code=$($p.ExitCode)" >> $env:GITHUB_OUTPUT
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          foreach ($file in @('QuotaOps.exe','resources\app.asar','resources\static-dist\index.html')) {
+            $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $app $file)).Hash
+            $built = (Get-FileHash -Algorithm SHA256 (Join-Path 'release/windows/win-unpacked' $file)).Hash
+            if ($actual -ne $built) { throw "Installed file mismatch: $file" }
+          }
+          Get-FileHash -Algorithm SHA256 $installer | Format-List
+      - name: Collect scoped installer crash diagnostics (failure only)
+        if: ${{ failure() && steps.install.outcome == 'failure' && steps.install.outputs.started_utc != '' }}
+        shell: pwsh
+        env:
+          INSTALL_STARTED_UTC: ${{ steps.install.outputs.started_utc }}
+          INSTALL_EXIT_CODE: ${{ steps.install.outputs.exit_code }}
+        run: ./scripts/windows-installer-crash-diagnostics.ps1 -StartedUtc $env:INSTALL_STARTED_UTC -ExitCode $env:INSTALL_EXIT_CODE
+      - name: Installed Advisor renderer E2E (synthetic, no provider credentials)
+        run: node scripts/windows-packaged-startup-smoke.mjs --advisor --installed
+      - name: Installed startup and graceful Quit
+        run: node scripts/windows-packaged-startup-smoke.mjs --quit --installed
+      - name: Installed native tray consent and renderer E2E (synthetic)
+        run: node scripts/windows-packaged-tray-quit-e2e.mjs --scenario token-consent --installed
+      - name: Clean uninstall
+        if: ${{ always() && steps.install.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\QuotaOps'
+          $uninstaller = Join-Path $app 'Uninstall QuotaOps.exe'
+          if (!(Test-Path $uninstaller)) { throw 'Expected uninstaller missing' }
+          $p = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstall failed: $($p.ExitCode)" }
+          if (Test-Path (Join-Path $app 'QuotaOps.exe')) { throw 'Executable remains after uninstall' }

@@ -1,0 +1,36 @@
+name: Privacy history preflight
+# Read-only public-repository inventory; no secrets, uploads or history rewrite.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/privacy-history-preflight.py"
+      - ".github/workflows/privacy-history-preflight.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: privacy-history-preflight-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Privacy history preflight (read-only)
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'integration/v0.2.0-safe-merge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Validate sanitized scanner with synthetic Git history
+        run: python3 scripts/privacy-history-preflight.py --self-test
+      - name: Inspect advertised Git refs and reachable objects
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/privacy-history-preflight.py --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE"

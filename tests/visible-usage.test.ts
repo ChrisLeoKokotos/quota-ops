@@ -1,0 +1,168 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { parseVisibleClaudeUsagePanel, selectClaudeUsageSource } from "../collector/visible-usage.ts";
+
+const observedPanel = `Your usage limits Team
+Current session
+Resets in 4 hr 4 min
+100% used
+Weekly limits
+Learn more about usage limits
+All models
+Resets Fri 11:00 PM
+100% used
+Limit resets
+Full reset
+Expires Oct 22
+`;
+
+test("accepts the actual labelled Claude Team Usage layout without inventing resets", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(observedPanel), {
+    fiveHour: { usedPercent: 100, resetAt: null },
+    weekly: { usedPercent: 100, resetAt: null },
+  });
+});
+
+test("reads exact 0% and fractional percentages only when both sections are labelled", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(observedPanel
+    .replace("100% used", "0% used")
+    .replace("Resets Fri 11:00 PM\n100% used", "Resets Fri 11:00 PM\n42.5% used")), {
+    fiveHour: { usedPercent: 0, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+});
+
+test("rejects incomplete login pages and unrelated progress counters", () => {
+  assert.equal(parseVisibleClaudeUsagePanel("Login to Claude\n100% used"), null);
+  assert.equal(parseVisibleClaudeUsagePanel("Your usage limits Team\nCurrent session\n100% used"), null);
+  assert.equal(parseVisibleClaudeUsagePanel(null), null);
+});
+
+test("rejects missing usage windows, duplicate values and invalid percentages", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel.replace("Weekly limits", "Other limits")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel.replace("All models", "Another model")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel.replace("Current session", "Current session\n99% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel.replace("100% used", "101% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel.replace("100% used", "-1% used")), null);
+});
+
+test("does not borrow a percentage from a different weekly model or reset panel", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(
+    observedPanel.replace("All models\nResets Fri 11:00 PM\n100% used", "All models\nResets Fri 11:00 PM")),
+    null);
+});
+
+test("rejects excessive input rather than scanning arbitrary private page text", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(observedPanel + "x".repeat(4096)), null);
+});
+
+
+// Anthropic's 2026 Help Center now calls the section "Plan usage limits"
+// and documents "Usage credits" immediately below it.
+const planUsagePanel = `Plan usage limits
+Current session
+Resets in 2 hr 12 min
+25% used
+Weekly limits
+All models
+Resets Fri 11:00 PM
+42.5% used
+Usage credits
+`;
+
+test("accepts Plan usage limits followed by Usage credits as the visible section boundary", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(planUsagePanel), {
+    fiveHour: { usedPercent: 25, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+});
+
+test("new section heading still refuses missing or ambiguous percentages", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("25% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("42.5% used", "42.5% used\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("All models", "Other models")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(planUsagePanel.replace("Usage credits", "")), null);
+});
+
+// The current combined-weekly layout, with synthetic percentages rather
+// than live account usage. The title might not be visible above this widget.
+const combinedWeeklyLayout = `Current session
+Starts with your first message
+0% used
+Weekly limit · All models
+Resets next week
+42.5% used
+Limit resets
+`;
+
+test("accepts combined weekly quota and exact 0% current session usage", () => {
+  assert.deepEqual(parseVisibleClaudeUsagePanel(combinedWeeklyLayout), {
+    fiveHour: { usedPercent: 0, resetAt: null },
+    weekly: { usedPercent: 42.5, resetAt: null },
+  });
+  assert.deepEqual(
+    parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · All models ›")),
+    { fiveHour: { usedPercent: 0, resetAt: null }, weekly: { usedPercent: 42.5, resetAt: null } },
+  );
+});
+
+test("combined weekly layout fails closed on missing, extra or misplaced quota values", () => {
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("42.5% used", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("0% used", "0% used\n50% used")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Weekly limit · All models", "Weekly limit · Sonnet")), null);
+  assert.equal(parseVisibleClaudeUsagePanel(combinedWeeklyLayout.replace("Limit resets", "")), null);
+  assert.equal(parseVisibleClaudeUsagePanel("Verify you are human\nCurrent session\n0% used\nWeekly limit · All models\n42.5% used\nLimit resets"), null);
+});
+
+test("uses API data without attempting a DOM fallback", async () => {
+  const api = parseVisibleClaudeUsagePanel(observedPanel);
+  assert.ok(api);
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(api, null, async () => {
+    reads++;
+    return null;
+  });
+  assert.equal(selected.source, "api");
+  assert.deepEqual(selected.usage, api);
+  assert.equal(reads, 0);
+});
+
+test("uses a strict visible panel only if the expected API was not observed", async () => {
+  const panel = parseVisibleClaudeUsagePanel(observedPanel);
+  assert.ok(panel);
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(
+    null, "claude_page_api_not_observed", async () => {
+      reads++;
+      return panel;
+    },
+  );
+  assert.equal(selected.source, "visible");
+  assert.deepEqual(selected.usage, panel);
+  assert.equal(reads, 1);
+});
+
+test("an ambiguous API organization never triggers a fallback to possibly wrong quota", async () => {
+  let reads = 0;
+  const selected = await selectClaudeUsageSource(
+    null, "usage_org_ambiguous", async () => {
+      reads++;
+      return parseVisibleClaudeUsagePanel(observedPanel);
+    },
+  );
+  assert.deepEqual(selected, { usage: null, source: null });
+  assert.equal(reads, 0);
+});
+
+test("an invalid or failed visible page remains unknown, never 0%", async () => {
+  const invalid = await selectClaudeUsageSource(
+    null, "claude_page_api_not_observed", async () => null,
+  );
+  assert.deepEqual(invalid, { usage: null, source: null });
+  const failed = await selectClaudeUsageSource(
+    null, "usage_response_not_observed", async () => {
+      throw new Error("simulated browser failure");
+    },
+  );
+  assert.deepEqual(failed, { usage: null, source: null });
+});

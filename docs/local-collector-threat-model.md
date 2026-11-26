@@ -16,18 +16,20 @@ The collector treats the following as sensitive:
 - provider cookies and local session state inside those profiles;
 - the local collector API token;
 - collector configuration;
-- normalized usage and reset metadata.
+- normalized usage and reset metadata;
+- sanitized Google statusLine files, hashed session watermarks and consented numeric token totals.
 
 ## Trust boundaries
 
-1. **AI providers** — remote Claude / Anthropic and OpenAI / ChatGPT content and usage responses.
-2. **Isolated browser profile** — provider-authenticated local session.
-3. **Collector process** — parses only quota metadata.
-4. **Loopback API** — authenticated local transport on `127.0.0.1:4317`.
-5. **Next.js server** — reads the local collector token and proxies normalized snapshots.
-6. **Browser UI** — receives normalized quota data only.
+1. **AI providers** — remote Claude / OpenAI quota responses; the user-operated, authenticated Google Antigravity CLI.
+2. **Provider sessions** — isolated Claude/OpenAI browser profiles; Google's own authenticated CLI context.
+3. **Local Google statusLine hook** — a user-configured CLI command receiving untrusted JSON on stdin and writing sanitized, per-account files. It does not authenticate the Google identity or capture credentials.
+4. **Collector process** — validates provider state and aggregates consented numeric token observations.
+5. **Loopback API** — authenticated local transport on `127.0.0.1:4317`.
+6. **Dashboard server** — keeps the local bearer token server-side and proxies normalized snapshots.
+7. **Browser UI** — receives normalized quota/token aggregates only.
 
-Provider credentials must not cross from boundary 2 into boundaries 4–6.
+Credentials must never cross the provider-session boundary into stored snapshots, the collector API or the UI. The Google hook's account ID is a local label and must not be treated as a verified Google account identity.
 
 ## Threats and mitigations
 
@@ -88,6 +90,19 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 - schema parsing is narrow;
 - unrecognized formats fail as `unsupported`.
 
+### Google statusLine event injection and privacy
+
+**Threat:** local input forged as an Antigravity statusLine event, a wrong Google CLI identity associated with an account label, maliciously large payloads, unsafe local files, or collection of numeric token history without consent.
+
+**Mitigations and limitations:**
+
+- The hook requires a configured, enabled Google account ID and reads bounded stdin; unknown payload shapes and quotas outside accepted numeric ranges are rejected.
+- Quota buckets use fractional remaining capacity only; unknown resets and events older than 15 minutes are not advertised as fresh.
+- The raw payload (including email, prompts, workspace/transcript paths and authentication material) is not retained; only allowlisted quota fields and optional numeric counters enter per-account sanitized state.
+- Google numeric Token Analytics is separately default-off and must be enabled **before** the event. Disabling stops new counters but does not erase prior observations; local deletion steps are in `PRIVACY.md`.
+- The local files use bounded, atomic updates and reject symlinked/special target paths; protection from code running as the **same OS user** is not guaranteed. Account identity is not cryptographically attested.
+- The hook is event-driven and cannot poll an inactive/closed CLI. The packaged-runtime setup and real authenticated account flow require owner verification.
+
 ### Browser compromise surface
 
 **Threat:** provider content exploits the automation browser or a browser extension changes behavior.
@@ -98,7 +113,7 @@ Provider credentials must not cross from boundary 2 into boundaries 4–6.
 - Chromium sandbox is enabled for Playwright-launched non-Windows fallback collection;
 - extensions are disabled for collector profiles;
 - provider login remains interactive and provider-controlled;
-- scheduled Windows collection uses the installed Chrome / Edge browser in hidden/headless mode with an ephemeral DevTools endpoint bound only to `127.0.0.1`.
+- scheduled Claude collection uses Playwright private browser transport without a remote-debugging TCP listener. Real Windows E2E verification is still required.
 
 Users should keep Windows and Chrome / Edge fully updated.
 
@@ -148,6 +163,8 @@ The collector should not be described as fully production-ready until all of the
 - one real Claude account passes end-to-end collection (completed on Windows);
 - five isolated Claude profiles pass same-PC collection (completed on Windows);
 - one real OpenAI / ChatGPT Codex account passes end-to-end collection;
+- an authenticated Antigravity CLI hook is verified with the intended real Google identity, on supported Windows installation paths;
+- Google statusLine quota freshness and consent revocation are verified on the packaged Windows build;
 - hidden scheduled refresh behavior is verified over repeated cycles;
 - session-expiry behavior is verified;
 - token rotation is verified;

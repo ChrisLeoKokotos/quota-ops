@@ -1,4 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm, rmdir } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import {
@@ -13,6 +16,7 @@ import type { Provider } from "../lib/quota.ts";
 import type {
   CollectorAccountConfig,
   CollectorConfig,
+  TokenAnalyticsConsent,
 } from "./types.ts";
 
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -21,9 +25,24 @@ export function createDefaultCollectorConfig(): CollectorConfig {
   return {
     version: 1,
     port: 4317,
-    pollIntervalSeconds: 300,
+    // 15 minutes: each check runs a full browser per account; usage windows
+    // are hours long, so fresher reads cost resources without adding value.
+    pollIntervalSeconds: 900,
+    tokenAnalyticsEnabled: false,
+    tokenAnalyticsSources: { claudeCode: false, codex: false },
     accounts: [],
   };
+}
+
+function isConsent(value: unknown): value is TokenAnalyticsConsent {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<TokenAnalyticsConsent>;
+
+  return (
+    typeof candidate.claudeCode === "boolean" &&
+    typeof candidate.codex === "boolean" &&
+    (candidate.googleAntigravity === undefined || typeof candidate.googleAntigravity === "boolean")
+  );
 }
 
 function isAccountConfig(value: unknown): value is CollectorAccountConfig {
@@ -35,7 +54,7 @@ function isAccountConfig(value: unknown): value is CollectorAccountConfig {
     ACCOUNT_ID.test(candidate.id) &&
     typeof candidate.label === "string" &&
     candidate.label.trim().length > 0 &&
-    (candidate.provider === "claude" || candidate.provider === "openai") &&
+    (candidate.provider === "claude" || candidate.provider === "openai" || candidate.provider === "google") &&
     typeof candidate.profileDir === "string" &&
     candidate.profileDir.trim().length > 0 &&
     typeof candidate.enabled === "boolean"
@@ -52,12 +71,40 @@ function isCollectorConfig(value: unknown): value is CollectorConfig {
     typeof candidate.pollIntervalSeconds === "number" &&
     Number.isFinite(candidate.pollIntervalSeconds) &&
     candidate.pollIntervalSeconds >= 30 &&
+    typeof candidate.tokenAnalyticsEnabled === "boolean" &&
+    isConsent(candidate.tokenAnalyticsSources) &&
+    // The master switch may never imply consent the user has not given.
+    (!candidate.tokenAnalyticsEnabled ||
+      candidate.tokenAnalyticsSources.claudeCode ||
+      candidate.tokenAnalyticsSources.codex ||
+      candidate.tokenAnalyticsSources.googleAntigravity === true) &&
+    (candidate.tokenConsentRevision === undefined ||
+      (typeof candidate.tokenConsentRevision === "string" && /^[a-f0-9-]{36}$/.test(candidate.tokenConsentRevision))) &&
+    (candidate.googleTokenConsentEpoch === undefined ||
+      (typeof candidate.googleTokenConsentEpoch === "string" && /^[a-f0-9-]{36}$/.test(candidate.googleTokenConsentEpoch))) &&
     Array.isArray(candidate.accounts) &&
-    candidate.accounts.every(isAccountConfig)
+    candidate.accounts.every(isAccountConfig) &&
+    (candidate.backgroundCollection === undefined ||
+      candidate.backgroundCollection === "hidden" ||
+      candidate.backgroundCollection === "headless" ||
+      candidate.backgroundCollection === "off")
   );
 }
 
-export async function saveCollectorConfig(
+/**
+ * Converts a pre-consent configuration. A user who had already enabled
+ * scanning keeps it for both sources rather than silently losing data; a user
+ * who had not stays opted out of both.
+ */
+export function migrateConsent(record: Record<string, unknown>): TokenAnalyticsConsent {
+  const existing = record.tokenAnalyticsSources;
+  if (isConsent(existing)) return existing;
+
+  const legacy = record.tokenAnalyticsEnabled === true;
+  return { claudeCode: legacy, codex: legacy };
+}
+
+async function writeCollectorConfigLocked(
   config: CollectorConfig,
 ): Promise<void> {
   await ensureCollectorHomeSecurity();
@@ -72,13 +119,16 @@ export async function saveCollectorConfig(
 
   const path = getCollectorConfigPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, JSON.stringify(config, null, 2) + "\n", {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+  const temporary = path + "." + randomUUID() + ".tmp";
+  try {
+    await writeFile(temporary, JSON.stringify(config, null, 2) + "\n", {
+      encoding: "utf8", mode: 0o600, flag: "wx",
+    });
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }).catch(() => undefined); }
 }
 
-export async function loadCollectorConfig(): Promise<CollectorConfig> {
+async function readCollectorConfigLocked(): Promise<CollectorConfig> {
   await ensureCollectorHomeSecurity();
   const path = getCollectorConfigPath();
 
@@ -99,7 +149,13 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
         })
       : parsedRecord?.accounts;
     const parsed = parsedRecord
-      ? { ...parsedRecord, accounts: accountsRaw }
+      ? {
+          ...parsedRecord,
+          accounts: accountsRaw,
+          // Existing installations migrate safely: history scanning becomes opt-in.
+          tokenAnalyticsEnabled: parsedRecord.tokenAnalyticsEnabled ?? false,
+          tokenAnalyticsSources: migrateConsent(parsedRecord),
+        }
       : parsedRaw;
 
     if (!isCollectorConfig(parsed)) {
@@ -116,9 +172,80 @@ export async function loadCollectorConfig(): Promise<CollectorConfig> {
     if (nodeError.code !== "ENOENT") throw error;
 
     const config = createDefaultCollectorConfig();
-    await saveCollectorConfig(config);
+    await writeCollectorConfigLocked(config);
     return config;
   }
+}
+
+/**
+ * Retry transient EBUSY on the same empty lock directory. Never remove
+ * recursively or recover a different owner. Persistent failures propagate.
+ */
+export async function releaseCollectorConfigLock(
+  lock: string,
+  remove: (path: string) => Promise<void> = rmdir,
+  pause: (ms: number) => Promise<unknown> = delay,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await remove(lock);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt >= 5) throw error;
+      await pause(50);
+    }
+  }
+}
+
+/** All supported writers and sensitive publication paths use this same lock.
+ * A crashed owner leaves a lock directory: never guess that it is stale.
+ * Stop every QuotaOps/CLI/hook process before manually removing it.
+ * Callbacks must not call load/update/withCollectorConfig recursively.
+ */
+export async function withCollectorConfig<T>(
+  action: (current: CollectorConfig) => Promise<T> | T,
+): Promise<T> {
+  await ensureCollectorHomeSecurity();
+  const lock = getCollectorConfigPath() + ".lock";
+  const deadline = performance.now() + 1500;
+  for (;;) {
+    try {
+      await mkdir(lock, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (performance.now() >= deadline) throw new Error("Collector configuration lock busy; retry after the active operation finishes.");
+      await delay(25);
+    }
+  }
+  try {
+    return await action(await readCollectorConfigLocked());
+  } finally {
+    await releaseCollectorConfigLock(lock);
+  }
+}
+
+export function loadCollectorConfig(): Promise<CollectorConfig> {
+  return withCollectorConfig(current => current);
+}
+
+/** Mutate the latest configuration inside the lock, never a stale copy. */
+export function updateCollectorConfig(
+  mutate: (current: CollectorConfig) => CollectorConfig | Promise<CollectorConfig>,
+): Promise<CollectorConfig> {
+  return withCollectorConfig(async current => {
+    const next = await mutate(current);
+    await writeCollectorConfigLocked(next);
+    return next;
+  });
+}
+
+export function tokenConsentKey(c: CollectorConfig): string {
+  return JSON.stringify([
+    c.tokenAnalyticsEnabled, c.tokenAnalyticsSources.claudeCode, c.tokenAnalyticsSources.codex,
+    c.tokenAnalyticsSources.googleAntigravity === true, c.googleTokenConsentEpoch ?? null,
+    c.tokenConsentRevision ?? null,
+  ]);
 }
 
 export function createAccountConfig(
@@ -149,20 +276,12 @@ export function createAccountConfig(
 }
 
 export async function bootstrapFiveAccounts(): Promise<CollectorConfig> {
-  let config = await loadCollectorConfig();
-
-  for (let index = 1; index <= 5; index += 1) {
-    const id = `dev-${index}`;
-    if (config.accounts.some((account) => account.id === id)) continue;
-
-    const account = createAccountConfig(id, `Dev ${index}`);
-    await assertSafeProfileDirectory(account.profileDir);
-    config = {
-      ...config,
-      accounts: [...config.accounts, account],
-    };
-  }
-
-  await saveCollectorConfig(config);
-  return config;
+  return updateCollectorConfig(config => {
+    const accounts = [...config.accounts];
+    for (let index = 1; index <= 5; index += 1) {
+      const id = `dev-${index}`;
+      if (!accounts.some(account => account.id === id)) accounts.push(createAccountConfig(id, `Dev ${index}`));
+    }
+    return { ...config, accounts };
+  });
 }

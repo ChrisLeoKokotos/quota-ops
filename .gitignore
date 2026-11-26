@@ -43,6 +43,7 @@ tmp/
 # Node / Next.js
 node_modules/
 .next/
+*.tsbuildinfo
 .npm/
 .pnpm-store/
 .yarn/cache/
@@ -67,3 +68,28 @@ Thumbs.db
 
 # Local QuotaOps collector state
 .quotaops/
+
+# Rust build output for the desktop proof of concept
+desktop/tauri/target/
+
+# Desktop static export output
+desktop/static-dist/
+.next-static/
+
+# Unsigned local test installers and unpacked packaged Electron artifacts.
+# Never commit output binaries or installer caches to source control.
+/release/
+/desktop/electron-ipc/dist/
+/desktop/electron-ipc/node_modules/
+
+# Generated Windows icon; do not overwrite the existing tray artwork.
+/desktop/installer-icon.ico
+
+# Staged static-export bundles and preserved rollback copies. The tool keeps
+# them only when interrupted or unable to remove an old locked backup.
+/desktop/.quotaops-static-stage-*
+
+# Branded icons staged into the app directory by the installer build.
+# desktop/branding/ is the committed source of truth.
+desktop/electron-ipc/quotaops-icon.ico
+desktop/electron-ipc/quotaops-tray.ico

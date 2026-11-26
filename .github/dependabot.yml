@@ -6,6 +6,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # init and analyze must move together: a workflow that mixes CodeQL
+    # action versions fails with a configuration mismatch, not a finding.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
     labels:
       - "dependencies"
       - "security"

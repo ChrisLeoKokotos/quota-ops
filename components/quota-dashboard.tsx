@@ -6,13 +6,20 @@ import {
   clampPercent,
   formatCountdown,
   getAccountStatus,
-  getRecommendedAccount,
   getWindowState,
   providerLabel,
   type AccountStatus,
   type QuotaAccount,
+  type Provider,
   type QuotaWindow,
 } from "@/lib/quota";
+import { adviseAccounts, recordAdvisorHistory, TASKS, type AdvisorTask, type AdvisorHistory } from "@/lib/smart-advisor";
+import { applyAccountEdit } from "@/lib/account-observation";
+import {
+  createGoogleModelGroupWindows,
+  hasGoogleModelGroup,
+  normalizeGoogleModelGroup,
+} from "@/lib/google-manual";
 
 import {
   getDueResetEvents,
@@ -20,8 +27,14 @@ import {
 } from "@/lib/reset-notifications";
 import {
   fetchCollectorSnapshot,
+  type CollectorAccountResult,
   type CollectorConnectionState,
 } from "@/lib/collector-client";
+import {
+  canSwitchTokenAnalytics,
+  getDesktopBridge,
+  requestTokenAnalytics,
+} from "@/lib/collector-transport";
 import {
   parseVoiceUsageCommand,
   voiceWindowLabel,
@@ -29,8 +42,13 @@ import {
 import {
   formatTokenCount,
   summarizeTokenRange,
+  tokenPanelState,
   type TokenAnalyticsSnapshot,
+  type TokenPanelState,
   type TokenRange,
+  type TokenScanStatus,
+  type TokenSourceStatus,
+  type TokenTotals,
 } from "@/lib/token-analytics";
 
 const STORAGE_KEY = "quotaops:accounts:v2";
@@ -38,6 +56,17 @@ const THEME_KEY = "quotaops:theme";
 const NOTIFICATIONS_KEY = "quotaops:notifications";
 const SEEN_RESETS_KEY = "quotaops:seen-resets";
 const SIDEBAR_KEY = "quotaops:sidebar-open";
+
+// Collector per-account states shown to a person. A challenge is resolved by
+// the person in the account's own profile (tray: Manual verification
+// required), never by QuotaOps.
+const COLLECTOR_ISSUE_LABELS: Record<string, string> = {
+  configured: "Not checked yet",
+  verification_required: "Manual verification required",
+  login_required: "Sign-in required",
+  unsupported: "Provider usage format unsupported",
+  unavailable: "Collector data unavailable",
+};
 
 type Theme = "light" | "dark";
 type Toast = { id: string; message: string };
@@ -201,7 +230,7 @@ function normalizeStoredAccount(value: unknown): QuotaAccount | null {
     typeof candidate.id !== "string" ||
     typeof candidate.label !== "string" ||
     (candidate.email !== undefined && typeof candidate.email !== "string") ||
-    (candidate.provider !== "claude" && candidate.provider !== "openai") ||
+    (candidate.provider !== "claude" && candidate.provider !== "openai" && candidate.provider !== "google") ||
     typeof candidate.updatedAt !== "string"
   ) {
     return null;
@@ -273,7 +302,9 @@ function normalizeStoredAccount(value: unknown): QuotaAccount | null {
         ? candidate.plan
         : candidate.provider === "claude"
           ? "Team"
-          : "ChatGPT",
+          : candidate.provider === "google"
+            ? "Antigravity"
+            : "ChatGPT",
     windows,
     updatedAt: candidate.updatedAt,
     ...(source ? { source } : {}),
@@ -482,20 +513,73 @@ function QuotaRow({
   );
 }
 
+/** What the person can do about a collector state, in this app or the dev dashboard. */
+function collectorStateAction(state: CollectorAccountResult): string | null {
+  const inDesktopApp = getDesktopBridge() !== null;
+  if (state.status === "verification_required" || state.status === "login_required") {
+    const item = state.status === "login_required" ? "Sign in" : "Manual verification required";
+    return inDesktopApp
+      ? `Open the QuotaOps tray menu and choose "${item}: ${state.label.slice(0, 40)}...". Complete the check in the window that opens, then close it.`
+      : `Run: npm run collector:setup -- login ${state.id} and complete the check in the window that opens.`;
+  }
+  if (state.status === "configured") return "QuotaOps checks it automatically shortly after start.";
+  if (state.status === "unavailable") return "Make sure Google Chrome or Microsoft Edge is installed; QuotaOps retries on its next check.";
+  return null;
+}
+
+function lastSuccessCopy(state: CollectorAccountResult): string {
+  return state.lastSuccessAt
+    ? `Last successful sync ${formatUpdatedAt(state.lastSuccessAt)}`
+    : "Never successfully synced";
+}
+
+/**
+ * A configured account the collector could not read (yet). Shows its state
+ * and what to do; never a percentage, because there is no reading to show.
+ */
+function CollectorStatusCard({ state }: { state: CollectorAccountResult }) {
+  const action = collectorStateAction(state);
+  return (
+    <article className="account-card" data-status="needs_setup" data-collector-state={state.status}>
+      <header className="account-header">
+        <div>
+          <div className="account-name-row">
+            <h2>{state.label}</h2>
+          </div>
+          <p>Auto-sync · {lastSuccessCopy(state)}</p>
+        </div>
+        <span className="status-badge" data-status="needs_setup">
+          <span className="status-dot" aria-hidden="true" />
+          {COLLECTOR_ISSUE_LABELS[state.status] ?? state.status}
+        </span>
+      </header>
+      <div className="quota-list">
+        <p>No usage to show: QuotaOps has no reading for this account{state.lastSuccessAt ? " in this session" : " yet"}.</p>
+        {action ? <p>{action}</p> : null}
+      </div>
+    </article>
+  );
+}
+
 function AccountCard({
   account,
   nowMs,
   recommended,
   onChange,
   onDelete,
+  collectorState,
 }: {
   account: QuotaAccount;
   nowMs: number;
   recommended: boolean;
   onChange: (next: QuotaAccount) => void;
   onDelete: () => void;
+  /** Latest collector state when it is not a fresh reading. */
+  collectorState?: CollectorAccountResult | undefined;
 }) {
   const status = getAccountStatus(account, nowMs);
+  const [newGoogleGroup, setNewGoogleGroup] = useState("");
+  const [googleGroupError, setGoogleGroupError] = useState("");
 
   const updateWindow = (windowId: string, nextWindow: QuotaWindow) => {
     onChange({
@@ -513,12 +597,17 @@ function AccountCard({
         <div>
           <div className="account-name-row">
             <h2>{account.label}</h2>
-            {recommended ? <span className="recommended">Best capacity</span> : null}
+            {recommended ? <span className="recommended">Recommended</span> : null}
           </div>
           <p>
             {providerLabel(account.provider)} {account.plan} · {account.source === "collector" ? "auto-synced" : "manual"} · updated {formatUpdatedAt(account.updatedAt)}
           </p>
           {account.email ? <p>{account.email}</p> : null}
+          {collectorState ? (
+            <p data-collector-state={collectorState.status}>
+              Latest check: {COLLECTOR_ISSUE_LABELS[collectorState.status] ?? collectorState.status} · showing last known values from {formatUpdatedAt(account.updatedAt)}
+            </p>
+          ) : null}
         </div>
 
         <span className="status-badge" data-status={status}>
@@ -539,6 +628,45 @@ function AccountCard({
           />
         ))}
       </div>
+
+      {account.provider === "google" && account.source !== "collector" ? (
+        <form className="form-section" onSubmit={(event) => {
+          event.preventDefault();
+          const group = normalizeGoogleModelGroup(newGoogleGroup);
+          if (!group) {
+            setGoogleGroupError("Enter a model-group name (up to 60 characters).");
+            return;
+          }
+          if (hasGoogleModelGroup(account.windows, group)) {
+            setGoogleGroupError("This model group is already tracked.");
+            return;
+          }
+          onChange({
+            ...account,
+            windows: [...account.windows, ...createGoogleModelGroupWindows(group, 0, null, 0, null)],
+            updatedAt: new Date().toISOString(),
+          });
+          setNewGoogleGroup("");
+          setGoogleGroupError("");
+        }}>
+          <label>
+            Track another Antigravity model group (manual)
+            <input
+              aria-label="New Antigravity model group"
+              maxLength={60}
+              placeholder="Gemini Flash"
+              required
+              value={newGoogleGroup}
+              onChange={(event) => {
+                setNewGoogleGroup(event.target.value);
+                setGoogleGroupError("");
+              }}
+            />
+          </label>
+          {googleGroupError ? <span role="alert">{googleGroupError}</span> : null}
+          <button className="secondary-button" type="submit">Add model group</button>
+        </form>
+      ) : null}
 
       <details className="account-editor">
         <summary>Account details</summary>
@@ -606,7 +734,8 @@ function AddAccountDialog({
   onAdd: (account: QuotaAccount) => void;
 }) {
   const [label, setLabel] = useState("");
-  const [provider, setProvider] = useState<"claude" | "openai">("claude");
+  const [provider, setProvider] = useState<"claude" | "openai" | "google">("claude");
+  const [googleModelGroup, setGoogleModelGroup] = useState("Gemini Pro");
   const [fiveHourUsed, setFiveHourUsed] = useState("0");
   const [fiveHourReset, setFiveHourReset] = useState("");
   const [weeklyUsed, setWeeklyUsed] = useState("0");
@@ -616,6 +745,7 @@ function AddAccountDialog({
     if (!open) return;
     setLabel("");
     setProvider("claude");
+    setGoogleModelGroup("Gemini Pro");
     setFiveHourUsed("0");
     setFiveHourReset("");
     setWeeklyUsed("0");
@@ -628,14 +758,23 @@ function AddAccountDialog({
     event.preventDefault();
     const trimmedLabel = label.trim();
     if (!trimmedLabel) return;
+    const modelGroup = provider === "google" ? normalizeGoogleModelGroup(googleModelGroup) : null;
+    if (provider === "google" && !modelGroup) return;
 
     const now = new Date().toISOString();
     onAdd({
       id: globalThis.crypto?.randomUUID?.() ?? `account-${Date.now()}`,
       label: trimmedLabel,
       provider,
-      plan: provider === "claude" ? "Team" : "ChatGPT",
-      windows: [
+      plan: provider === "claude" ? "Team" : provider === "google" ? "Antigravity" : "ChatGPT",
+      ...(provider === "google" ? { source: "manual" as const } : {}),
+      windows: provider === "google" && modelGroup
+        ? createGoogleModelGroupWindows(
+            modelGroup,
+            Number(fiveHourUsed), localInputToIso(fiveHourReset),
+            Number(weeklyUsed), localInputToIso(weeklyReset),
+          )
+        : [
         {
           id: "five-hour",
           label: "5-hour",
@@ -679,11 +818,12 @@ function AddAccountDialog({
             <select
               value={provider}
               onChange={(event) =>
-                setProvider(event.target.value === "openai" ? "openai" : "claude")
+                setProvider(event.target.value === "google" ? "google" : event.target.value === "openai" ? "openai" : "claude")
               }
             >
               <option value="claude">Claude</option>
               <option value="openai">OpenAI / Codex</option>
+              <option value="google">Google / Antigravity (manual)</option>
             </select>
           </label>
 
@@ -692,15 +832,35 @@ function AddAccountDialog({
             <input
               autoFocus
               maxLength={40}
-              placeholder={provider === "claude" ? "Dev 1" : "OpenAI 1"}
+              placeholder={provider === "claude" ? "Dev 1" : provider === "google" ? "Google AI Pro" : "OpenAI 1"}
               required
               value={label}
               onChange={(event) => setLabel(event.target.value)}
             />
           </label>
 
+          {provider === "google" ? (
+            <>
+              <label>
+                Antigravity model group
+                <input
+                  required
+                  maxLength={60}
+                  placeholder="Gemini Pro"
+                  value={googleModelGroup}
+                  onChange={(event) => setGoogleModelGroup(event.target.value)}
+                />
+              </label>
+              <p>
+                Manual values only. Open Antigravity CLI /usage and enter the used
+                percentage (100 minus the remaining percentage) and reset time
+                for this model group. QuotaOps does not access Google sessions.
+              </p>
+            </>
+          ) : null}
+
           <div className="form-section">
-            <span>5-hour window</span>
+            <span>{provider === "google" ? "Model-group 5-hour window" : "5-hour window"}</span>
             <div className="form-grid">
               <label>
                 Usage %
@@ -725,7 +885,7 @@ function AddAccountDialog({
           </div>
 
           <div className="form-section">
-            <span>Weekly window</span>
+            <span>{provider === "google" ? "Model-group weekly window" : "Weekly window"}</span>
             <div className="form-grid">
               <label>
                 Usage %
@@ -763,26 +923,96 @@ function AddAccountDialog({
   );
 }
 
+const TOKEN_STATE_LABELS: Record<TokenPanelState, string> = {
+  checking: "Connecting",
+  offline: "Collector offline",
+  disabled: "Off",
+  scanning: "Scanning",
+  unavailable: "Unavailable",
+  partial: "Partial: still reading older files",
+  complete: "Complete",
+  zero: "No usage found",
+};
+
+const TOKEN_SOURCES: Array<{ source: TokenSourceStatus["source"]; provider: Provider; label: string }> = [
+  { source: "claude-code", provider: "claude", label: "Claude Code" },
+  { source: "codex", provider: "openai", label: "Codex" },
+  { source: "google-antigravity", provider: "google", label: "Antigravity" },
+];
+
+function exactTokens(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function sourceStateLabel(source: TokenSourceStatus | undefined): string {
+  if (!source) return "Not reported";
+  switch (source.state) {
+    case "ok":
+      return `Complete · ${source.files} file${source.files === 1 ? "" : "s"}`;
+    case "partial":
+      return "Partial";
+    case "disabled":
+      return "Off";
+    default:
+      return "No history found";
+  }
+}
+
+function TokenBreakdown({ totals }: { totals: TokenTotals }) {
+  return (
+    <div className="token-breakdown">
+      <div>
+        <span>Input</span>
+        <strong>{formatTokenCount(totals.inputTokens)}</strong>
+      </div>
+      <div>
+        <span>Output</span>
+        <strong>{formatTokenCount(totals.outputTokens)}</strong>
+      </div>
+      <div>
+        <span>Cache read</span>
+        <strong>{formatTokenCount(totals.cacheReadTokens)}</strong>
+      </div>
+      <div>
+        <span>Cache write</span>
+        <strong>{formatTokenCount(totals.cacheWriteTokens)}</strong>
+      </div>
+    </div>
+  );
+}
+
 function TokenAnalyticsPanel({
   analytics,
+  status,
   range,
   nowMs,
   onRangeChange,
+  collectorState,
+  canSwitch,
+  switching,
+  onSwitch,
 }: {
   analytics: TokenAnalyticsSnapshot | null;
+  status: TokenScanStatus | null;
   range: TokenRange;
   nowMs: number;
   onRangeChange: (range: TokenRange) => void;
+  collectorState: CollectorConnectionState;
+  /** Desktop app: the dashboard can ask to switch token analytics. */
+  canSwitch: boolean;
+  switching: boolean;
+  onSwitch: (enabled: boolean) => void;
 }) {
-  const summary = analytics
-    ? summarizeTokenRange(analytics, range, nowMs)
-    : null;
+  const state = tokenPanelState(analytics, status, collectorState);
+  const summary = analytics ? summarizeTokenRange(analytics, range, nowMs) : null;
   const ranges: Array<{ id: TokenRange; label: string }> = [
     { id: "today", label: "Today" },
     { id: "7d", label: "7 days" },
     { id: "30d", label: "30 days" },
     { id: "all", label: "All time" },
   ];
+  const accounts = analytics?.accounts ?? [];
+  const attributed = accounts.filter((item) => item.account !== null);
 
   return (
     <section className="token-panel" aria-labelledby="token-analytics-title">
@@ -791,89 +1021,164 @@ function TokenAnalyticsPanel({
           <span className="page-kicker">Token analytics</span>
           <h2 id="token-analytics-title">Locally observed work</h2>
           <p>
-            Numeric usage only from local Claude Code and Codex session logs.
-            Prompts and responses are not included in the snapshot.
+            Numeric usage only, from Claude Code and Codex session logs and opted-in
+            Antigravity CLI events on this PC. Session files may contain private prompts and responses; they are parsed locally, not included in the aggregates.
           </p>
         </div>
-        <div className="token-range" aria-label="Token analytics range">
-          {ranges.map((option) => (
-            <button
-              className="token-range-button"
-              data-active={range === option.id ? "true" : "false"}
-              key={option.id}
-              type="button"
-              onClick={() => onRangeChange(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <span className="token-state" data-state={state}>
+          {TOKEN_STATE_LABELS[state]}
+        </span>
       </div>
 
-      {summary ? (
-        <>
-          <div className="token-total-row">
-            <div className="token-total">
-              <span>Total tokens processed</span>
-              <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
-              <small>Locally observed</small>
-            </div>
-            <div className="token-breakdown">
-              <div>
-                <span>Input</span>
-                <strong>{formatTokenCount(summary.totals.inputTokens)}</strong>
-              </div>
-              <div>
-                <span>Output</span>
-                <strong>{formatTokenCount(summary.totals.outputTokens)}</strong>
-              </div>
-              <div>
-                <span>Cache read</span>
-                <strong>{formatTokenCount(summary.totals.cacheReadTokens)}</strong>
-              </div>
-              <div>
-                <span>Cache write</span>
-                <strong>{formatTokenCount(summary.totals.cacheWriteTokens)}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="token-provider-row">
-            {summary.providers.length > 0 ? (
-              summary.providers.map((item) => (
-                <div className="token-provider" key={item.provider}>
-                  <span>{providerLabel(item.provider)}</span>
-                  <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
-                </div>
-              ))
-            ) : (
-              <span className="token-empty">No observed token usage in this range.</span>
-            )}
-          </div>
-
-          <div className="token-source-row">
-            {analytics?.sources.map((source) => (
-              <span
-                className="token-source"
-                data-state={source.state}
-                key={source.source}
-                title={source.message ?? undefined}
-              >
-                {source.source === "claude-code" ? "Claude Code" : "Codex"} ·{" "}
-                {source.state === "ok"
-                  ? `${source.files} file${source.files === 1 ? "" : "s"}`
-                  : source.state === "partial"
-                    ? "Partial"
-                    : "Not found"}
-              </span>
-            ))}
-          </div>
-        </>
-      ) : (
+      {state === "checking" ? (
+        <div className="token-empty-state">Connecting to the local collector...</div>
+      ) : state === "offline" ? (
         <div className="token-empty-state">
-          Start the local collector to read numeric token usage from Claude Code
-          and Codex session logs on this PC.
+          Start the local collector to read numeric token usage from Claude Code and
+          Codex session logs on this PC.
         </div>
+      ) : state === "disabled" ? (
+        <div className="token-cta">
+          <div>
+            <strong>Token analytics is off.</strong>
+            <p>
+              Turn it on to see the total tokens processed by Claude Code and Codex on
+              this PC. QuotaOps asks for consent before parsing local history files.
+              Only usage aggregates and limited operational metadata are retained.
+            </p>
+          </div>
+          {canSwitch ? (
+            <button
+              className="primary-button"
+              type="button"
+              disabled={switching}
+              onClick={() => onSwitch(true)}
+            >
+              {switching ? "Waiting for your choice..." : "Turn on token analytics"}
+            </button>
+          ) : (
+            <code className="token-cta-command">
+              npm run collector:setup -- tokens-auto enable claude-code
+            </code>
+          )}
+        </div>
+      ) : !analytics ? (
+        <div className="token-empty-state">
+          {state === "unavailable"
+            ? "The local session history could not be read. QuotaOps tries again in a few minutes."
+            : "Reading the local session history. The first totals appear in a few seconds; large histories finish over several passes."}
+        </div>
+      ) : (
+        <>
+          <div className="token-hero">
+            <span>Total tokens processed · All time</span>
+            <strong>{formatTokenCount(analytics.totals.totalTokens)}</strong>
+            <small>
+              {exactTokens(analytics.totals.totalTokens)} tokens, locally observed
+              {state === "partial" ? " so far" : ""}
+            </small>
+          </div>
+          <TokenBreakdown totals={analytics.totals} />
+
+          <div className="token-source-grid">
+            {TOKEN_SOURCES.map((item) => {
+              const source = analytics.sources.find((candidate) => candidate.source === item.source);
+              const totals = analytics.providers.find((candidate) => candidate.provider === item.provider)?.totals;
+              return (
+                <div className="token-source-card" data-state={source?.state ?? "missing"} key={item.source}>
+                  <span>{item.label}</span>
+                  <strong>
+                    {/* Off or no history: a dash, never a 0 that looks like measured zero work. */}
+                    {source?.state === "disabled" || source?.state === "not_found" || !source
+                      ? "—"
+                      : formatTokenCount(totals?.totalTokens ?? 0)}
+                  </strong>
+                  <small title={source?.message ?? undefined}>{sourceStateLabel(source)}</small>
+                </div>
+              );
+            })}
+          </div>
+
+          {accounts.length > 0 ? (
+            <div className="token-accounts">
+              <h3>Claude Code by Claude account · All time</h3>
+              <ul>
+                {accounts.map((item) => (
+                  <li key={item.account ?? item.attribution}>
+                    <span>
+                      {item.account
+                        ? `Claude account ·${item.account.slice(0, 6)}`
+                        : item.attribution === "several_accounts"
+                          ? "Not attributed: sessions that name several accounts"
+                          : "Not attributed: sessions without an account record"}
+                      {item.current ? <em> · signed in to Claude Code now</em> : null}
+                    </span>
+                    <span className="token-account-sessions">
+                      {item.sessions} session{item.sessions === 1 ? "" : "s"}
+                    </span>
+                    <strong>{formatTokenCount(item.totals.totalTokens)}</strong>
+                  </li>
+                ))}
+              </ul>
+              <p className="token-source-note">
+                {attributed.length > 0
+                  ? "A session counts for an account only when Claude Code recorded exactly one account id in it. Usage is never guessed or split. These accounts are not linked to your QuotaOps accounts yet."
+                  : "No session in this history records an account id, so no usage is attributed to an account."}
+              </p>
+            </div>
+          ) : null}
+
+          <div className="token-range-section">
+            <div className="token-range-heading">
+              <h3>By period</h3>
+              <div className="token-range" aria-label="Token analytics range">
+                {ranges.map((option) => (
+                  <button
+                    className="token-range-button"
+                    data-active={range === option.id ? "true" : "false"}
+                    key={option.id}
+                    type="button"
+                    onClick={() => onRangeChange(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {summary ? (
+              <div className="token-total-row">
+                <div className="token-total">
+                  <span>Total tokens processed</span>
+                  <strong>{formatTokenCount(summary.totals.totalTokens)}</strong>
+                  <small>{ranges.find((option) => option.id === range)?.label}</small>
+                </div>
+                <TokenBreakdown totals={summary.totals} />
+              </div>
+            ) : null}
+          </div>
+
+          <p className="token-source-note">
+            {state === "unavailable"
+              ? "The last pass failed; these are the last totals read. "
+              : null}
+            Scanned {formatUpdatedAt(status?.scannedAt ?? analytics.generatedAt)}. Counts cover only
+            sessions on this PC, not provider-wide usage.
+            {analytics.sources
+              .filter((source) => source.state === "partial" && source.message)
+              .map((source) => ` ${source.message}`)
+              .join("")}
+          </p>
+          {canSwitch ? (
+            <button
+              className="token-switch-off"
+              type="button"
+              disabled={switching}
+              onClick={() => onSwitch(false)}
+            >
+              Turn off token analytics
+            </button>
+          ) : null}
+        </>
       )}
     </section>
   );
@@ -892,14 +1197,59 @@ export function QuotaDashboard() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [collectorState, setCollectorState] = useState<CollectorConnectionState>("checking");
   const [collectorIssues, setCollectorIssues] = useState<string[]>([]);
+  // Every configured account the collector reports without a fresh reading.
+  const [collectorStates, setCollectorStates] = useState<CollectorAccountResult[]>([]);
+  const [advisorFreshIds, setAdvisorFreshIds] = useState<string[]>([]);
+  const [advisorHistory, setAdvisorHistory] = useState<AdvisorHistory>({});
+  const [advisorTask, setAdvisorTask] = useState<AdvisorTask>("coding");
+  const [advisorProvider, setAdvisorProvider] = useState<Provider | null>(null);
+  const [advisorPrevious, setAdvisorPrevious] = useState<{ context: string; id: string } | null>(null);
   const [collectorLastSync, setCollectorLastSync] = useState<string | null>(null);
   const [tokenAnalytics, setTokenAnalytics] =
     useState<TokenAnalyticsSnapshot | null>(null);
-  const [tokenRange, setTokenRange] = useState<TokenRange>("all");
+  // The headline already shows all time; the period view starts at today.
+  const [tokenRange, setTokenRange] = useState<TokenRange>("today");
+  const [tokenStatus, setTokenStatus] = useState<TokenScanStatus | null>(null);
+  const [tokenSwitching, setTokenSwitching] = useState(false);
+  const [canSwitchTokens, setCanSwitchTokens] = useState(false);
+  // Lets token actions read the snapshot again at once instead of waiting
+  // for the next 30 s tick.
+  const syncNowRef = useRef<(() => void) | null>(null);
   const seenResetsRef = useRef<Set<string>>(new Set());
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
+  // While token analytics scans (first pass, or older files still pending),
+  // read the snapshot every 3 s so the totals and state update by themselves.
+  const tokenBusy = tokenStatus?.state === "scanning" || tokenStatus?.pending === true;
   useEffect(() => {
+    if (!tokenBusy) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") syncNowRef.current?.();
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [tokenBusy]);
+
+  const switchTokenAnalytics = async (enabled: boolean) => {
+    if (tokenSwitching) return;
+    setTokenSwitching(true);
+    try {
+      const result = await requestTokenAnalytics(enabled);
+      if (result === "off") {
+        setTokenAnalytics(null);
+        setTokenStatus({ state: "scanning", scannedAt: null, pending: false });
+      }
+      if (result === "error") showToast("Token analytics could not be changed. Try again from the tray menu.");
+      if (result === "busy") showToast("QuotaOps is busy with another action. Try again in a moment.");
+    } catch {
+      showToast("Token analytics could not be changed. Try again from the tray menu.");
+    } finally {
+      setTokenSwitching(false);
+      syncNowRef.current?.();
+    }
+  };
+
+  useEffect(() => {
+    setCanSwitchTokens(canSwitchTokenAnalytics());
     setAccounts(loadAccounts());
     const initialTheme = loadTheme();
     setTheme(initialTheme);
@@ -941,20 +1291,42 @@ export function QuotaDashboard() {
 
     const sync = async () => {
       controller?.abort();
-      controller = new AbortController();
+      const request = new AbortController();
+      controller = request;
 
       try {
-        const snapshot = await fetchCollectorSnapshot(controller.signal);
-        if (cancelled) return;
+        const snapshot = await fetchCollectorSnapshot(request.signal);
+        if (cancelled || request.signal.aborted) return;
 
         setCollectorState("connected");
+        const failedIds = new Set(snapshot.issues.map(issue => issue.id));
+        const successful = snapshot.accounts.filter(account => !failedIds.has(account.id));
+        const observedAt = Date.now();
+        setNowMs(observedAt);
+        setAdvisorFreshIds(successful.map(account => account.id));
+        setAdvisorHistory(previous => recordAdvisorHistory(previous, successful, observedAt));
         setCollectorLastSync(snapshot.generatedAt);
-        setTokenAnalytics(snapshot.tokens);
-        setCollectorIssues(
-          snapshot.issues.map((issue) =>
-            issue.message ? `${issue.label}: ${issue.message}` : `${issue.label}: ${issue.status}`,
-          ),
-        );
+        // Keep the previous object when nothing changed: a new object every
+        // 30 s re-renders the whole dashboard for nothing.
+        setTokenAnalytics((previous) =>
+          JSON.stringify(previous) === JSON.stringify(snapshot.tokens) ? previous : snapshot.tokens);
+        setTokenStatus((previous) =>
+          JSON.stringify(previous) === JSON.stringify(snapshot.tokenStatus) ? previous : snapshot.tokenStatus);
+        setCollectorStates((previous) =>
+          JSON.stringify(previous) === JSON.stringify(snapshot.issues) ? previous : snapshot.issues);
+        // "Not checked yet" is information, not something to fix.
+        const nextIssues = snapshot.issues.filter((issue) => issue.status !== "configured").map((issue) => {
+          // Say plainly what the person must do; last known values stay as
+          // they were (stale), never replaced by 0%.
+          const state = COLLECTOR_ISSUE_LABELS[issue.status] ?? issue.status;
+          return issue.message
+            ? `${issue.label}: ${state}. ${issue.message}`
+            : `${issue.label}: ${state}`;
+        });
+        setCollectorIssues((previous) =>
+          previous.length === nextIssues.length && previous.every((line, index) => line === nextIssues[index])
+            ? previous
+            : nextIssues);
 
         if (snapshot.accounts.length > 0) {
           setAccounts((current) => {
@@ -994,18 +1366,40 @@ export function QuotaDashboard() {
           });
         }
       } catch {
-        if (cancelled) return;
+        if (cancelled || request.signal.aborted) return;
         setCollectorState("offline");
+        setAdvisorFreshIds([]);
       }
     };
 
+    // While the window is hidden (QuotaOps in the tray) nobody sees the
+    // snapshot; read it again as soon as the window is shown. Reset
+    // notifications run on their own clock and keep working while hidden.
+    const syncIfVisible = () => {
+      if (document.visibilityState !== "hidden") void sync();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void sync();
+    };
     void sync();
-    const timer = window.setInterval(() => void sync(), 30_000);
+    syncNowRef.current = () => void sync();
+    const timer = window.setInterval(syncIfVisible, 30_000);
+    document.addEventListener("visibilitychange", onVisibility);
+    const unsubscribeConsent = getDesktopBridge()?.onTokenConsentChanged?.(() => {
+      // Tray and dashboard changes both invalidate previous renderer work.
+      controller?.abort();
+      setTokenAnalytics(null);
+      setTokenStatus({ state: "scanning", scannedAt: null, pending: false });
+      void sync();
+    });
 
     return () => {
+      unsubscribeConsent?.();
+      syncNowRef.current = null;
       cancelled = true;
       controller?.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [ready]);
 
@@ -1072,9 +1466,27 @@ export function QuotaDashboard() {
     return () => window.removeEventListener("keydown", handler);
   }, [ready]);
 
-  const recommended = useMemo(
-    () => (nowMs ? getRecommendedAccount(accounts, nowMs) : null),
-    [accounts, nowMs],
+  const selectedProvider = advisorProvider ??
+    (accounts.some(account => account.provider === "claude") ? "claude" : accounts[0]?.provider ?? "claude");
+  const advisorContext = selectedProvider + ":" + advisorTask;
+  const advisor = useMemo(() => adviseAccounts(nowMs ? accounts : [], {
+    provider: selectedProvider, task: advisorTask, nowMs,
+    freshIds: advisorFreshIds, history: advisorHistory,
+    previousId: advisorPrevious?.context === advisorContext ? advisorPrevious.id : null,
+  }), [accounts, selectedProvider, advisorTask, nowMs, advisorFreshIds, advisorHistory, advisorPrevious, advisorContext]);
+  const recommended = advisor.recommended?.account ?? null;
+  const recommendedId = recommended?.id ?? null;
+  useEffect(() => {
+    setAdvisorPrevious(previous => {
+      if (!recommendedId) return previous === null ? previous : null;
+      if (previous?.context === advisorContext && previous.id === recommendedId) return previous;
+      return { context: advisorContext, id: recommendedId };
+    });
+  }, [advisorContext, recommendedId]);
+
+  const statusOnlyStates = useMemo(
+    () => collectorStates.filter((state) => !accounts.some((account) => account.id === state.id)),
+    [collectorStates, accounts],
   );
 
   const summary = useMemo(() => {
@@ -1098,7 +1510,7 @@ export function QuotaDashboard() {
 
   const updateAccount = (next: QuotaAccount) => {
     setAccounts((current) =>
-      current.map((account) => (account.id === next.id ? next : account)),
+      current.map(account => applyAccountEdit(account, next)),
     );
   };
 
@@ -1169,6 +1581,10 @@ export function QuotaDashboard() {
   };
 
   const startVoiceCommand = async () => {
+    if (getDesktopBridge()) {
+      showToast("Voice input is unavailable in the local-only desktop app.");
+      return;
+    }
     const speechWindow = window as typeof window & {
       SpeechRecognition?: SpeechRecognitionConstructor;
       webkitSpeechRecognition?: SpeechRecognitionConstructor;
@@ -1183,6 +1599,7 @@ export function QuotaDashboard() {
       return;
     }
 
+    if (!window.confirm("Browser voice recognition may send microphone audio to your browser provider's speech service. Continue?")) return;
     if (!(await ensureMicrophonePermission())) {
       setListening(false);
       return;
@@ -1219,7 +1636,7 @@ export function QuotaDashboard() {
 
       setAccounts((current) =>
         current.map((account) => {
-          if (account.id !== command.accountId) return account;
+          if (account.id !== command.accountId || account.source === "collector") return account;
           return {
             ...account,
             windows: account.windows.map((window) =>
@@ -1307,13 +1724,13 @@ export function QuotaDashboard() {
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary navigation">
-            <a className="nav-item active" href="#overview">
+            <a className="nav-item active" href="#overview" aria-label="Overview" title="Overview">
               <OverviewIcon />
-              Overview
+              <span>Overview</span>
             </a>
-            <a className="nav-item" href="#accounts">
+            <a className="nav-item" href="#accounts" aria-label="Accounts" title="Accounts">
               <AccountsIcon />
-              Accounts
+              <span>Accounts</span>
             </a>
           </nav>
 
@@ -1322,6 +1739,8 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}
+              aria-label={theme === "light" ? "Dark mode" : "Light mode"}
+              title={theme === "light" ? "Dark mode" : "Light mode"}
             >
               {theme === "light" ? <MoonIcon /> : <SunIcon />}
               <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>
@@ -1331,6 +1750,9 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={toggleNotifications}
+              aria-label={notificationsEnabled ? "Notifications on" : "Enable notifications"}
+              aria-pressed={notificationsEnabled}
+              title={notificationsEnabled ? "Notifications on" : "Enable notifications"}
             >
               <BellIcon />
               <span>{notificationsEnabled ? "Notifications on" : "Enable notifications"}</span>
@@ -1340,6 +1762,8 @@ export function QuotaDashboard() {
               className="theme-button"
               type="button"
               onClick={() => setShortcutHelpOpen(true)}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts"
             >
               <KeyboardIcon />
               <span>Keyboard shortcuts</span>
@@ -1423,11 +1847,60 @@ export function QuotaDashboard() {
             </div>
           </section>
 
+          <section className="tips-panel advisor-panel" aria-label="Smart Account Advisor">
+            <div className="tips-heading">
+              <span className="page-kicker">Recommendation</span>
+              <h2>Smart Account Advisor</h2>
+            </div>
+            <div className="advisor-controls">
+                <label>Provider{" "}
+                  <select value={selectedProvider} onChange={event => setAdvisorProvider(event.target.value as Provider)}>
+                    <option value="claude">Claude</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="google">Google / Antigravity</option>
+                  </select>
+                </label>
+                <label>Task{" "}
+                  <select value={advisorTask} onChange={event => setAdvisorTask(event.target.value as AdvisorTask)}>
+                    {Object.entries(TASKS).map(([key, profile]) => <option key={key} value={key}>{profile.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="advisor-status" role="status" aria-label={advisor.recommended ? "Recommended account: " + advisor.recommended.account.label + "; tightest remaining quota: " + advisor.recommended.remaining.toFixed(1) + "%" : "No reliable recommendation"}>
+                <strong>{recommended ? recommended.label : "No reliable recommendation"}</strong>
+                <span>{advisor.recommended ? advisor.recommended.reason : "Refresh quota readings or choose a less demanding task."}</span>
+                {advisor.recommended ? <span>
+                  Tightest remaining quota: {advisor.recommended.remaining.toFixed(1)}%.
+                  {advisor.recommended.trendKnown || advisor.recommended.trendPartial ? " Trend-adjusted headroom" + (advisor.recommended.trendPartial ? " (partial history)" : "") + ": " + advisor.recommended.projectedRemaining.toFixed(1) + "%." : " Forecast unavailable."}
+                </span> : null}
+                <span>Task reserve: {TASKS[advisorTask].reserve}% in every window. Estimates are not guarantees.</span>
+                {advisor.retained ? <span>Previous recommendation retained within the stability margin.</span> : null}
+              </div>
+              <div className="tips-list advisor-results">
+              {advisor.upcomingReset ? <div className="tip-item advisor-result">
+                <strong>{advisor.upcomingReset.account.label} — check after reset</strong>
+                <span>{formatCountdown(advisor.upcomingReset.resetAt, nowMs)}. Refresh before relying on new capacity.</span>
+              </div> : null}
+              {advisor.candidates.map(candidate => <div className="tip-item advisor-result" key={candidate.account.id}>
+                <strong>{candidate.account.label} · {candidate.fit ? "Eligible" : "Low headroom"}</strong>
+                <span>{candidate.remaining.toFixed(1)}% tightest remaining · score {candidate.score.toFixed(1)} · {candidate.reason}</span>
+              </div>)}
+              {advisor.excluded.map(item => <div className="tip-item advisor-result" key={item.account.id}>
+                <strong>{item.account.label} · Not recommended</strong><span>{item.reason}</span>
+              </div>)}
+            </div>
+          </section>
+
           <TokenAnalyticsPanel
             analytics={tokenAnalytics}
+            status={tokenStatus}
             range={tokenRange}
             nowMs={nowMs}
             onRangeChange={setTokenRange}
+            collectorState={collectorState}
+            canSwitch={canSwitchTokens}
+            switching={tokenSwitching}
+            onSwitch={(enabled) => void switchTokenAnalytics(enabled)}
           />
 
           {collectorIssues.length > 0 ? (
@@ -1504,7 +1977,7 @@ export function QuotaDashboard() {
                   {recommended ? (
                     <div className="tip-item">
                       <strong>{recommended.label}</strong>
-                      <span>Currently has the best usable capacity for the next task.</span>
+                      <span>{advisor.recommended?.reason ?? "Recommended for the selected task."}</span>
                     </div>
                   ) : null}
                 </>
@@ -1518,10 +1991,10 @@ export function QuotaDashboard() {
                 <span className="page-kicker">Accounts</span>
                 <h2>AI accounts</h2>
               </div>
-              <span>{accounts.length} account{accounts.length === 1 ? "" : "s"}</span>
+              <span>{accounts.length + statusOnlyStates.length} account{accounts.length + statusOnlyStates.length === 1 ? "" : "s"}</span>
             </div>
 
-            {accounts.length === 0 ? (
+            {accounts.length === 0 && statusOnlyStates.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon"><AccountsIcon /></div>
                 <h3>Add your first account</h3>
@@ -1544,7 +2017,13 @@ export function QuotaDashboard() {
                     recommended={recommended?.id === account.id}
                     onChange={updateAccount}
                     onDelete={() => removeAccount(account)}
+                    collectorState={account.source === "collector"
+                      ? collectorStates.find((state) => state.id === account.id)
+                      : undefined}
                   />
+                ))}
+                {statusOnlyStates.map((state) => (
+                  <CollectorStatusCard key={`collector-${state.id}`} state={state} />
                 ))}
               </div>
             )}
