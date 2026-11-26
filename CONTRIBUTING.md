@@ -34,7 +34,9 @@ There is no hosted QuotaOps backend or cloud sync.
 
 ## Development setup
 
-Recommended runtime: Node.js 22.21.0.
+Recommended runtime: Node.js 22.21.0. Supported: Node.js 22.x (22.21.0 or newer) with npm 10.9.4 or newer, including npm 11 (see `engines` in `package.json`).
+
+If you change dependencies, keep `package-lock.json` complete for every platform: it must keep the lock entries for optional packages that target other operating systems and CPUs (for example `@img/sharp-*`). npm 11 rejects a lockfile in `npm ci` when they are missing, and `tests/lockfile-optional-platforms.test.ts` checks for them.
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund

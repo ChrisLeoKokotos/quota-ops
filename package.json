@@ -14,7 +14,8 @@
     "desktop:installer:win": "node desktop/build-installer.mjs"
   },
   "engines": {
-    "node": ">=22.14.0"
+    "node": ">=22.21.0 <23",
+    "npm": ">=10.9.4"
   },
   "dependencies": {
     "next": "16.4.6",

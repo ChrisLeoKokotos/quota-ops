@@ -211,6 +211,11 @@ Voice input uses the browser speech-recognition capability when available. Depen
 
 Recommended Node version: **22.21.0**.
 
+Supported toolchain (declared in `package.json` `engines` and pinned in `.node-version`, matching CI):
+
+- Node.js **22.x, 22.21.0 or newer** (CI runs 22.21.0);
+- npm **10.9.4 or newer**: npm 10.9.4 (bundled with Node.js 22.21.0, used by CI) and npm 11 both install the committed lockfile with `npm ci`, and CI checks both on Ubuntu and Windows.
+
 ```bash
 git clone https://github.com/ChrisLeoKokotos/quota-ops.git
 cd quota-ops
