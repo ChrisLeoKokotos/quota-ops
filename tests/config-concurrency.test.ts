@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseCollectorConfigLock } from "../collector/config.ts";
 
 const exec = promisify(execFile);
 const configUrl = new URL("../collector/config.ts", import.meta.url).href;
@@ -77,4 +78,38 @@ test("cross-process config transactions do not restore revoked consent or lose u
     const unchanged = JSON.parse(await readFile(join(home,".quotaops","collector.json"),"utf8"));
     assert.deepEqual(unchanged,reenabled);
   } finally { await rm(home,{recursive:true,force:true}); }
+});
+
+test("configuration lock release retries only bounded transient EBUSY", async () => {
+  const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+  let calls = 0;
+  let pauses = 0;
+  await releaseCollectorConfigLock("fixture.lock", async path => {
+    assert.equal(path, "fixture.lock");
+    if (++calls < 3) throw busy;
+  }, async ms => {
+    assert.equal(ms, 50);
+    pauses++;
+  });
+  assert.equal(calls, 3);
+  assert.equal(pauses, 2);
+
+  calls = 0;
+  pauses = 0;
+  await assert.rejects(releaseCollectorConfigLock("fixture.lock", async () => {
+    calls++;
+    throw busy;
+  }, async () => { pauses++; }), error => error === busy);
+  assert.equal(calls, 6);
+  assert.equal(pauses, 5);
+
+  for (const code of ["ENOENT", "ENOTEMPTY", "EACCES"]) {
+    const failure = Object.assign(new Error(code), { code });
+    calls = 0;
+    await assert.rejects(releaseCollectorConfigLock("fixture.lock", async () => {
+      calls++;
+      throw failure;
+    }, async () => { assert.fail("non-EBUSY failure must not retry"); }), error => error === failure);
+    assert.equal(calls, 1);
+  }
 });

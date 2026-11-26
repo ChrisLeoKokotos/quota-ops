@@ -177,6 +177,26 @@ async function readCollectorConfigLocked(): Promise<CollectorConfig> {
   }
 }
 
+/**
+ * Retry transient EBUSY on the same empty lock directory. Never remove
+ * recursively or recover a different owner. Persistent failures propagate.
+ */
+export async function releaseCollectorConfigLock(
+  lock: string,
+  remove: (path: string) => Promise<void> = rmdir,
+  pause: (ms: number) => Promise<unknown> = delay,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await remove(lock);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt >= 5) throw error;
+      await pause(50);
+    }
+  }
+}
+
 /** All supported writers and sensitive publication paths use this same lock.
  * A crashed owner leaves a lock directory: never guess that it is stale.
  * Stop every QuotaOps/CLI/hook process before manually removing it.
@@ -201,7 +221,7 @@ export async function withCollectorConfig<T>(
   try {
     return await action(await readCollectorConfigLocked());
   } finally {
-    await rmdir(lock);
+    await releaseCollectorConfigLock(lock);
   }
 }
 
