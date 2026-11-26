@@ -626,8 +626,8 @@ export function parseCodexTokenRecord(
 }
 
 /**
- * Claude Code histories can be gigabytes (owner's PC: 381 files, 2.47 GB,
- * single files over 800 MB, lines holding pasted images). Reading all of it
+ * Claude Code histories can be gigabytes (hundreds of files, single files of
+ * hundreds of megabytes, lines holding pasted images). Reading all of it
  * every pass, oldest first, with a whole-file rejection on any long line,
  * left recent days, including today, missing.
  *
