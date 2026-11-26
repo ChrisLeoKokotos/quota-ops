@@ -74,7 +74,7 @@ test("installer build stays opt-in, pinned and does not publish", async () => {
   const script = await readFile(
     new URL("../desktop/build-installer.mjs", import.meta.url), "utf8",
   );
-  assert.match(script, /electron-builder@26\.13\.1/);
+  assert.match(script, /electron-builder@26\.13\.0/);
   assert.match(script, /"--publish", "never"/);
   assert.match(script, /process\.platform !== "win32"/);
   // The build regenerates the branded assets from logo.png rather than

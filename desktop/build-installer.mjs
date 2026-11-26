@@ -110,7 +110,7 @@ if (testConfig.extends !== "desktop/electron-builder.json" ||
 // All arguments here are fixed literals, never supplied by the renderer.
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const args = [
-  "exec", "--yes", "--package=electron-builder@26.13.1", "--",
+  "exec", "--yes", "--package=electron-builder@26.13.0", "--",
   "electron-builder", "--win", "nsis", "--x64",
   "--config", "desktop/electron-builder.unsigned-test.json", "--publish", "never",
 ];

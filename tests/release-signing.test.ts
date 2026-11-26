@@ -31,7 +31,7 @@ test("signed and unsigned installer builder pins agree", async () => {
   const unsigned = await readFile(new URL("../desktop/build-installer.mjs", import.meta.url), "utf8");
   const signed = await readFile(new URL("../desktop/build-signed-candidate.mjs", import.meta.url), "utf8");
   for (const source of [unsigned, signed]) {
-    assert.match(source, /electron-builder@26\.13\.1/);
+    assert.match(source, /electron-builder@26\.13\.0/);
     assert.equal((source.match(/--package=electron-builder@/g) ?? []).length, 1);
   }
 });
