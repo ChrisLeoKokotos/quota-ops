@@ -96,6 +96,9 @@ jobs:
       - name: Build production dashboard
         run: npm run build
 
+      - name: Google live dashboard and consent E2E on Windows
+        run: node scripts/google-auto-dashboard-e2e.mjs
+
       - name: Responsive dashboard E2E on Windows
         run: node scripts/responsive-dashboard-e2e.mjs
 
