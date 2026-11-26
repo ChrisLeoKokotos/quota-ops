@@ -62,6 +62,45 @@ jobs:
       - name: Responsive dashboard E2E (19 viewports, both themes and sidebar states)
         run: node scripts/responsive-dashboard-e2e.mjs
 
+  lockfile-install:
+    # npm 11 rejects a lockfile that npm 10 accepts when cross-platform optional
+    # entries (for example @img/sharp-*) are missing. Install both lockfiles with
+    # both npm majors on both runner platforms so neither can regress.
+    name: Lockfile install (npm ${{ matrix.npm }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        npm: ["10.9.4", "11.21.3"]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.21.0"
+
+      - name: Confirm the npm version under test
+        run: test "$(npx --yes npm@${{ matrix.npm }} --version)" = "${{ matrix.npm }}"
+
+      - name: Install root lockfile without lifecycle scripts
+        run: npx --yes npm@${{ matrix.npm }} ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install desktop updater lockfile without lifecycle scripts
+        run: npx --yes npm@${{ matrix.npm }} ci --prefix desktop/electron-ipc --ignore-scripts --no-audit --no-fund
+
+      - name: Lockfiles are unchanged by the install
+        run: git diff --exit-code -- package-lock.json desktop/electron-ipc/package-lock.json
+
   windows-security:
     name: Windows security smoke
     runs-on: windows-latest
