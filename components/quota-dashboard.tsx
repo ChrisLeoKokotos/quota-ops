@@ -984,7 +984,8 @@ function TokenBreakdown({ totals }: { totals: TokenTotals }) {
 /** One line per consented source: what the totals are based on. */
 function coverageLine(source: TokenSourceStatus): string | null {
   const c = source.coverage;
-  if (!c || source.state === "disabled") return null;
+  // Nothing found or not consented: the source card already says so.
+  if (!c || source.state === "disabled" || c.filesDiscovered === 0) return null;
   const label = source.source === "claude-code" ? "Claude Code" : source.source === "codex" ? "Codex" : "Antigravity";
   const parts = [`${label}: ${c.filesRead} of ${c.filesDiscovered} session file${c.filesDiscovered === 1 ? "" : "s"} read`];
   if (c.oldestDate) parts.push(`activity from ${c.oldestDate}`);
