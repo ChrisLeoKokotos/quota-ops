@@ -14,6 +14,8 @@ export interface BoundedJsonlOptions {
    * the file and reports it as incomplete.
    */
   shouldStop?: () => boolean;
+  /** Called (without content) for each line that is not valid JSON. */
+  onMalformedLine?: () => void;
 }
 
 /**
@@ -57,7 +59,9 @@ export async function readBoundedJsonl(
               onRecord(parsed as Record<string, unknown>);
             }
           } catch {
-            // Malformed/incomplete records must never appear in diagnostics.
+            // Malformed/incomplete records must never appear in diagnostics:
+            // the caller only learns that one line was skipped.
+            options.onMalformedLine?.();
           }
         }
       }
@@ -105,6 +109,8 @@ export interface JsonlIncrementOptions {
   shouldStop?: () => boolean;
   /** Receives at most the first 64 KiB of each skipped oversized line. */
   onOversizedLine?: (head: string) => void;
+  /** Called (without content) for each complete line that is not valid JSON. */
+  onMalformedLine?: () => void;
 }
 
 export interface JsonlIncrementResult {
@@ -149,7 +155,7 @@ export async function readJsonlIncrement(
     let skipping = false;
     let head = "";
 
-    const emit = (): void => {
+    const emit = (complete = true): void => {
       if (skipping) {
         options.onOversizedLine?.(head);
       } else if (lineBytes > 0) {
@@ -162,6 +168,8 @@ export async function readJsonlIncrement(
             }
           } catch {
             // Malformed or incomplete records never appear in diagnostics.
+            // A trailing line still being written is not reported here.
+            if (complete) options.onMalformedLine?.();
           }
         }
       }
@@ -199,7 +207,7 @@ export async function readJsonlIncrement(
         }
       }
       // Trailing line without newline: parse it, but resume before it.
-      if (lineBytes > 0 && !skipping) emit();
+      if (lineBytes > 0 && !skipping) emit(false);
       return { ok: true, endOffset, bytesRead };
     } finally {
       stream.destroy();

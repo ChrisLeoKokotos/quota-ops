@@ -2,12 +2,29 @@ import type { Provider } from "./quota.ts";
 
 export type TokenRange = "today" | "7d" | "30d" | "all";
 
+/**
+ * Accounting contract (see docs/token-analytics.md, "Accounting contract"):
+ *
+ * - outputTokens: provider-reported output = **generated tokens**.
+ * - reasoningTokens: provider-reported reasoning/thinking tokens where a
+ *   source exposes them. Always a SUBSET of outputTokens (Anthropic counts
+ *   thinking as output; OpenAI/Codex reports reasoning inside output), so it
+ *   is never added to any total.
+ * - inputTokens: provider-reported input. Claude: uncached input only.
+ *   Codex: input INCLUDING cached input.
+ * - cacheReadTokens / cacheWriteTokens: Claude: separate from input.
+ *   Codex: a breakdown of input (never added again).
+ * - totalTokens ("total processed"): Claude input + output + cache read +
+ *   cache write; Codex input + output. No category is counted twice.
+ */
 export interface TokenTotals {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
+  /** Subset of outputTokens; absent when no source reports it. */
+  reasoningTokens?: number;
 }
 
 export interface ProviderTokenTotals {
@@ -28,12 +45,62 @@ export type TokenSourceId = "claude-code" | "codex" | "google-antigravity";
  */
 export type TokenSourceState = "ok" | "not_found" | "partial" | "disabled";
 
+/**
+ * What one source's numbers are based on. Counts only, never names or
+ * content. `filesRemoved`: session files that disappeared since the
+ * collector started (for example Claude Code's own cleanup of old
+ * transcripts); their usage is no longer in a retained-history total.
+ */
+export interface TokenSourceCoverage {
+  filesDiscovered: number;
+  filesRead: number;
+  filesPending: number;
+  filesRemoved: number;
+  /** Distinct usage records counted. */
+  records: number;
+  /** Repeated reports of an already counted record (merged, not added). */
+  duplicates: number;
+  /** Lines that were not valid JSON (skipped). */
+  malformed: number;
+  /** Usage lines too large to read (skipped). */
+  oversized: number;
+  oldestDate: string | null;
+  newestDate: string | null;
+}
+
 export interface TokenSourceStatus {
   source: TokenSourceId;
   provider: Provider;
   state: TokenSourceState;
   files: number;
   message: string | null;
+  coverage?: TokenSourceCoverage;
+}
+
+/** All-time usage per model id (provider-reported, e.g. "claude-sonnet-..."). */
+export interface TokenModelTotals {
+  provider: Provider;
+  model: string;
+  totals: TokenTotals;
+}
+
+/**
+ * What "all time" means in a snapshot:
+ * - "retained_history": computed from the session files currently on this
+ *   PC. It goes down when a tool deletes old session files.
+ * - "observed_lifetime": from the local usage ledger (opt-in): everything
+ *   QuotaOps has observed since the ledger was turned on, kept after the
+ *   source files are deleted. Numbers only.
+ */
+export type TokenTotalsBasis = "retained_history" | "observed_lifetime";
+
+export interface TokenLedgerInfo {
+  /** When the ledger began observing (ISO), null if unknown. */
+  since: string | null;
+  /** Distinct usage records in the ledger. */
+  records: number;
+  /** Ledger lines that failed their integrity check (ignored). */
+  corrupt: number;
 }
 
 /**
@@ -66,6 +133,13 @@ export interface TokenAnalyticsSnapshot {
   sources: TokenSourceStatus[];
   /** All-time per-account split, where a source records account ids. */
   accounts?: TokenAccountTotals[];
+  /** All-time per-model split (largest first, bounded). */
+  models?: TokenModelTotals[];
+  /** Absent means "retained_history" (older collectors). */
+  basis?: TokenTotalsBasis;
+  /** With basis "observed_lifetime": the retained-history totals for comparison. */
+  retainedTotals?: TokenTotals;
+  ledger?: TokenLedgerInfo;
 }
 
 /** How far the collector has got with token analytics. */
@@ -91,31 +165,50 @@ export function addTokenTotals(
   target: TokenTotals,
   value: TokenTotals,
 ): TokenTotals {
-  return {
+  const sum: TokenTotals = {
     inputTokens: target.inputTokens + value.inputTokens,
     outputTokens: target.outputTokens + value.outputTokens,
     cacheReadTokens: target.cacheReadTokens + value.cacheReadTokens,
     cacheWriteTokens: target.cacheWriteTokens + value.cacheWriteTokens,
     totalTokens: target.totalTokens + value.totalTokens,
   };
+  if (target.reasoningTokens !== undefined || value.reasoningTokens !== undefined) {
+    sum.reasoningTokens = (target.reasoningTokens ?? 0) + (value.reasoningTokens ?? 0);
+  }
+  return sum;
 }
 
-function localDateKey(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+/** True when every counter is a safe, non-negative integer. */
+export function tokenTotalsAreSafe(totals: TokenTotals): boolean {
+  const values = [
+    totals.inputTokens, totals.outputTokens, totals.cacheReadTokens,
+    totals.cacheWriteTokens, totals.totalTokens,
+    ...(totals.reasoningTokens === undefined ? [] : [totals.reasoningTokens]),
+  ];
+  return values.every((value) => Number.isSafeInteger(value) && value >= 0);
+}
+
+/**
+ * Local calendar date, the same key the collector uses for its daily
+ * buckets (both run on this PC). An earlier version used the UTC date here,
+ * so near midnight "Today" counted the wrong local day.
+ */
+export function localDayKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${String(year).padStart(4, "0")}-${month}-${day}`;
 }
 
 function rangeStartKey(range: TokenRange, nowMs: number): string | null {
   if (range === "all") return null;
 
   const date = new Date(nowMs);
-  date.setUTCHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
 
   const daysBack = range === "today" ? 0 : range === "7d" ? 6 : 29;
-  date.setUTCDate(date.getUTCDate() - daysBack);
-  return localDateKey(date);
+  date.setDate(date.getDate() - daysBack);
+  return localDayKey(date);
 }
 
 export function summarizeTokenRange(
@@ -146,6 +239,7 @@ export function summarizeTokenRange(
       cacheReadTokens: bucket.cacheReadTokens,
       cacheWriteTokens: bucket.cacheWriteTokens,
       totalTokens: bucket.totalTokens,
+      ...(bucket.reasoningTokens === undefined ? {} : { reasoningTokens: bucket.reasoningTokens }),
     };
 
     totals = addTokenTotals(totals, value);
@@ -205,4 +299,10 @@ export function tokenPanelState(
   if (status?.pending || consented.some((source) => source.state === "partial")) return "partial";
   if (analytics.totals.totalTokens === 0) return "zero";
   return "complete";
+}
+
+/** Exact integer with digit grouping, for counts too large for a compact label. */
+export function formatExactTokens(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) return "—";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }

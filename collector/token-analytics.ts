@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import type { Provider } from "../lib/quota.ts";
 import type { TokenAnalyticsConsent } from "./types.ts";
-import { readBoundedJsonl, readJsonlIncrement } from "./bounded-jsonl.ts";
+import { readJsonlIncrement } from "./bounded-jsonl.ts";
 import { getQuotaOpsHome } from "./paths.ts";
 import {
   addTokenTotals,
@@ -14,13 +14,33 @@ import {
   type ProviderTokenTotals,
   type TokenAccountTotals,
   type TokenAnalyticsSnapshot,
+  type TokenModelTotals,
+  type TokenSourceCoverage,
+  type TokenSourceId,
   type TokenSourceStatus,
   type TokenTotals,
 } from "../lib/token-analytics.ts";
 
+/**
+ * One counted usage record, handed to the opt-in usage ledger. `key` is the
+ * provider's own record id (Claude message id, Codex composed event id); the
+ * ledger stores only a salted hash of it. No content, path or email.
+ */
+export interface TokenUsageEvent {
+  key: string;
+  source: TokenSourceId;
+  provider: Provider;
+  /** Salted account key when attributed, else null. */
+  account: string | null;
+  attribution: TokenAccountTotals["attribution"];
+  /** Provider session id (hashed by the ledger), when known. */
+  session: string | null;
+  model: string;
+  date: string | null;
+  totals: TokenTotals;
+}
+
 const MAX_FILES_PER_SOURCE = 20_000;
-const MAX_FILE_BYTES = 256 * 1024 * 1024;
-const MAX_SCAN_BYTES_PER_SOURCE = 512 * 1024 * 1024;
 /**
  * Byte budgets alone do not bound a scan. Every budget below closes a
  * different way a corpus can stay inside the documented size limits while
@@ -82,6 +102,40 @@ interface ScanResult {
   daily: Map<string, MutableDailyBucket>;
   /** All-time per-account split (Claude Code only). */
   accounts?: TokenAccountTotals[];
+  coverage: TokenSourceCoverage;
+  models: Map<string, TokenModelTotals>;
+  /** Per-record usage, only when the ledger asked for it. */
+  events?: TokenUsageEvent[];
+}
+
+const MAX_MODELS_IN_SNAPSHOT = 12;
+const MODEL_ID = /^[A-Za-z0-9._:@/-]{1,64}$/;
+/** Provider model id as reported; anything unexpected becomes "unknown". */
+function modelId(value: unknown): string {
+  return typeof value === "string" && MODEL_ID.test(value) ? value : "unknown";
+}
+
+function addModel(
+  models: Map<string, TokenModelTotals>,
+  provider: Provider,
+  model: string,
+  totals: TokenTotals,
+): void {
+  const key = `${provider}:${model}`;
+  const existing = models.get(key);
+  models.set(key, {
+    provider,
+    model,
+    totals: existing ? addTokenTotals(existing.totals, totals) : totals,
+  });
+}
+
+function emptyCoverage(): TokenSourceCoverage {
+  return {
+    filesDiscovered: 0, filesRead: 0, filesPending: 0, filesRemoved: 0,
+    records: 0, duplicates: 0, malformed: 0, oversized: 0,
+    oldestDate: null, newestDate: null,
+  };
 }
 
 function safeTokenNumber(value: unknown): number {
@@ -125,14 +179,18 @@ function tokenTotals(
   cacheReadTokens: number,
   cacheWriteTokens: number,
   totalTokens: number,
+  reasoningTokens?: number,
 ): TokenTotals {
-  return {
+  const totals: TokenTotals = {
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
     totalTokens,
   };
+  // Reasoning is a subset of output: never more than output, never added.
+  if (reasoningTokens !== undefined) totals.reasoningTokens = Math.min(reasoningTokens, outputTokens);
+  return totals;
 }
 
 /** Returns false when the bucket was dropped because the date cap was reached. */
@@ -224,6 +282,21 @@ async function findJsonlFiles(
 }
 
 
+/**
+ * Anthropic reports thinking inside output_tokens; Claude Code records the
+ * split as usage.output_tokens_details.thinking_tokens. Undefined when the
+ * record does not say.
+ */
+function claudeReasoning(usage: Record<string, unknown>): number | undefined {
+  const details =
+    usage.output_tokens_details && typeof usage.output_tokens_details === "object"
+      ? (usage.output_tokens_details as Record<string, unknown>)
+      : null;
+  if (!details) return undefined;
+  const value = details.thinking_tokens ?? details.reasoning_tokens;
+  return typeof value === "number" ? safeTokenNumber(value) : undefined;
+}
+
 function usageNumbers(value: unknown): {
   input: number;
   output: number;
@@ -270,7 +343,7 @@ function usageNumbers(value: unknown): {
 
 export function parseClaudeTokenRecord(
   record: Record<string, unknown>,
-): { id: string; date: string | null; totals: TokenTotals } | null {
+): { id: string; date: string | null; totals: TokenTotals; model: string } | null {
   if (record.type !== "assistant") return null;
 
   const message =
@@ -301,30 +374,45 @@ export function parseClaudeTokenRecord(
 
   if (!id) return null;
 
+  const reasoning = claudeReasoning(
+    message.usage && typeof message.usage === "object" ? (message.usage as Record<string, unknown>) : {},
+  );
   return {
     id,
     date: localDateKey(record.timestamp),
+    model: modelId(message.model),
     totals: tokenTotals(
       usage.input,
       usage.output,
       usage.cacheRead,
       usage.cacheWrite,
       usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+      reasoning,
     ),
   };
 }
 
-function maxTokenTotals(a: TokenTotals, b: TokenTotals): TokenTotals {
+/**
+ * Streaming writes one record per content block with the usage known at that
+ * moment; the final record carries the full counts. Keep the largest value
+ * of each field for one message id (verified on real history: the maximum
+ * always comes from the record that has the stop reason).
+ */
+export function maxTokenTotals(a: TokenTotals, b: TokenTotals): TokenTotals {
   const inputTokens = Math.max(a.inputTokens, b.inputTokens);
   const outputTokens = Math.max(a.outputTokens, b.outputTokens);
   const cacheReadTokens = Math.max(a.cacheReadTokens, b.cacheReadTokens);
   const cacheWriteTokens = Math.max(a.cacheWriteTokens, b.cacheWriteTokens);
+  const reasoning = a.reasoningTokens === undefined && b.reasoningTokens === undefined
+    ? undefined
+    : Math.max(a.reasoningTokens ?? 0, b.reasoningTokens ?? 0);
   return tokenTotals(
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
     inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    reasoning,
   );
 }
 
@@ -333,6 +421,8 @@ interface CodexRawUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** reasoning_output_tokens: part of output, never added. */
+  reasoning?: number;
 }
 
 export interface CodexTokenState {
@@ -340,6 +430,8 @@ export interface CodexTokenState {
   sessionId: string;
   replayGate: { createdAtSeconds: number | null } | null;
   previousCumulative: CodexRawUsage | null;
+  /** Latest model announced by a turn_context record in this rollout. */
+  model: string;
 }
 
 export function createCodexTokenState(): CodexTokenState {
@@ -348,6 +440,7 @@ export function createCodexTokenState(): CodexTokenState {
     sessionId: "",
     replayGate: null,
     previousCumulative: null,
+    model: "unknown",
   };
 }
 
@@ -385,6 +478,9 @@ function codexUsage(value: unknown): CodexRawUsage | null {
     cacheWrite: safeTokenNumber(
       usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens,
     ),
+    ...(typeof usage.reasoning_output_tokens === "number"
+      ? { reasoning: safeTokenNumber(usage.reasoning_output_tokens) }
+      : {}),
   };
 }
 
@@ -409,13 +505,16 @@ function subtractCodexUsage(
       0,
       current.cacheWrite - (previous?.cacheWrite ?? 0),
     ),
+    ...(current.reasoning === undefined
+      ? {}
+      : { reasoning: Math.max(0, current.reasoning - (previous?.reasoning ?? 0)) }),
   };
 }
 
 export function parseCodexTokenRecord(
   record: Record<string, unknown>,
   state: CodexTokenState,
-): { id: string; date: string | null; totals: TokenTotals } | null {
+): { id: string; date: string | null; totals: TokenTotals; model: string } | null {
   const payload =
     record.payload && typeof record.payload === "object"
       ? (record.payload as Record<string, unknown>)
@@ -431,6 +530,12 @@ export function parseCodexTokenRecord(
         createdAtSeconds: timestampSeconds(record.timestamp),
       };
     }
+    return null;
+  }
+
+  if (record.type === "turn_context" && payload) {
+    const model = modelId(payload.model);
+    if (model !== "unknown") state.model = model;
     return null;
   }
 
@@ -501,6 +606,7 @@ export function parseCodexTokenRecord(
     cacheRead,
     cacheWrite,
     usage.input + usage.output,
+    usage.reasoning,
   );
   const timestamp =
     typeof record.timestamp === "string" ? record.timestamp : "";
@@ -515,12 +621,13 @@ export function parseCodexTokenRecord(
     id: `${state.sessionId || "unknown"}:${timestamp}:${signature}`,
     date: localDateKey(record.timestamp),
     totals,
+    model: state.model,
   };
 }
 
 /**
- * Claude Code histories can be gigabytes (owner's PC: 381 files, 2.47 GB,
- * single files over 800 MB, lines holding pasted images). Reading all of it
+ * Claude Code histories can be gigabytes (hundreds of files, single files of
+ * hundreds of megabytes, lines holding pasted images). Reading all of it
  * every pass, oldest first, with a whole-file rejection on any long line,
  * left recent days, including today, missing.
  *
@@ -535,6 +642,8 @@ interface ClaudeRecord {
   totals: TokenTotals;
   /** Interned session id, used only to look up the session's account. */
   session: string | null;
+  /** Interned model id. */
+  model: string;
 }
 interface ClaudeFileCache {
   size: number;
@@ -544,6 +653,18 @@ interface ClaudeFileCache {
   /** session id -> salted hashes of the account ids its owner records name. */
   owners: Map<string, Set<string>>;
   skippedUsageLines: number;
+  /** Repeated reports of a record already in this file (merged by max). */
+  duplicates: number;
+  malformed: number;
+}
+/** Session files that disappeared since this process started (cleanup by the tool). */
+let claudeRemovedFiles = 0;
+const internedModels = new Map<string, string>();
+function internModel(value: string): string {
+  const known = internedModels.get(value);
+  if (known) return known;
+  if (internedModels.size < 1_000) internedModels.set(value, value);
+  return value;
 }
 const claudeFileCache = new Map<string, ClaudeFileCache>();
 const CLAUDE_BYTES_PER_PASS = 1024 * 1024 * 1024;
@@ -568,7 +689,7 @@ function internSession(value: unknown): string | null {
  * anything outside this PC.
  */
 let accountSalt: Buffer | null = null;
-async function loadAccountSalt(): Promise<Buffer> {
+export async function loadAccountSalt(): Promise<Buffer> {
   if (accountSalt) return accountSalt;
   const path = join(getQuotaOpsHome(), "token-account-salt");
   try {
@@ -598,7 +719,7 @@ const ACCOUNT_ID_PATTERN = /^[0-9a-f-]{8,64}$/i;
  * The account Claude Code is signed in to now (~/.claude.json), as the same
  * salted key. Only that one field is used; the file is not kept.
  */
-async function currentClaudeAccountKey(salt: Buffer): Promise<string | null> {
+export async function currentClaudeAccountKey(salt: Buffer): Promise<string | null> {
   const path = join(homedir(), ".claude.json");
   try {
     const info = await stat(path);
@@ -613,7 +734,10 @@ async function currentClaudeAccountKey(salt: Buffer): Promise<string | null> {
 
 /** Test seam: forget cached files (a fresh collector process). */
 export function resetTokenScanCache(): void {
+  resetCodexCache();
   claudeFileCache.clear();
+  claudeRemovedFiles = 0;
+  internedModels.clear();
   internedSessions.clear();
   accountSalt = null;
   lastClaudePendingFiles = 0;
@@ -621,10 +745,10 @@ export function resetTokenScanCache(): void {
 
 /** True while the last Claude Code pass left older files for a later pass. */
 export function tokenScanPending(): boolean {
-  return lastClaudePendingFiles > 0;
+  return lastClaudePendingFiles > 0 || lastCodexPendingFiles > 0;
 }
 
-async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
+async function scanClaudeCode(signal?: AbortSignal, wantEvents = false): Promise<ScanResult> {
   signal?.throwIfAborted();
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
@@ -651,7 +775,12 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const present = new Set(files.map((file) => file.path));
   for (const cachedPath of [...claudeFileCache.keys()]) {
-    if (!present.has(cachedPath)) claudeFileCache.delete(cachedPath);
+    // A deleted session file takes its usage out of a retained-history
+    // total; count it so the decrease is explained, never hidden.
+    if (!present.has(cachedPath)) {
+      claudeFileCache.delete(cachedPath);
+      claudeRemovedFiles += 1;
+    }
   }
 
   let tracked = 0;
@@ -672,7 +801,8 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
     // Resume an appended file; read a shrunk or rewritten one from the start.
     const resume = cached && cached.endOffset <= file.size ? cached : null;
     const entry: ClaudeFileCache = resume ?? {
-      size: 0, mtimeMs: 0, endOffset: 0, records: new Map(), owners: new Map(), skippedUsageLines: 0,
+      size: 0, mtimeMs: 0, endOffset: 0, records: new Map(), owners: new Map(),
+      skippedUsageLines: 0, duplicates: 0, malformed: 0,
     };
     const result = await readJsonlIncrement(
       file.path,
@@ -691,10 +821,12 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
         if (!parsed) return;
         const key = boundedKey(parsed.id);
         const previous = entry.records.get(key);
+        if (previous) entry.duplicates += 1;
         entry.records.set(key, {
           date: previous?.date ?? parsed.date,
           totals: previous ? maxTokenTotals(previous.totals, parsed.totals) : parsed.totals,
           session: previous?.session ?? internSession(record.sessionId),
+          model: previous && previous.model !== "unknown" ? previous.model : internModel(parsed.model),
         });
       },
       {
@@ -702,6 +834,9 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
         shouldStop: () => signal?.aborted === true || Date.now() > deadline,
         onOversizedLine: (head) => {
           if (ASSISTANT_RECORD_HEAD.test(head)) entry.skippedUsageLines += 1;
+        },
+        onMalformedLine: () => {
+          entry.malformed += 1;
         },
       },
     );
@@ -731,8 +866,13 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
   const best = new Map<string, ClaudeRecord>();
   const owners = new Map<string, Set<string>>();
   let skippedUsageLines = 0;
+  let duplicates = 0;
+  let malformed = 0;
+  let crossFileDuplicates = 0;
   for (const entry of claudeFileCache.values()) {
     skippedUsageLines += entry.skippedUsageLines;
+    duplicates += entry.duplicates;
+    malformed += entry.malformed;
     for (const [session, keys] of entry.owners) {
       const all = owners.get(session) ?? new Set<string>();
       for (const key of keys) all.add(key);
@@ -744,11 +884,13 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
         truncated = true;
         continue;
       }
+      if (previous) crossFileDuplicates += 1;
       best.set(key, previous
         ? {
             date: previous.date ?? value.date,
             totals: maxTokenTotals(previous.totals, value.totals),
             session: previous.session ?? value.session,
+            model: previous.model !== "unknown" ? previous.model : value.model,
           }
         : value);
     }
@@ -762,9 +904,17 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
     no_account_record: { totals: emptyTokenTotals(), sessions: new Set<string>() },
     several_accounts: { totals: emptyTokenTotals(), sessions: new Set<string>() },
   };
+  const models = new Map<string, TokenModelTotals>();
+  let oldestDate: string | null = null;
+  let newestDate: string | null = null;
   for (const item of best.values()) {
     totals = addTokenTotals(totals, item.totals);
     if (!addDaily(daily, "claude", item.date, item.totals)) truncated = true;
+    addModel(models, "claude", item.model, item.totals);
+    if (item.date) {
+      if (oldestDate === null || item.date < oldestDate) oldestDate = item.date;
+      if (newestDate === null || item.date > newestDate) newestDate = item.date;
+    }
     const sessionOwners = item.session ? owners.get(item.session) : undefined;
     const bucket = !sessionOwners || sessionOwners.size === 0
       ? unattributed.no_account_record
@@ -781,6 +931,25 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
   }
   signal?.throwIfAborted();
   const current = byAccount.size > 0 ? await currentClaudeAccountKey(salt) : null;
+  let events: TokenUsageEvent[] | undefined;
+  if (wantEvents) {
+    events = [];
+    for (const [key, item] of best) {
+      const sessionOwners = item.session ? owners.get(item.session) : undefined;
+      const single = sessionOwners && sessionOwners.size === 1;
+      events.push({
+        key,
+        source: "claude-code",
+        provider: "claude",
+        account: single ? ([...sessionOwners][0] as string) : null,
+        attribution: single ? "attributed" : sessionOwners && sessionOwners.size > 1 ? "several_accounts" : "no_account_record",
+        session: item.session,
+        model: item.model,
+        date: item.date,
+        totals: item.totals,
+      });
+    }
+  }
   signal?.throwIfAborted();
   const accounts: TokenAccountTotals[] = [...byAccount.entries()]
     .sort((a, b) => b[1].totals.totalTokens - a[1].totals.totalTokens)
@@ -818,10 +987,54 @@ async function scanClaudeCode(signal?: AbortSignal): Promise<ScanResult> {
     totals,
     daily,
     accounts,
+    models,
+    ...(events ? { events } : {}),
+    coverage: {
+      filesDiscovered: files.length,
+      filesRead: [...claudeFileCache.values()].filter((entry) => entry.size > 0).length,
+      filesPending: pendingFiles,
+      filesRemoved: claudeRemovedFiles,
+      records: best.size,
+      duplicates: duplicates + crossFileDuplicates,
+      malformed,
+      oversized: skippedUsageLines,
+      oldestDate,
+      newestDate,
+    },
   };
 }
 
-async function scanCodex(signal?: AbortSignal): Promise<ScanResult> {
+/**
+ * Codex rollouts are read like Claude Code histories: a per-file cache keyed
+ * by size and modification time, so unchanged files are not parsed again;
+ * oversized lines (pasted images) are skipped instead of rejecting the whole
+ * file (an earlier version dropped any rollout with a line over 2 MiB and
+ * re-read every file on every pass, up to 512 MiB). A changed file is parsed
+ * again from its start, because replay suppression and cumulative baselines
+ * are per-rollout state.
+ */
+interface CodexFileCache {
+  size: number;
+  mtimeMs: number;
+  records: Map<string, { date: string | null; totals: TokenTotals; model: string }>;
+  duplicates: number;
+  malformed: number;
+  oversizedUsage: number;
+}
+const codexFileCache = new Map<string, CodexFileCache>();
+let codexRemovedFiles = 0;
+let lastCodexPendingFiles = 0;
+const CODEX_BYTES_PER_PASS = 1024 * 1024 * 1024;
+const CODEX_USAGE_HEAD = /"type"\s*:\s*"token_count"/;
+
+/** Test seam paired with resetTokenScanCache. */
+function resetCodexCache(): void {
+  codexFileCache.clear();
+  codexRemovedFiles = 0;
+  lastCodexPendingFiles = 0;
+}
+
+async function scanCodex(signal?: AbortSignal, wantEvents = false): Promise<ScanResult> {
   signal?.throwIfAborted();
   // The deadline starts before the walk, which is part of the scan's cost.
   const deadline = Date.now() + MAX_SCAN_DURATION_MS;
@@ -832,64 +1045,140 @@ async function scanCodex(signal?: AbortSignal): Promise<ScanResult> {
     deadline, signal,
   );
   const paths = [...new Set([...active.files, ...archived.files])];
-  const seen = new Set<string>();
-  let totals = emptyTokenTotals();
-  const daily = new Map<string, MutableDailyBucket>();
-  let files = 0;
-  let readErrors = 0;
-  let scanBytes = 0;
   let truncated = active.truncated || archived.truncated;
+  let readErrors = 0;
+  let pendingFiles = 0;
+  let pendingNewestMtimeMs = 0;
+  let bytesThisPass = 0;
 
-  const budgetExhausted = (): boolean =>
-    signal?.aborted === true || Date.now() > deadline || seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE;
-
+  const files: Array<{ path: string; size: number; mtimeMs: number }> = [];
   for (const path of paths) {
-    if (budgetExhausted()) {
-      truncated = true;
-      break;
-    }
-
-    const size = await stat(path).then((info) => info.size).catch(() => null);
-    if (size === null || size > MAX_FILE_BYTES || scanBytes + size > MAX_SCAN_BYTES_PER_SOURCE) {
+    signal?.throwIfAborted();
+    const info = await stat(path).catch(() => null);
+    if (!info || !info.isFile()) {
       readErrors += 1;
       continue;
     }
-    scanBytes += size;
+    files.push({ path, size: info.size, mtimeMs: info.mtimeMs });
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const present = new Set(files.map((file) => file.path));
+  for (const cachedPath of [...codexFileCache.keys()]) {
+    if (!present.has(cachedPath)) {
+      codexFileCache.delete(cachedPath);
+      codexRemovedFiles += 1;
+    }
+  }
+
+  for (const file of files) {
+    signal?.throwIfAborted();
+    const cached = codexFileCache.get(file.path);
+    if (cached && cached.size === file.size && cached.mtimeMs === file.mtimeMs) continue;
+    if (Date.now() > deadline || bytesThisPass >= CODEX_BYTES_PER_PASS) {
+      pendingFiles += 1;
+      pendingNewestMtimeMs = Math.max(pendingNewestMtimeMs, file.mtimeMs);
+      continue;
+    }
+    const entry: CodexFileCache = {
+      size: 0, mtimeMs: 0, records: new Map(), duplicates: 0, malformed: 0, oversizedUsage: 0,
+    };
     const state = createCodexTokenState();
-    const ok = await readBoundedJsonl(
-      path,
+    const result = await readJsonlIncrement(
+      file.path,
       (record) => {
         const parsed = parseCodexTokenRecord(record, state);
         if (!parsed) return;
-
         const key = boundedKey(parsed.id);
-        if (seen.has(key)) return;
-        if (seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE) return;
-        seen.add(key);
-
-        totals = addTokenTotals(totals, parsed.totals);
-        if (!addDaily(daily, "openai", parsed.date, parsed.totals)) {
-          truncated = true;
+        if (entry.records.has(key)) {
+          entry.duplicates += 1;
+          return;
         }
+        entry.records.set(key, { date: parsed.date, totals: parsed.totals, model: parsed.model });
       },
-      { shouldStop: budgetExhausted },
+      {
+        shouldStop: () => signal?.aborted === true || Date.now() > deadline,
+        onOversizedLine: (head) => {
+          if (CODEX_USAGE_HEAD.test(head)) entry.oversizedUsage += 1;
+        },
+        onMalformedLine: () => {
+          entry.malformed += 1;
+        },
+      },
     );
-
-    if (ok) files += 1;
-    else if (budgetExhausted()) {
-      truncated = true;
-      break;
-    } else readErrors += 1;
+    signal?.throwIfAborted();
+    bytesThisPass += result.bytesRead;
+    if (result.ok) {
+      entry.size = file.size;
+      entry.mtimeMs = file.mtimeMs;
+      codexFileCache.set(file.path, entry);
+    } else if (Date.now() > deadline) {
+      // Keep the previous complete parse (if any) until this file is re-read.
+      pendingFiles += 1;
+      pendingNewestMtimeMs = Math.max(pendingNewestMtimeMs, file.mtimeMs);
+    } else {
+      readErrors += 1;
+    }
   }
+  if (pendingFiles > 0) truncated = true;
+  lastCodexPendingFiles = pendingFiles;
 
+  const seen = new Set<string>();
+  let totals = emptyTokenTotals();
+  const daily = new Map<string, MutableDailyBucket>();
+  const models = new Map<string, TokenModelTotals>();
+  const events: TokenUsageEvent[] = [];
+  const coverage = emptyCoverage();
+  coverage.filesDiscovered = files.length;
+  coverage.filesPending = pendingFiles;
+  coverage.filesRemoved = codexRemovedFiles;
+  let skippedUsageLines = 0;
+  for (const entry of codexFileCache.values()) {
+    coverage.duplicates += entry.duplicates;
+    coverage.malformed += entry.malformed;
+    skippedUsageLines += entry.oversizedUsage;
+    for (const [key, item] of entry.records) {
+      if (seen.has(key)) {
+        coverage.duplicates += 1;
+        continue;
+      }
+      if (seen.size >= MAX_TRACKED_RECORDS_PER_SOURCE) {
+        truncated = true;
+        continue;
+      }
+      seen.add(key);
+      totals = addTokenTotals(totals, item.totals);
+      addModel(models, "openai", item.model, item.totals);
+      if (item.date) {
+        if (coverage.oldestDate === null || item.date < coverage.oldestDate) coverage.oldestDate = item.date;
+        if (coverage.newestDate === null || item.date > coverage.newestDate) coverage.newestDate = item.date;
+      }
+      if (wantEvents) {
+        events.push({
+          key, source: "codex", provider: "openai", account: null,
+          attribution: "no_account_record", session: key.split(":")[0] ?? null,
+          model: item.model, date: item.date, totals: item.totals,
+        });
+      }
+      if (!addDaily(daily, "openai", item.date, item.totals)) truncated = true;
+    }
+  }
+  coverage.filesRead = codexFileCache.size;
+  coverage.records = seen.size;
+  coverage.oversized = skippedUsageLines;
   return {
     provider: "openai",
     source: "codex",
-    files,
+    files: codexFileCache.size,
     readErrors,
     truncated,
+    pendingFiles,
+    pendingNewestMtimeMs,
+    skippedUsageLines,
     totals,
     daily,
+    models,
+    coverage,
+    ...(wantEvents ? { events } : {}),
   };
 }
 
@@ -921,6 +1210,7 @@ function sourceStatus(result: ScanResult): TokenSourceStatus {
   return {
     source: result.source,
     provider: result.provider,
+    coverage: result.coverage,
     state: missing
       ? "not_found"
       : result.readErrors > 0 || result.truncated || skipped > 0
@@ -954,11 +1244,23 @@ export async function collectLocalTokenAnalytics(
   consent: TokenAnalyticsConsent,
   signal?: AbortSignal,
 ): Promise<TokenAnalyticsSnapshot> {
+  return (await collectLocalTokenUsage(consent, signal, false)).snapshot;
+}
+
+/**
+ * The snapshot plus, when `wantEvents`, every counted record for the
+ * opt-in usage ledger (numbers, model, date, hashed account only).
+ */
+export async function collectLocalTokenUsage(
+  consent: TokenAnalyticsConsent,
+  signal?: AbortSignal,
+  wantEvents = false,
+): Promise<{ snapshot: TokenAnalyticsSnapshot; events: TokenUsageEvent[] }> {
   signal?.throwIfAborted();
   // Wait for both readers to settle before invalidation can clear their caches.
   const results = await Promise.allSettled([
-    consent.claudeCode ? scanClaudeCode(signal) : null,
-    consent.codex ? scanCodex(signal) : null,
+    consent.claudeCode ? scanClaudeCode(signal, wantEvents) : null,
+    consent.codex ? scanCodex(signal, wantEvents) : null,
   ]);
   signal?.throwIfAborted();
   const [claudeScan, codexScan] = results.map(result => {
@@ -973,9 +1275,13 @@ export async function collectLocalTokenAnalytics(
   let totals = emptyTokenTotals();
   const providers: ProviderTokenTotals[] = [];
   const daily = new Map<string, MutableDailyBucket>();
+  const models: TokenModelTotals[] = [];
+  const events: TokenUsageEvent[] = [];
 
   for (const scan of scans) {
     totals = addTokenTotals(totals, scan.totals);
+    models.push(...scan.models.values());
+    if (scan.events) events.push(...scan.events);
     providers.push({
       provider: scan.provider,
       totals: scan.totals,
@@ -1014,14 +1320,21 @@ export async function collectLocalTokenAnalytics(
   ];
 
   return {
-    generatedAt: new Date().toISOString(),
-    scope: "locally_observed",
-    totals,
-    providers: providers.sort(
-      (a, b) => b.totals.totalTokens - a.totals.totalTokens,
-    ),
-    daily: dailyBuckets,
-    sources,
-    accounts: claudeScan?.accounts ?? [],
+    snapshot: {
+      generatedAt: new Date().toISOString(),
+      scope: "locally_observed",
+      totals,
+      providers: providers.sort(
+        (a, b) => b.totals.totalTokens - a.totals.totalTokens,
+      ),
+      daily: dailyBuckets,
+      sources,
+      accounts: claudeScan?.accounts ?? [],
+      models: models
+        .sort((a, b) => b.totals.totalTokens - a.totals.totalTokens)
+        .slice(0, MAX_MODELS_IN_SNAPSHOT),
+      basis: "retained_history",
+    },
+    events,
   };
 }

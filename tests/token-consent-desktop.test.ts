@@ -36,7 +36,13 @@ test("the dashboard distinguishes analytics off from collector offline and shows
   assert.match(dashboard, /collectorState=\{collectorState\}/);
   assert.match(dashboard, /source\.state === "partial" && source\.message/);
   assert.match(dashboard, /Counts cover only[\s\S]*sessions on this PC/);
-  // The all-time total is the panel's headline, whatever period is selected.
-  assert.match(dashboard, /Total tokens processed · All time/);
+  // Headlines (issue #57): generated (output) tokens and total processed are
+  // separate numbers, never one figure silently combining input, cache and
+  // output; both say whether they are retained history or observed lifetime.
+  assert.match(dashboard, /Generated tokens · \{scope\}/);
+  assert.match(dashboard, /formatTokenCount\(analytics\.totals\.outputTokens\)/);
+  assert.match(dashboard, /Total processed · \{scope\}/);
   assert.match(dashboard, /formatTokenCount\(analytics\.totals\.totalTokens\)/);
+  assert.match(dashboard, /All time · retained history/);
+  assert.match(dashboard, /Observed lifetime/);
 });

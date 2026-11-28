@@ -5,7 +5,10 @@ import type {
   ProviderTokenTotals,
   TokenAccountTotals,
   TokenAnalyticsSnapshot,
+  TokenLedgerInfo,
+  TokenModelTotals,
   TokenScanStatus,
+  TokenSourceCoverage,
   TokenSourceStatus,
   TokenTotals,
 } from "./token-analytics";
@@ -168,6 +171,38 @@ export function parseTokenScanStatus(value: unknown): TokenScanStatus | null {
   return { state: item.state, scannedAt: item.scannedAt, pending: item.pending };
 }
 
+function safeCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Reasoning, when present, must be a subset of output. */
+function reasoningIsValid(totals: TokenTotals): boolean {
+  return totals.reasoningTokens === undefined ||
+    (safeCount(totals.reasoningTokens) && totals.reasoningTokens <= totals.outputTokens);
+}
+
+function isCoverage(value: unknown): value is TokenSourceCoverage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  const date = (entry: unknown) => entry === null || (typeof entry === "string" && /^\d{4}-\d{2}-\d{2}$/.test(entry));
+  return ["filesDiscovered", "filesRead", "filesPending", "filesRemoved", "records", "duplicates", "malformed", "oversized"]
+    .every((name) => safeCount(item[name])) && date(item.oldestDate) && date(item.newestDate);
+}
+
+function isModelTotals(value: unknown): value is TokenModelTotals {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TokenModelTotals>;
+  return (item.provider === "claude" || item.provider === "openai" || item.provider === "google") &&
+    typeof item.model === "string" && /^[A-Za-z0-9._:@/-]{1,64}$/.test(item.model) &&
+    isTokenTotals(item.totals) && reasoningIsValid(item.totals);
+}
+
+function isLedgerInfo(value: unknown): value is TokenLedgerInfo {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TokenLedgerInfo>;
+  return (item.since === null || typeof item.since === "string") && safeCount(item.records) && safeCount(item.corrupt);
+}
+
 function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<TokenAnalyticsSnapshot>;
@@ -186,12 +221,31 @@ function parseTokenAnalytics(value: unknown): TokenAnalyticsSnapshot | null {
     return null;
   }
 
+  if (!reasoningIsValid(item.totals)) return null;
+  if (item.basis !== undefined && item.basis !== "retained_history" && item.basis !== "observed_lifetime") return null;
+
   // A malformed per-account split is dropped on its own; it never changes
-  // the totals and is never guessed.
+  // the totals and is never guessed. The same holds for models, coverage
+  // and ledger details: optional context, never a reason to show nothing.
   const accounts = Array.isArray(item.accounts) && item.accounts.every(isTokenAccountTotals)
     ? item.accounts
     : [];
-  return { ...(item as TokenAnalyticsSnapshot), accounts };
+  const models = Array.isArray(item.models) && item.models.every(isModelTotals) ? item.models : [];
+  const sources = item.sources.map((source) => {
+    if (source.coverage === undefined || isCoverage(source.coverage)) return source;
+    const { coverage: _dropped, ...rest } = source;
+    return rest;
+  });
+  const snapshot: TokenAnalyticsSnapshot = {
+    ...(item as TokenAnalyticsSnapshot),
+    sources,
+    accounts,
+    models,
+    basis: item.basis ?? "retained_history",
+  };
+  if (item.retainedTotals !== undefined && !isTokenTotals(item.retainedTotals)) delete snapshot.retainedTotals;
+  if (item.ledger !== undefined && !isLedgerInfo(item.ledger)) delete snapshot.ledger;
+  return snapshot;
 }
 
 /**

@@ -41,6 +41,32 @@ Source states are `ok`, `not_found`, `partial`, or `disabled`.
 A `disabled` source means it was not scanned/read: it does not mean
 the files or events do not exist.
 
+## Accounting contract
+
+Each metric has one definition, and no category is counted twice.
+
+| Metric | Definition | Claude Code | Codex |
+|---|---|---|---|
+| **Generated tokens** | Output tokens reported by the provider | `output_tokens` | `output_tokens` |
+| Reasoning tokens | Reasoning or thinking tokens, where the source reports them. Always part of generated tokens, never added again | `output_tokens_details.thinking_tokens` | `reasoning_output_tokens` |
+| Input tokens | Input tokens reported by the provider | uncached input (`input_tokens`) | input **including** cached input |
+| Cache read | Tokens read from the prompt cache | separate from input | part of input, shown as a breakdown only |
+| Cache write | Tokens written to the prompt cache | `cache_creation_input_tokens` | part of input, when reported |
+| **Total processed** | Everything the model processed | input + output + cache read + cache write | input + output |
+| Retained history | All time, computed from the session files that are on this PC now | goes down when a tool deletes old files | same |
+| Observed lifetime | Everything QuotaOps observed since the opt-in usage ledger was turned on | survives deleted files | same |
+
+The dashboard shows **Generated tokens** and **Total processed** as two separate
+headline numbers. Each one says whether it is retained history or observed lifetime.
+For Claude Code, total processed is mostly cache reads, because every turn re-reads
+the cached context. Generated tokens are a small part of it, and that is expected.
+
+One Claude message is written once per content block while it streams. Each record
+carries the usage known at that moment. QuotaOps keeps the largest value of each field
+for one message id. A check on a real history found that this maximum always came from
+the record that has the final `stop_reason`, so the full generated count is used and
+earlier partial counts are not added on top.
+
 ## Counting
 
 For Claude Code, input, output, cache-read, and cache-creation usage are included as observed token work. Repeated records are deduplicated by message identity.
@@ -128,6 +154,97 @@ Future sessions are attributed automatically as long as Claude Code keeps writin
 `session-owner` records. No hook is needed for that. A Claude Code `SessionStart`
 hook that records the hashed current account would be a fallback, if the record
 type disappears.
+
+## Why totals stalled or went down (issue #57)
+
+A local, count-only investigation on a real Windows history found three causes. The
+owner's actual totals are not reproduced here.
+
+1. **Tools delete old session files.** Between two checks, the number of Claude Code
+   session files went down even though new sessions had been added. Claude Code had
+   removed old transcripts. All-time was computed only from the files still on disk,
+   so their usage left the total. That is a real decrease of *retained history*, not
+   a counting error. Since this change, every source reports `filesRemoved`, and the
+   dashboard says that retained history goes down when files are deleted. The opt-in
+   usage ledger (below) keeps observed lifetime totals.
+2. **A busy configuration threw the scan away.** When `collector.json` could not be
+   read for a moment (another QuotaOps process held the lock, or antivirus returned
+   `EBUSY`), the collector treated it as a consent change: it cleared every cache and
+   started again from zero. The published totals dropped and then climbed back over
+   the next passes. Now a read failure is a failed pass: the state is `unavailable`,
+   cached totals are kept but not published, and the cache is cleared only when
+   consent actually changes.
+3. **The headline mixed everything.** "Total tokens processed" is dominated by cache
+   reads. Heavy coding added new cache reads while older, larger sessions were being
+   deleted, so the headline looked flat. Generated (output) tokens are now a separate
+   headline, with input, cache read, cache write and reasoning beside them.
+
+Also fixed in the same change:
+
+- Codex rollouts with one line over 2 MiB (for example a pasted image) used to be
+  rejected entirely, and every Codex file was read again on every pass, up to 512
+  MiB. Codex now uses the same per-file cache and oversized-line skipping as Claude
+  Code.
+- "Today", "7 days" and "30 days" compared local-day buckets with a UTC date, so near
+  midnight they counted the wrong day. Both sides now use the local calendar day.
+- The one-off `tokens` command printed the first, partial pass of a large history.
+  It now reads until every file is covered.
+
+Ruled out on the real history:
+
+- The 200,000-record limit: the history was well below it.
+- Claude `usage.iterations`: their sum equals the top-level usage on every record.
+- Missing final output counts: see "Accounting contract" above.
+
+## Usage ledger (opt-in, observed lifetime)
+
+`npm run collector:setup -- tokens-ledger enable` turns on a local ledger
+(`%USERPROFILE%\.quotaops\token-ledger.jsonl`). It is **off by default**, because
+it changes the privacy model: usage records are kept after their session files are
+deleted.
+
+- **What a row holds:** a salted hash of the record id, a salted hash of the session
+  id, the salted account key or an "unattributed" marker, the provider model id, the
+  day, and the input, output, cache and reasoning counts. Nothing else.
+- **What it never holds:** prompts, responses, file paths, emails or raw ids.
+- **Consent:** rows are written only for sources with token-analytics consent.
+  Withdrawing a source's consent purges its rows. `tokens-ledger disable` deletes the
+  file.
+- **Integrity:** append-only lines, each with a checksum. A torn or edited line is
+  ignored and counted. Writing the same record again changes nothing, and a record
+  that grew is updated to its largest values. The file is rewritten atomically when
+  it has grown to twice its live rows, or when rows are purged.
+- **Concurrency:** the collector writes only inside the configuration lock, after
+  re-reading the switch, so turning the ledger off cannot be followed by a write.
+- **Snapshot:** with the ledger on, the snapshot's `basis` is `observed_lifetime`,
+  and `retainedTotals` still shows what the files on disk add up to.
+
+## Reconciliation tool
+
+```powershell
+npm run collector:setup -- tokens-reconcile            # match / differs, counts only
+npm run collector:setup -- tokens-reconcile --show-values   # numbers, on this PC only
+```
+
+The tool compares five values:
+
+1. **Reference:** an independent calculation that shares no parsing, caching or
+   de-duplication code with the scanner. It streams every file and applies the
+   contract above.
+2. **Production:** the scanner, run until every file is covered.
+3. **Collector:** the running collector's `/snapshot`, read over loopback with the
+   local token.
+4. **IPC:** the Electron projection of that snapshot.
+5. **Dashboard:** the label the dashboard would show.
+
+It also reports, for each source, the files discovered, read, pending and removed,
+and the records, repeated reports, malformed lines and oversized lines. It reads only
+with the stored consent, writes nothing and sends nothing.
+
+On a live machine, the reference and the production scan run a few seconds apart
+while sessions keep writing, so small differences (thousandths of a percent) are
+expected. `tests/token-accuracy.test.ts` checks that they are exactly equal on fixed
+fixtures.
 
 ## Verify locally
 

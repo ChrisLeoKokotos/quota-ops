@@ -56,7 +56,7 @@ try {
   catch{browser=await chromium.launch({channel:"msedge",headless:true});}
   const page=await browser.newPage({viewport:{width:1440,height:900},reducedMotion:"reduce"});
   await page.goto(url,{waitUntil:"domcontentloaded"});
-  await page.locator(".token-hero strong").waitFor({timeout:30000});
+  await page.locator(".token-hero strong").first().waitFor({timeout:30000});
   await page.evaluate(label=>{
     const now=Date.now();
     const accounts=Array.from({length:5},(_,i)=>({
@@ -71,8 +71,10 @@ try {
   await page.reload({waitUntil:"domcontentloaded"});
   const advisor=page.getByRole("region",{name:"Smart Account Advisor"});
   await advisor.getByRole("status").getByText(longLabel,{exact:true}).waitFor({timeout:30000});
-  await page.locator(".token-hero strong").waitFor({timeout:30000});
-  assert.match(await page.locator(".token-hero small").innerText(), /8[,\s.]999[,\s.]999[,\s.]999[,\s.]999/);
+  await page.locator(".token-hero strong").first().waitFor({timeout:30000});
+  // Two headline numbers: generated (output) and total processed, both exact.
+  assert.match(await page.locator(".token-hero-pair > div").nth(0).locator("small").innerText(), /999[,\s.]999[,\s.]999[,\s.]999/);
+  assert.match(await page.locator(".token-hero-pair > div").nth(1).locator("small").innerText(), /8[,\s.]999[,\s.]999[,\s.]999[,\s.]999/);
   const card=page.locator(".account-card").filter({hasText:longLabel});
   await card.getByText("Account details",{exact:true}).click();
   await card.getByText("Edit",{exact:true}).first().click();
@@ -178,12 +180,12 @@ try {
     };
   });
   await racePage.goto(url,{waitUntil:"domcontentloaded"});
-  await racePage.locator(".token-hero strong").waitFor({timeout:30000});
+  await racePage.locator(".token-hero strong").first().waitFor({timeout:30000});
   await racePage.evaluate(()=>window.__qoRace.begin());
   await racePage.waitForFunction(()=>window.__qoRace.count()===1);
   await racePage.evaluate(()=>window.__qoRace.revoke());
   await racePage.waitForFunction(()=>window.__qoRace.count()>=2);
-  await racePage.locator(".token-hero strong").waitFor({state:"hidden"});
+  await racePage.locator(".token-hero strong").first().waitFor({state:"hidden"});
   await racePage.evaluate(()=>window.__qoRace.finish(1,false));
   await racePage.getByText("Token analytics is off.",{exact:true}).waitFor();
   await racePage.evaluate(()=>window.__qoRace.finish(0,true));
